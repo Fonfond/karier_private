@@ -45,3 +45,6 @@ Thumbs.db
 
 # Сборка TypeScript
 *.tsbuildinfo
+
+# Документы стенда (локальное хранилище файлов)
+backend-v2/var/

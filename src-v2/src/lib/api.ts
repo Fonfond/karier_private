@@ -85,6 +85,7 @@ export interface AuditRecord {
 }
 
 let accessToken: string | null = null
+let refreshInFlight: Promise<TokenPair> | null = null
 
 export function setAccessToken(token: string | null): void {
   accessToken = token
@@ -160,9 +161,19 @@ export const api = {
   },
 
   async refresh(): Promise<TokenPair> {
-    const data = await request<TokenPair>('/api/auth/refresh', { method: 'POST' }, false)
-    setAccessToken(data.access_token)
-    return data
+    // В StrictMode эффект монтируется дважды, и параллельный refresh
+    // ротировал бы токен дважды (второй запрос — уже «старым» токеном)
+    if (!refreshInFlight) {
+      refreshInFlight = request<TokenPair>('/api/auth/refresh', { method: 'POST' }, false)
+        .then((data) => {
+          setAccessToken(data.access_token)
+          return data
+        })
+        .finally(() => {
+          refreshInFlight = null
+        })
+    }
+    return refreshInFlight
   },
 
   async logout(): Promise<void> {

@@ -65,6 +65,7 @@ class AssetBriefOut(BaseModel):
     x: float | None = None
     y: float | None = None
     location_text: str | None = None
+    parent_id: uuid.UUID | None = None
     version: int
     updated_at: datetime
 
@@ -170,13 +171,182 @@ class PowerPathNode(BaseModel):
     name: str
     type_code: str | None = None
     type_name: str | None = None
+    type_icon: str | None = None
     role: str
     synthetic: bool = False
+    link_id: uuid.UUID | None = None
+    link_label: str | None = None
+    link_state: str | None = None
 
 
 class PowerPathOut(BaseModel):
     asset_id: uuid.UUID
     asset_name: str
+    energized: bool = False
     source: PowerPathNode | None = None
     chain: list[PowerPathNode]
+    reason: str | None = None
     note: str
+
+
+# --- связи и линии ---------------------------------------------------------
+
+class PortRefOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    kind: str
+    voltage_kv: float | None = None
+
+
+class AssetRefOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    type_code: str
+    type_icon: str | None = None
+    status: str
+
+
+class LineOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    kind: str
+    voltage_kv: float | None = None
+    conductor_mark: str | None = None
+    length_m: float | None = None
+    state: str
+    links_count: int = 0
+
+
+class LineCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=2, max_length=255)
+    kind: Literal["overhead", "cable", "busbar"] = "cable"
+    voltage_kv: float | None = None
+    conductor_mark: str | None = None
+    length_m: float | None = None
+
+
+class LinkCreate(BaseModel):
+    from_port_id: uuid.UUID
+    to_port_id: uuid.UUID
+    link_type: Literal["cable", "overhead", "busbar", "jumper", "internal"] = "cable"
+    feed_role: Literal["main", "reserve", "backup"] = "main"
+    state: Literal["connected", "open", "grounded"] = "connected"
+    line_id: uuid.UUID | None = None
+    cable_mark: str | None = Field(default=None, max_length=64)
+    length_m: float | None = Field(default=None, ge=0)
+    cross_section_mm2: float | None = Field(default=None, ge=0)
+    cores: int | None = Field(default=None, ge=1, le=64)
+    geometry: list[list[float]] = []
+    attrs: dict[str, Any] = {}
+
+
+class LinkUpdate(BaseModel):
+    link_type: Literal["cable", "overhead", "busbar", "jumper", "internal"] | None = None
+    feed_role: Literal["main", "reserve", "backup"] | None = None
+    state: Literal["connected", "open", "grounded"] | None = None
+    line_id: uuid.UUID | None = None
+    cable_mark: str | None = Field(default=None, max_length=64)
+    length_m: float | None = Field(default=None, ge=0)
+    cross_section_mm2: float | None = Field(default=None, ge=0)
+    cores: int | None = Field(default=None, ge=1, le=64)
+    geometry: list[list[float]] | None = None
+    expected_version: int | None = None
+
+
+class LinkOut(BaseModel):
+    id: uuid.UUID
+    from_asset: AssetRefOut
+    to_asset: AssetRefOut
+    from_port: PortRefOut
+    to_port: PortRefOut
+    link_type: str
+    feed_role: str
+    state: str
+    cable_mark: str | None = None
+    length_m: float | None = None
+    cross_section_mm2: float | None = None
+    cores: int | None = None
+    line: LineOut | None = None
+    label: str
+    version: int
+    warnings: list[str] = []
+
+
+class LinkListOut(BaseModel):
+    items: list[LinkOut]
+    total: int
+
+
+# --- оперативные состояния -------------------------------------------------
+
+class StateChangeIn(BaseModel):
+    status: Literal["on", "off", "standby", "maintenance", "decommissioned"] | None = None
+    grounded: bool | None = None
+    reason: str | None = Field(default=None, max_length=255)
+
+
+class StateChangeOut(BaseModel):
+    asset: AssetOut
+    energization_changed: bool
+    affected_assets: int
+    switching_op_id: uuid.UUID | None = None
+
+
+# --- граф и проверки схемы -------------------------------------------------
+
+class GraphNodeOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    type_code: str
+    type_name: str
+    type_icon: str | None = None
+    type_color: str | None = None
+    category: str
+    status: str
+    grounded: bool
+    energized: bool
+    is_source: bool
+    parent_id: uuid.UUID | None = None
+    level: int = 0
+
+
+class GraphEdgeOut(BaseModel):
+    id: uuid.UUID
+    from_asset_id: uuid.UUID
+    to_asset_id: uuid.UUID
+    label: str
+    link_type: str
+    state: str
+    feed_role: str
+
+
+class TopologyGraphOut(BaseModel):
+    nodes: list[GraphNodeOut]
+    edges: list[GraphEdgeOut]
+
+
+class TopologyIssueOut(BaseModel):
+    level: str
+    code: str
+    message: str
+    asset_id: uuid.UUID | None = None
+    link_id: uuid.UUID | None = None
+
+
+class ChildAssetOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    type_code: str
+    type_icon: str | None = None
+    type_name: str
+    status: str
+    grounded: bool
+    energized: bool
+    ports: list[PortRefOut] = []
+

@@ -102,6 +102,7 @@ def asset_brief(asset: Asset) -> AssetBriefOut:
         x=float(asset.x) if asset.x is not None else None,
         y=float(asset.y) if asset.y is not None else None,
         location_text=asset.location_text,
+        parent_id=asset.parent_asset_id,
         version=asset.version,
         updated_at=asset.updated_at,
     )
@@ -161,6 +162,7 @@ def list_assets(
     type_code: str | None = None,
     status: str | None = None,
     is_mobile: bool | None = None,
+    parent_id: uuid.UUID | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[Asset], int]:
@@ -176,6 +178,8 @@ def list_assets(
         stmt = stmt.where(Asset.status == status)
     if is_mobile is not None:
         stmt = stmt.where(Asset.is_mobile.is_(is_mobile))
+    if parent_id is not None:
+        stmt = stmt.where(Asset.parent_asset_id == parent_id)
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     rows = db.scalars(stmt.order_by(Asset.code).limit(limit).offset(offset)).unique().all()

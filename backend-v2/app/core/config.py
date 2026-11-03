@@ -36,6 +36,9 @@ class Settings(BaseSettings):
 
     ACCESS_TOKEN_TTL_MIN: int = 15
     REFRESH_TOKEN_TTL_DAYS: int = 30
+    # Окно, в котором повторное использование предыдущего refresh-токена
+    # считается гонкой вкладок, а не кражей
+    REFRESH_REUSE_GRACE_SECONDS: int = 60
     MFA_CHALLENGE_TTL_MIN: int = 5
     ONBOARDING_TTL_MIN: int = 10
     PASSWORD_RESET_TTL_MIN: int = 15
@@ -54,6 +57,12 @@ class Settings(BaseSettings):
 
     # --- CORS (dev: фронт на 5174, API на 8001; в prod — один домен) ---
     CORS_ORIGINS: str = "http://localhost:5174,http://127.0.0.1:5174"
+
+    # --- документы ---
+    # Локальное хранилище на стенде; в prod — Vercel Blob (та же абстракция storage_path)
+    DOCUMENTS_DIR: str = "var/documents"
+    MAX_DOCUMENT_MB: int = 25
+    DOCUMENT_URL_TTL_MIN: int = 30
 
     # --- разработка ---
     # Показывать OTP-код в ответе API (только для стенда без Telegram-бота).

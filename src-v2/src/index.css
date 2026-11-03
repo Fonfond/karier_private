@@ -150,3 +150,43 @@
   display: none;
 }
 
+/* --- однолинейная схема (React Flow) ------------------------------------ */
+
+.react-flow {
+  background: #070c10;
+  /* React Flow 12 рисует контролы через CSS-переменные — перекрашиваем под тёмную тему */
+  --xy-controls-button-background-color: #121a21;
+  --xy-controls-button-background-color-hover: #182330;
+  --xy-controls-button-color: #9fb0c0;
+  --xy-controls-button-color-hover: #e6edf3;
+  --xy-controls-button-border-color: #253242;
+  --xy-edge-label-background-color: #0b1014;
+  --xy-edge-label-color: #9fb0c0;
+}
+
+.react-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid #253242;
+  border-radius: 10px;
+  background: #121a21;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+
+.react-flow .react-flow__controls-button {
+  background: #121a21;
+  border-bottom: 1px solid #253242;
+  color: #9fb0c0;
+  fill: #9fb0c0;
+  width: 28px;
+  height: 28px;
+}
+
+.react-flow .react-flow__controls-button:hover {
+  background: #182330;
+  color: #e6edf3;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+

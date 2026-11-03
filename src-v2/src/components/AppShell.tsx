@@ -41,9 +41,17 @@ export function AppShell() {
             <NavLink to="/" className={link} end>
               Карта
             </NavLink>
+            <NavLink to="/registry" className={link}>
+              Реестр
+            </NavLink>
             <NavLink to="/status" className={link}>
               Статус
             </NavLink>
+            {can('settings.edit') && (
+              <NavLink to="/types" className={link}>
+                Справочник
+              </NavLink>
+            )}
             {can('employee.manage') && (
               <NavLink to="/employees" className={link}>
                 Сотрудники

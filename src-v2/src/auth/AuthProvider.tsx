@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api, setAccessToken } from '../lib/api'
 import type { MfaRequired, User } from '../lib/api'
@@ -21,22 +21,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [initializing, setInitializing] = useState(true)
 
   // При старте пробуем восстановить сессию по httpOnly-cookie.
+  const bootstrapped = useRef(false)
   useEffect(() => {
-    let cancelled = false
+    if (bootstrapped.current) return
+    bootstrapped.current = true
     api
       .refresh()
-      .then((data) => {
-        if (!cancelled) setUser(data.user)
-      })
-      .catch(() => {
-        setAccessToken(null)
-      })
-      .finally(() => {
-        if (!cancelled) setInitializing(false)
-      })
-    return () => {
-      cancelled = true
-    }
+      .then((data) => setUser(data.user))
+      .catch(() => setAccessToken(null))
+      .finally(() => setInitializing(false))
   }, [])
 
   const login = useCallback(async (tab_no: string, password: string) => {

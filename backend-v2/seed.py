@@ -61,6 +61,7 @@ PERMISSIONS: dict[str, str] = {
     "audit.view": "Просмотр журнала аудита",
     "report.export": "Экспорт отчётов",
     "settings.edit": "Настройки карьера и справочников",
+    "document.manage": "Загрузка и удаление технических документов",
 }
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {

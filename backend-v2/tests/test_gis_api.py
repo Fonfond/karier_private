@@ -83,9 +83,11 @@ def test_power_path_chain(client, admin_headers):
     response = client.get(f"/api/assets/{ktp_id}/power-path", headers=admin_headers)
     assert response.status_code == 200
     body = response.json()
+    # с Топологии Спринта 3 путь считается по графу связей: ПС → секция → ячейки → БКРУ → КТП
     assert body["source"]["code"] == "PS-356"
-    assert [node["code"] for node in body["chain"]] == ["BKRU-1", "KTP-14"]
-    assert body["chain"][-1]["role"] == "asset"
+    assert body["energized"] is True
+    assert body["chain"][-1]["code"] == "KTP-14"
+    assert body["chain"][0]["role"] == "source"
 
 
 def test_admin_creates_and_deletes_asset(client, admin_headers):

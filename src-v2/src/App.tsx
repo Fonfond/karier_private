@@ -10,6 +10,8 @@ import { MapPage } from './pages/MapPage'
 import { MfaPage } from './pages/MfaPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { RegisterPage } from './pages/RegisterPage'
+import { RegistryPage } from './pages/RegistryPage'
+import { TypesPage } from './pages/TypesPage'
 
 export default function App() {
   const { user } = useAuth()
@@ -28,8 +30,17 @@ export default function App() {
         }
       >
         <Route path="/" element={<MapPage />} />
+        <Route path="/registry" element={<RegistryPage />} />
         <Route path="/status" element={<HomePage />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route
+          path="/types"
+          element={
+            <RequirePermission permission="settings.edit">
+              <TypesPage />
+            </RequirePermission>
+          }
+        />
         <Route
           path="/employees"
           element={

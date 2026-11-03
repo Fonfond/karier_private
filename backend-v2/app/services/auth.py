@@ -265,20 +265,37 @@ def rotate_session(db: Session, refresh_token: str, request: Request | None = No
     session = db.scalar(select(AuthSession).where(AuthSession.refresh_hash == token_hash))
 
     if session is None:
-        # Возможно, это старый (уже ротированный) токен → признак компрометации.
+        # Возможно, это старый (уже ротированный) токен.
         reused = db.scalar(
             select(AuthSession).where(AuthSession.prev_refresh_hash == token_hash)
         )
         if reused is not None:
-            _revoke_family(db, reused, reason="reuse_detected")
-            audit.add(
-                "auth.refresh.reuse_detected",
-                entity="session",
-                entity_id=reused.id,
-                result="denied",
-                detail="Повторно использован старый refresh-токен, семейство отозвано",
+            grace = settings.REFRESH_REUSE_GRACE_SECONDS
+            recent = (
+                reused.last_seen_at is not None
+                and (now() - reused.last_seen_at).total_seconds() <= grace
             )
-        raise ApiError(401, "auth.session_expired", "Сессия истекла, войдите заново")
+            if reused.revoked_at is None and recent:
+                # гонка вкладок: токен уже ротирован секунды назад — не наказываем,
+                # выдаём новую пару на той же сессии
+                audit.add(
+                    "auth.refresh.race",
+                    entity="session",
+                    entity_id=reused.id,
+                    detail="Повторное использование токена в пределах окна — считаем гонкой вкладок",
+                )
+                session = reused
+            else:
+                _revoke_family(db, reused, reason="reuse_detected")
+                audit.add(
+                    "auth.refresh.reuse_detected",
+                    entity="session",
+                    entity_id=reused.id,
+                    result="denied",
+                    detail="Повторно использован старый refresh-токен, семейство отозвано",
+                )
+        if session is None:
+            raise ApiError(401, "auth.session_expired", "Сессия истекла, войдите заново")
 
     if session.revoked_at is not None:
         raise ApiError(401, "auth.session_expired", "Сессия отозвана, войдите заново")

@@ -27,6 +27,19 @@
 | Права | чтение — любой вход; создание/правка — `asset.create`; удаление — `asset.delete` |
 | Валидация | тип, обязательные атрибуты, границы карты, уникальность кода, `expected_version` → 409 |
 
+### Спринт 3: топология, схема, документы
+
+| Блок | Детали |
+|---|---|
+| Схема `gis` | `lines`, `links`, `switching_ops` (миграция `0003_sprint3_topology`) |
+| Схема `ops` | `documents` — файлы объекта: `schematic`, `settings`, `manual`, `other` |
+| Расчёт питания | Обход графа портов: источники → включённые связи → внутренние порты включённых объектов |
+| Валидация | OUT→IN, совпадение напряжения, дубликат пары, цикл в основной схеме |
+| Проверки схемы | `GET /api/topology/issues` — объекты без ввода, кольца, несовпадение напряжения |
+| Переключения | `POST /api/assets/{id}/state` (статус, заземление + причина), журнал `switching_ops` |
+| Иерархия | `GET /api/assets/{id}/children` — секции и ячейки внутри ПС/БКРУ |
+| Документы | загрузка 25 МБ, выдача по короткоживущей ссылке (`token`, 30 мин), локальное хранилище `var/documents` |
+
 ## Структура
 
 ```
@@ -41,10 +54,11 @@ backend-v2/
 │   └── main.py
 ├── alembic/versions/0001_sprint1_auth.py
 ├── alembic/versions/0002_sprint2_gis.py
+├── alembic/versions/0003_sprint3_topology.py
 ├── scripts/
 │   ├── smoke.ps1       # сквозной тест через HTTP (26 проверок)
 │   └── smoke-result.txt
-├── tests/              # pytest: 20 тестов (9 auth + 11 ГИС)
+├── tests/              # pytest: 29 тестов (auth + реестр + топология)
 ├── seed.py
 ├── requirements.txt
 └── .env / .env.example
@@ -69,6 +83,9 @@ Copy-Item .env.example .env      # и проверьте DATABASE_URL / SECRET_K
 
 # 4b. карьер, подложка, справочник типов и 16 объектов с координатами
 .\venv\Scripts\python.exe seed_gis.py
+
+# 4c. секции шин, ячейки, опоры, линии и связи (топология Спринта 3)
+.\venv\Scripts\python.exe seed_topology.py
 
 # 5. сервер
 .\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload

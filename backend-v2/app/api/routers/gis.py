@@ -1,29 +1,46 @@
-"""ГИС-реестр: типы объектов, объекты, порты, подложка, путь питания."""
+"""ГИС-реестр, топология, переключения и однолинейная схема."""
 
 from __future__ import annotations
 
-import uuid
+import uuid as uuidlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_permission
 from app.core.errors import not_found
 from app.db.session import get_db
-from app.models import AssetType, Employee
+from app.models import Asset, AssetType, Employee, Line, Link
 from app.schemas.gis import (
-    AssetBriefOut,
     AssetCreate,
     AssetListOut,
     AssetOut,
     AssetTypeCreate,
     AssetTypeOut,
     AssetUpdate,
+    ChildAssetOut,
+    GraphEdgeOut,
+    GraphNodeOut,
+    LineCreate,
+    LineOut,
+    LinkCreate,
+    LinkListOut,
+    LinkOut,
+    LinkUpdate,
     MapLayerOut,
+    PortRefOut,
+    PowerPathNode,
     PowerPathOut,
+    StateChangeIn,
+    StateChangeOut,
+    TopologyGraphOut,
+    TopologyIssueOut,
 )
-from app.services import audit, gis
+from app.services import audit, documents as documents_service, gis, links as links_service
+from app.services import state as state_service
+from app.services import topology
 
 router = APIRouter(tags=["gis"])
 
@@ -39,10 +56,7 @@ def list_asset_types(
 
 
 @router.post(
-    "/asset-types",
-    response_model=AssetTypeOut,
-    status_code=201,
-    summary="Добавить тип (админ)",
+    "/asset-types", response_model=AssetTypeOut, status_code=201, summary="Добавить тип (админ)"
 )
 def create_asset_type(
     payload: AssetTypeCreate,
@@ -61,12 +75,10 @@ def create_asset_type(
 
 
 @router.patch(
-    "/asset-types/{type_id}",
-    response_model=AssetTypeOut,
-    summary="Изменить тип (админ)",
+    "/asset-types/{type_id}", response_model=AssetTypeOut, summary="Изменить тип (админ)"
 )
 def patch_asset_type(
-    type_id: uuid.UUID,
+    type_id: uuidlib.UUID,
     payload: dict[str, Any],
     _: Employee = Depends(require_permission("settings.edit")),
     db: Session = Depends(get_db),
@@ -76,10 +88,7 @@ def patch_asset_type(
         raise not_found("Тип не найден")
     updated = gis.update_type(db, asset_type, payload)
     audit.add(
-        "asset_type.updated",
-        entity="asset_type",
-        entity_id=updated.id,
-        detail=f"Изменён тип {updated.code}",
+        "asset_type.updated", entity="asset_type", entity_id=updated.id, detail=f"Изменён тип {updated.code}"
     )
     return AssetTypeOut.model_validate(updated)
 
@@ -92,6 +101,7 @@ def list_assets(
     type_code: str | None = Query(default=None, max_length=48),
     status: str | None = Query(default=None, max_length=24),
     is_mobile: bool | None = Query(default=None),
+    parent_id: uuidlib.UUID | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _: Employee = Depends(current_user),
@@ -105,6 +115,7 @@ def list_assets(
         type_code=type_code,
         status=status,
         is_mobile=is_mobile,
+        parent_id=parent_id,
         limit=limit,
         offset=offset,
     )
@@ -123,26 +134,71 @@ def create_asset(
         entity="asset",
         entity_id=asset.id,
         detail=f"Создан объект {asset.code} ({asset.name})",
-        payload={"code": asset.code, "type": asset.asset_type.code, "x": float(asset.x), "y": float(asset.y)}
-        if asset.x is not None and asset.y is not None
-        else {"code": asset.code, "type": asset.asset_type.code},
+        payload={
+            "code": asset.code,
+            "type": asset.asset_type.code,
+            "x": float(asset.x) if asset.x is not None else None,
+            "y": float(asset.y) if asset.y is not None else None,
+        },
     )
     return gis.asset_full(asset)
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut, summary="Карточка объекта")
 def get_asset(
-    asset_id: uuid.UUID,
+    asset_id: uuidlib.UUID,
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> AssetOut:
-    asset = gis.get_asset(db, asset_id)
-    return gis.asset_full(asset)
+    return gis.asset_full(gis.get_asset(db, asset_id))
+
+
+@router.get(
+    "/assets/{asset_id}/children",
+    response_model=list[ChildAssetOut],
+    summary="Внутренняя структура: секции, ячейки",
+)
+def asset_children(
+    asset_id: uuidlib.UUID,
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[ChildAssetOut]:
+    gis.get_asset(db, asset_id)
+    energization = topology.energize(db, gis.get_pit(db).id)
+    rows = db.scalars(
+        select(Asset)
+        .where(Asset.parent_asset_id == asset_id, Asset.deleted_at.is_(None))
+        .order_by(Asset.code)
+    ).unique().all()
+    return [
+        ChildAssetOut(
+            id=child.id,
+            code=child.code,
+            name=child.name,
+            type_code=child.asset_type.code,
+            type_icon=child.asset_type.icon,
+            type_name=child.asset_type.name,
+            status=child.status,
+            grounded=child.grounded,
+            energized=child.id in energization.energized,
+            ports=[
+                PortRefOut(
+                    id=p.id,
+                    code=p.code,
+                    name=p.name,
+                    kind=p.kind,
+                    voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
+                )
+                for p in child.ports
+            ],
+        )
+        for child in rows
+    ]
 
 
 @router.patch("/assets/{asset_id}", response_model=AssetOut, summary="Изменить объект")
 def patch_asset(
-    asset_id: uuid.UUID,
+    asset_id: uuidlib.UUID,
     payload: AssetUpdate,
     user: Employee = Depends(require_permission("asset.create")),
     db: Session = Depends(get_db),
@@ -166,9 +222,38 @@ def patch_asset(
     return gis.asset_full(updated)
 
 
+@router.post(
+    "/assets/{asset_id}/state",
+    response_model=StateChangeOut,
+    summary="Переключение: статус и заземление",
+)
+def change_asset_state(
+    asset_id: uuidlib.UUID,
+    payload: StateChangeIn,
+    user: Employee = Depends(require_permission("asset.status.edit")),
+    db: Session = Depends(get_db),
+) -> StateChangeOut:
+    asset = gis.get_asset(db, asset_id)
+    result = state_service.change_state(
+        db,
+        asset,
+        status=payload.status,
+        grounded=payload.grounded,
+        reason=payload.reason,
+        actor=user,
+    )
+    updated = gis.get_asset(db, asset.id)
+    return StateChangeOut(
+        asset=gis.asset_full(updated),
+        energization_changed=result["energization_changed"],
+        affected_assets=result["affected_assets"],
+        switching_op_id=result["switching_op_id"],
+    )
+
+
 @router.delete("/assets/{asset_id}", summary="Удалить объект (мягко)")
 def delete_asset(
-    asset_id: uuid.UUID,
+    asset_id: uuidlib.UUID,
     user: Employee = Depends(require_permission("asset.delete")),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -176,26 +261,257 @@ def delete_asset(
     code, name = asset.code, asset.name
     gis.soft_delete(db, asset, actor=user)
     audit.add(
-        "asset.deleted",
-        entity="asset",
-        entity_id=asset_id,
-        detail=f"Удалён объект {code} ({name})",
+        "asset.deleted", entity="asset", entity_id=asset_id, detail=f"Удалён объект {code} ({name})"
     )
     return {"message": "Объект удалён", "id": str(asset_id)}
+
+
+# --- путь питания ----------------------------------------------------------
+
+def _path_node(node: dict, role: str) -> PowerPathNode:
+    asset = node["asset"]
+    link: Link | None = node.get("link")
+    return PowerPathNode(
+        id=asset.id,
+        code=asset.code,
+        name=asset.name,
+        type_code=asset.asset_type.code if asset.asset_type else None,
+        type_name=asset.asset_type.name if asset.asset_type else None,
+        type_icon=asset.asset_type.icon if asset.asset_type else None,
+        role=role,
+        link_id=link.id if link else None,
+        link_label=links_service.link_label(link) if link else None,
+        link_state=link.state if link else None,
+    )
 
 
 @router.get(
     "/assets/{asset_id}/power-path",
     response_model=PowerPathOut,
-    summary="Цепочка питания (предварительная)",
+    summary="Путь питания по графу связей",
 )
 def asset_power_path(
-    asset_id: uuid.UUID,
+    asset_id: uuidlib.UUID,
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> PowerPathOut:
     asset = gis.get_asset(db, asset_id)
-    return gis.power_path(db, asset)
+    data = topology.power_path(db, asset)
+
+    chain: list[PowerPathNode] = []
+    nodes = data["nodes"]
+    for index, node in enumerate(nodes):
+        if index == 0:
+            role = "source"
+        elif index == len(nodes) - 1:
+            role = "asset"
+        else:
+            role = "feed"
+        chain.append(_path_node(node, role))
+
+    source_asset = data["source"]
+    source = None
+    if source_asset is not None:
+        source = PowerPathNode(
+            id=source_asset.id,
+            code=source_asset.code,
+            name=source_asset.name,
+            type_code=source_asset.asset_type.code if source_asset.asset_type else None,
+            type_name=source_asset.asset_type.name if source_asset.asset_type else None,
+            type_icon=source_asset.asset_type.icon if source_asset.asset_type else None,
+            role="source",
+        )
+
+    return PowerPathOut(
+        asset_id=asset.id,
+        asset_name=asset.name,
+        energized=data["energized"],
+        source=source,
+        chain=chain,
+        reason=data["reason"],
+        note="Расчёт по графу связей: обход от включённых источников по включённым связям и объектам.",
+    )
+
+
+# --- связи -----------------------------------------------------------------
+
+@router.get("/links", response_model=LinkListOut, summary="Список связей")
+def list_links(
+    asset_id: uuidlib.UUID | None = Query(default=None),
+    state: str | None = Query(default=None, max_length=16),
+    link_type: str | None = Query(default=None, max_length=16),
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> LinkListOut:
+    pit = gis.get_pit(db)
+    rows = links_service.list_links(
+        db, pit.id, asset_id=asset_id, state=state, link_type=link_type
+    )
+    return LinkListOut(items=[links_service.link_out(link) for link in rows], total=len(rows))
+
+
+@router.post("/links", response_model=LinkOut, status_code=201, summary="Создать связь")
+def create_link(
+    payload: LinkCreate,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> LinkOut:
+    pit = gis.get_pit(db)
+    return links_service.create_link(db, pit.id, payload, actor=user)
+
+
+@router.patch("/links/{link_id}", response_model=LinkOut, summary="Изменить связь")
+def patch_link(
+    link_id: uuidlib.UUID,
+    payload: LinkUpdate,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> LinkOut:
+    link = links_service.get_link(db, link_id)
+    return links_service.update_link(db, link, payload, actor=user)
+
+
+@router.post("/links/{link_id}/state", response_model=LinkOut, summary="Переключить связь")
+def switch_link(
+    link_id: uuidlib.UUID,
+    payload: dict[str, Any],
+    user: Employee = Depends(require_permission("asset.status.edit")),
+    db: Session = Depends(get_db),
+) -> LinkOut:
+    link = links_service.get_link(db, link_id)
+    updated = state_service.set_link_state(
+        db, link, str(payload.get("state", "open")), actor=user, reason=payload.get("reason")
+    )
+    return links_service.link_out(updated)
+
+
+@router.delete("/links/{link_id}", summary="Удалить связь")
+def delete_link(
+    link_id: uuidlib.UUID,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> dict:
+    link = links_service.get_link(db, link_id)
+    links_service.delete_link(db, link, actor=user)
+    return {"message": "Связь удалена", "id": str(link_id)}
+
+
+# --- линии -----------------------------------------------------------------
+
+@router.get("/lines", response_model=list[LineOut], summary="Линии (фидеры)")
+def list_lines(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[LineOut]:
+    pit = gis.get_pit(db)
+    return links_service.list_lines(db, pit.id)
+
+
+@router.post("/lines", response_model=LineOut, status_code=201, summary="Создать линию")
+def create_line(
+    payload: LineCreate,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> LineOut:
+    pit = gis.get_pit(db)
+    return links_service.create_line(db, pit.id, payload, actor=user)
+
+
+# --- схема и проверки ------------------------------------------------------
+
+@router.get("/topology/graph", response_model=TopologyGraphOut, summary="Граф для схемы")
+def topology_graph(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> TopologyGraphOut:
+    pit = gis.get_pit(db)
+    data = topology.graph_payload(db, pit.id)
+
+    nodes = [
+        GraphNodeOut(
+            id=item["asset"].id,
+            code=item["asset"].code,
+            name=item["asset"].name,
+            type_code=item["asset"].asset_type.code,
+            type_name=item["asset"].asset_type.name,
+            type_icon=item["asset"].asset_type.icon,
+            type_color=item["asset"].asset_type.color,
+            category=item["asset"].asset_type.category,
+            status=item["asset"].status,
+            grounded=item["asset"].grounded,
+            energized=item["energized"],
+            is_source=item["is_source"],
+            parent_id=item["asset"].parent_asset_id,
+        )
+        for item in data["nodes"]
+    ]
+    edges = [
+        GraphEdgeOut(
+            id=item["link"].id,
+            from_asset_id=item["from_asset_id"],
+            to_asset_id=item["to_asset_id"],
+            label=links_service.link_label(item["link"]),
+            link_type=item["link"].link_type,
+            state=item["link"].state,
+            feed_role=item["link"].feed_role,
+        )
+        for item in data["edges"]
+    ]
+    return TopologyGraphOut(nodes=nodes, edges=edges)
+
+
+@router.get("/topology/issues", response_model=list[TopologyIssueOut], summary="Проверки схемы")
+def topology_issues(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[TopologyIssueOut]:
+    pit = gis.get_pit(db)
+    return [TopologyIssueOut(**issue) for issue in topology.topology_issues(db, pit.id)]
+
+
+@router.get("/topology/switching", summary="Журнал переключений")
+def switching_log(
+    limit: int = Query(default=100, ge=1, le=500),
+    _: Employee = Depends(require_permission("asset.status.edit")),
+    db: Session = Depends(get_db),
+) -> dict:
+    pit = gis.get_pit(db)
+    rows = state_service.list_switching_ops(db, pit.id, limit=limit)
+    return {
+        "items": [
+            {
+                "id": str(row.id),
+                "asset_id": str(row.asset_id),
+                "asset_code": row.asset.code if row.asset else None,
+                "asset_name": row.asset.name if row.asset else None,
+                "action": row.action,
+                "from_state": row.from_state,
+                "to_state": row.to_state,
+                "reason": row.reason,
+                "performed_at": row.performed_at,
+            }
+            for row in rows
+        ],
+        "total": len(rows),
+    }
+
+
+# --- документы объекта -----------------------------------------------------
+
+@router.get("/assets/{asset_id}/documents", summary="Документы объекта")
+def list_asset_documents(
+    asset_id: uuidlib.UUID,
+    user: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    gis.get_asset(db, asset_id)
+    rows = documents_service.list_documents(db, asset_id)
+    return {
+        "items": [
+            documents_service.document_out(db, doc, employee_id=str(user.id)) for doc in rows
+        ],
+        "total": len(rows),
+    }
 
 
 # --- карта -----------------------------------------------------------------

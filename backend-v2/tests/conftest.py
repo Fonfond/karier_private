@@ -12,6 +12,41 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.main import app  # noqa: E402
+from app.db.session import SessionLocal  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def heal_topology():
+    """Перед каждым тестом возвращаем схему в эталонное состояние.
+
+    Тесты переключают ячейки и связи, поэтому без этого они влияли бы друг на друга.
+    """
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "update gis.assets set status='on', grounded=false "
+                "where code in ('BKRU1-IN1','BKRU1-OUT1','BKRU1-OUT2','BKRU1-OUT3')"
+            )
+        )
+        db.execute(
+            text("update gis.assets set status='off', grounded=false where code in ('BKRU1-IN2','BKRU1-SEC')")
+        )
+        db.execute(
+            text("update gis.assets set status='on', grounded=false where code='KTP-14'")
+        )
+        db.execute(text("update gis.links set state='connected' where deleted_at is null"))
+        db.execute(
+            text(
+                "update gis.links set state='open' "
+                "where deleted_at is null and (link_type='jumper' or feed_role='backup')"
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    yield
 
 
 @pytest.fixture(scope="session")

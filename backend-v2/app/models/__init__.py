@@ -13,7 +13,9 @@ from app.models.auth import (
     role_permissions,
 )
 from app.models.base import Base
+from app.models.documents import Document
 from app.models.gis import Asset, AssetPort, AssetType, MapLayer, Pit
+from app.models.topology import Line, Link, SwitchingOp
 
 __all__ = [
     "Base",
@@ -32,4 +34,8 @@ __all__ = [
     "AssetType",
     "Asset",
     "AssetPort",
+    "Line",
+    "Link",
+    "SwitchingOp",
+    "Document",
 ]
