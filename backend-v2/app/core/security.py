@@ -18,7 +18,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.config import settings
 
-TokenType = Literal["access", "mfa_challenge", "password_reset", "onboarding", "document"]
+TokenType = Literal[
+    "access", "mfa_challenge", "password_reset", "onboarding", "document", "media"
+]
 
 # --- пароли ---------------------------------------------------------------
 
@@ -146,6 +148,16 @@ def create_document_token(document_id: str, *, employee_id: str) -> str:
         document_id,
         "document",
         timedelta(minutes=settings.DOCUMENT_URL_TTL_MIN),
+        employee_id=employee_id,
+    )
+
+
+def create_media_token(media_id: str, *, employee_id: str) -> str:
+    """Короткоживущая ссылка на фото (для <img> и офлайн-кэша)."""
+    return create_token(
+        media_id,
+        "media",
+        timedelta(minutes=settings.MEDIA_URL_TTL_MIN),
         employee_id=employee_id,
     )
 

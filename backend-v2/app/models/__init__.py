@@ -15,6 +15,7 @@ from app.models.auth import (
 from app.models.base import Base
 from app.models.documents import Document
 from app.models.gis import Asset, AssetPort, AssetType, MapLayer, Pit
+from app.models.ops import Defect, Inspection, InspectionItem, Media
 from app.models.topology import Line, Link, SwitchingOp
 
 __all__ = [
@@ -38,4 +39,8 @@ __all__ = [
     "Link",
     "SwitchingOp",
     "Document",
+    "Inspection",
+    "InspectionItem",
+    "Defect",
+    "Media",
 ]

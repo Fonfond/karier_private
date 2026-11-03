@@ -5,7 +5,10 @@ import type { AssetOut, ChildAsset, PowerPath } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
 import { StateControls } from './StateControls'
 import { DocumentsTab } from './DocumentsTab'
+import { PhotosTab } from './PhotosTab'
+import { HistoryTab } from './HistoryTab'
 import { ChildrenModal } from './ChildrenModal'
+import { QrModal } from '../QrModal'
 
 interface Props {
   assetId: string
@@ -15,7 +18,7 @@ interface Props {
   canManageDocs: boolean
 }
 
-type Tab = 'passport' | 'docs'
+type Tab = 'passport' | 'photos' | 'docs' | 'history'
 
 const ATTR_LABELS: Record<string, string> = {
   power_kw: 'Мощность, кВт',
@@ -28,6 +31,13 @@ const ATTR_LABELS: Record<string, string> = {
   section_breaker: 'Секционный выключатель',
 }
 
+const TABS: Array<{ key: Tab; label: string }> = [
+  { key: 'passport', label: 'Паспорт' },
+  { key: 'photos', label: 'Фото' },
+  { key: 'docs', label: 'Документы' },
+  { key: 'history', label: 'История' },
+]
+
 export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs }: Props) {
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [path, setPath] = useState<PowerPath | null>(null)
@@ -36,6 +46,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [showChildren, setShowChildren] = useState(false)
+  const [showQr, setShowQr] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -92,23 +103,29 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             {asset.is_mobile ? <Badge tone="accent">мобильный</Badge> : null}
           </div>
         </div>
+        <button
+          type="button"
+          className="btn-ghost h-9 w-9 shrink-0 p-0 text-[13px]"
+          title="QR-код объекта"
+          onClick={() => setShowQr(true)}
+        >
+          ▦
+        </button>
       </div>
 
       <div className="flex gap-1 rounded-xl border border-line bg-surface2/50 p-1">
-        <button
-          type="button"
-          onClick={() => setTab('passport')}
-          className={`flex-1 rounded-lg px-3 py-2 text-[13px] ${tab === 'passport' ? 'bg-surface1 text-ink' : 'text-ink2'}`}
-        >
-          Паспорт
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('docs')}
-          className={`flex-1 rounded-lg px-3 py-2 text-[13px] ${tab === 'docs' ? 'bg-surface1 text-ink' : 'text-ink2'}`}
-        >
-          Документы
-        </button>
+        {TABS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => setTab(item.key)}
+            className={`flex-1 rounded-lg px-1 py-2 text-[12px] ${
+              tab === item.key ? 'bg-surface1 text-ink' : 'text-ink2'
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
 
       {tab === 'passport' ? (
@@ -223,9 +240,11 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             ) : null}
           </div>
         </>
-      ) : (
-        <DocumentsTab assetId={asset.id} canManage={canManageDocs} />
-      )}
+      ) : null}
+
+      {tab === 'photos' ? <PhotosTab assetId={asset.id} assetCode={asset.code} /> : null}
+      {tab === 'docs' ? <DocumentsTab assetId={asset.id} canManage={canManageDocs} /> : null}
+      {tab === 'history' ? <HistoryTab assetId={asset.id} /> : null}
 
       {showChildren ? (
         <ChildrenModal
@@ -239,6 +258,12 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           }
         />
       ) : null}
+
+      <QrModal
+        open={showQr}
+        asset={{ id: asset.id, code: asset.code, name: asset.name }}
+        onClose={() => setShowQr(false)}
+      />
     </div>
   )
 }

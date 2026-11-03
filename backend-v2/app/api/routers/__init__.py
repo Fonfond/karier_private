@@ -1,5 +1,27 @@
 """Роутеры API."""
 
-from app.api.routers import audit, auth, documents, employees, gis, health, me
+from app.api.routers import (
+    audit,
+    auth,
+    defects,
+    documents,
+    employees,
+    gis,
+    health,
+    inspections,
+    me,
+    media,
+)
 
-__all__ = ["audit", "auth", "documents", "employees", "gis", "health", "me"]
+__all__ = [
+    "audit",
+    "auth",
+    "defects",
+    "documents",
+    "employees",
+    "gis",
+    "health",
+    "inspections",
+    "me",
+    "media",
+]

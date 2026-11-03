@@ -2,9 +2,12 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { useAuth } from './auth/AuthProvider'
 import { RequireAuth, RequirePermission } from './auth/guards'
+import { AssetDeepLink } from './pages/AssetDeepLink'
 import { AuditPage } from './pages/AuditPage'
+import { DefectsPage } from './pages/DefectsPage'
 import { EmployeesPage } from './pages/EmployeesPage'
 import { HomePage } from './pages/HomePage'
+import { InspectionPage } from './pages/InspectionPage'
 import { LoginPage } from './pages/LoginPage'
 import { MapPage } from './pages/MapPage'
 import { MfaPage } from './pages/MfaPage'
@@ -30,7 +33,10 @@ export default function App() {
         }
       >
         <Route path="/" element={<MapPage />} />
+        <Route path="/asset/:id" element={<AssetDeepLink />} />
         <Route path="/registry" element={<RegistryPage />} />
+        <Route path="/inspections" element={<InspectionPage />} />
+        <Route path="/defects" element={<DefectsPage />} />
         <Route path="/status" element={<HomePage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route

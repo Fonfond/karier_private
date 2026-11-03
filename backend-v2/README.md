@@ -40,6 +40,18 @@
 | Иерархия | `GET /api/assets/{id}/children` — секции и ячейки внутри ПС/БКРУ |
 | Документы | загрузка 25 МБ, выдача по короткоживущей ссылке (`token`, 30 мин), локальное хранилище `var/documents` |
 
+### Спринт 4: фото, обходы, дефекты
+
+| Блок | Детали |
+|---|---|
+| Схема `ops` | `inspections`, `inspection_items`, `defects`, `media` (миграция `0004_sprint4_ops`) |
+| Фото | `POST /api/assets/{id}/media` (multipart), `GET /api/media/{id}/file?token=`, удаление автором или админом |
+| Метаданные | `captured_at`, `lat/lon`, `geo_source`, автор снимком, `sha256`, `watermark_applied`, `exif` |
+| Хранилище | `app/services/storage.py`: локальный диск; при `BLOB_READ_WRITE_TOKEN` — Vercel Blob, код тот же |
+| Обходы | `POST /api/inspections`, отметки по объектам, `POST /{id}/submit`, «мой обход» |
+| Дефекты | создание, список с фильтрами, закрытие только с `photo_after_id` (иначе 422) |
+| История | `GET /api/assets/{id}/history` — обходы, дефекты, фото, переключения |
+
 ## Структура
 
 ```
@@ -55,10 +67,11 @@ backend-v2/
 ├── alembic/versions/0001_sprint1_auth.py
 ├── alembic/versions/0002_sprint2_gis.py
 ├── alembic/versions/0003_sprint3_topology.py
+├── alembic/versions/0004_sprint4_ops.py
 ├── scripts/
 │   ├── smoke.ps1       # сквозной тест через HTTP (26 проверок)
 │   └── smoke-result.txt
-├── tests/              # pytest: 29 тестов (auth + реестр + топология)
+├── tests/              # pytest: 35 тестов (auth, реестр, топология, обходы/дефекты)
 ├── seed.py
 ├── requirements.txt
 └── .env / .env.example

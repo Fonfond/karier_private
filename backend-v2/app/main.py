@@ -10,7 +10,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware import AuditMiddleware
-from app.api.routers import audit, auth, documents, employees, gis, health, me
+from app.api.routers import (
+    audit,
+    auth,
+    defects,
+    documents,
+    employees,
+    gis,
+    health,
+    inspections,
+    me,
+    media,
+)
 from app.core.config import settings
 from app.core.errors import ApiError, api_error_handler, problem_response
 
@@ -77,6 +88,9 @@ app.include_router(employees.router, prefix=api)
 app.include_router(audit.router, prefix=api)
 app.include_router(gis.router, prefix=api)
 app.include_router(documents.router, prefix=api)
+app.include_router(media.router, prefix=api)
+app.include_router(inspections.router, prefix=api)
+app.include_router(defects.router, prefix=api)
 
 
 @app.get("/", tags=["health"])

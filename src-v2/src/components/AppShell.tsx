@@ -1,19 +1,21 @@
+import { lazy, Suspense, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
+import { useOutbox } from '../lib/useOutbox'
 import { Badge } from './ui'
 
-const roleLabel: Record<string, string> = {
-  admin: 'Администратор',
-  operator: 'Оператор',
-  viewer: 'Наблюдатель',
-  contractor: 'Подрядчик',
-}
+// Сканер тянет html5-qrcode (~300 КБ) — грузим только при открытии
+const QrScanner = lazy(() =>
+  import('./QrScanner').then((module) => ({ default: module.QrScanner })),
+)
 
 export function AppShell() {
   const { user, logout, can } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const isMap = location.pathname === '/'
+  const { pending, online, syncing, sync } = useOutbox()
+  const [scanOpen, setScanOpen] = useState(false)
 
   const handleLogout = async () => {
     await logout()
@@ -31,7 +33,7 @@ export function AppShell() {
         <div className="mx-auto flex w-full max-w-6xl items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
           <div className="flex shrink-0 items-center gap-2">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/15 text-lg">⚡</span>
-            <div className="hidden leading-tight md:block">
+            <div className="hidden leading-tight lg:block">
               <div className="text-[15px] font-semibold">Карьер</div>
               <div className="text-[11px] text-ink3">электроснабжение</div>
             </div>
@@ -44,8 +46,11 @@ export function AppShell() {
             <NavLink to="/registry" className={link}>
               Реестр
             </NavLink>
-            <NavLink to="/status" className={link}>
-              Статус
+            <NavLink to="/inspections" className={link}>
+              Обход
+            </NavLink>
+            <NavLink to="/defects" className={link}>
+              Дефекты
             </NavLink>
             {can('settings.edit') && (
               <NavLink to="/types" className={link}>
@@ -62,24 +67,42 @@ export function AppShell() {
                 Журнал
               </NavLink>
             )}
-            <NavLink to="/profile" className={link}>
-              Профиль
-            </NavLink>
           </nav>
 
-          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-            <div className="hidden text-right leading-tight lg:block">
-              <div className="text-[13px] font-medium">{user?.full_name}</div>
-              <div className="text-[11px] text-ink3">
-                таб. {user?.tab_no} · {roleLabel[user?.role ?? ''] ?? user?.role}
-              </div>
-            </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost h-9 w-9 p-0 text-[15px]"
+              title="Сканировать QR"
+              onClick={() => setScanOpen(true)}
+            >
+              ▣
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void sync()}
+              className={`hidden h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] sm:flex ${
+                !online
+                  ? 'border-warm/40 bg-warm/10 text-warm'
+                  : pending > 0
+                    ? 'border-accent/40 bg-accent/10 text-accent'
+                    : 'border-line text-ink2'
+              }`}
+              title={online ? 'Синхронизировать' : 'Нет сети'}
+            >
+              {syncing ? '↻ синхронизация' : online ? (pending > 0 ? `↑ ${pending}` : '✓ синхронно') : `офлайн · ${pending}`}
+            </button>
+
             <span className="hidden sm:inline-flex">
               {user?.mfa_enabled ? <Badge tone="ok">2FA</Badge> : <Badge tone="warm">без 2FA</Badge>}
             </span>
+            <NavLink to="/profile" className="btn-ghost h-9 px-2.5 text-[12px]">
+              {user?.tab_no}
+            </NavLink>
             <button
               type="button"
-              className="btn-ghost h-9 px-2.5 text-[12px] sm:h-10 sm:px-3 sm:text-[13px]"
+              className="btn-ghost h-9 px-2.5 text-[12px]"
               onClick={handleLogout}
             >
               Выйти
@@ -91,6 +114,19 @@ export function AppShell() {
       <main className={isMap ? 'relative min-h-0 flex-1' : 'mx-auto w-full max-w-6xl flex-1 px-4 py-6'}>
         <Outlet />
       </main>
+
+      {scanOpen ? (
+        <Suspense fallback={null}>
+          <QrScanner
+            open={scanOpen}
+            onClose={() => setScanOpen(false)}
+            onScanned={(assetId) => {
+              setScanOpen(false)
+              navigate(`/asset/${assetId}`)
+            }}
+          />
+        </Suspense>
+      ) : null}
     </div>
   )
 }

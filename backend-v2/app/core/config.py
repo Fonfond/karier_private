@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     MAX_DOCUMENT_MB: int = 25
     DOCUMENT_URL_TTL_MIN: int = 30
 
+    # --- хранилище медиа ---
+    # auto → vercel_blob при наличии токена, иначе local
+    STORAGE_BACKEND: str = "auto"
+    MEDIA_DIR: str = "var/media"
+    MAX_PHOTO_MB: int = 15
+    BLOB_READ_WRITE_TOKEN: str = ""
+    BLOB_PUBLIC_BASE: str = ""
+    MEDIA_URL_TTL_MIN: int = 120
+
     # --- разработка ---
     # Показывать OTP-код в ответе API (только для стенда без Telegram-бота).
     EXPOSE_OTP_CODE: bool = True
