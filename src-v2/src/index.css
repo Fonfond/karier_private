@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-ink;
+    /* Поле: крупный шрифт и отсутствие «прыжков» при появлении клавиатуры */
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
+  }
+
+  ::selection {
+    @apply bg-accent/30;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+
+  input,
+  button,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-card border border-line bg-surface1 p-5;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[13px] font-medium text-ink2;
+  }
+
+  .input {
+    @apply h-12 w-full rounded-xl border border-line bg-surface2 px-4 text-[15px] text-ink
+           placeholder:text-ink3 focus:border-accent focus:outline-none;
+  }
+
+  .input-mono {
+    @apply font-mono tracking-[0.18em];
+  }
+
+  .btn {
+    @apply inline-flex h-12 items-center justify-center gap-2 rounded-xl px-4 text-[15px]
+           font-semibold transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-accent text-[#08131F] hover:brightness-110;
+  }
+
+  .btn-ghost {
+    @apply btn border border-line bg-transparent text-ink hover:bg-surface2;
+  }
+
+  .btn-danger {
+    @apply btn border border-bad/40 bg-bad/10 text-bad hover:bg-bad/20;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-[12px] text-ink2;
+  }
+
+  .hint {
+    @apply text-[13px] leading-relaxed text-ink2;
+  }
+
+  .error-box {
+    @apply rounded-xl border border-bad/40 bg-bad/10 px-4 py-3 text-[13px] text-bad;
+  }
+
+  .success-box {
+    @apply rounded-xl border border-ok/40 bg-ok/10 px-4 py-3 text-[13px] text-ok;
+  }
+}

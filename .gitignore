@@ -1,18 +1,34 @@
 # Зависимости
 node_modules/
+venv/
+.venv/
+backend-v2/venv/
 
 # Сборка
 dist/
 build/
+src-v2/dist/
 
 # Логи
 *.log
 npm-debug.log*
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
 # Переменные окружения
 .env
 .env.local
 .env.*.local
+
+# Рабочие каталоги и кэши стенда
+.tmp/
+.npm-cache/
+.probe*.py
+backend-v2/scripts/smoke-result.txt
 
 # Редакторы и ОС
 .vscode/

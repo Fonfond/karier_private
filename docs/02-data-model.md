@@ -182,7 +182,7 @@ erDiagram
 | Колонка | Тип | Примечание |
 |---|---|---|
 | `id` | uuid PK | |
-| `code` | text UNIQUE | `substation`, `dgu`, `ktp`, `yaku`, `bku`, `ksr`, `rp`, `disconnector`, `cell`, `mast`, `pump`, `cuckoo`, `pole`, `transformer`… |
+| `code` | text UNIQUE | `substation`, `bkru`, `ksr`, `yaku`, `yaku_1t`, `ktp`, `dmo`, `dmp`, `bmp`, `gen_petrol`, `gen_diesel`, `dgu`, `ekg`, `cuckoo`, `pump`, `pole`, `disconnector`, `cell`, `mast`, `cable`… |
 | `name` | text | «Комплектная трансформаторная подстанция» |
 | `category` | text (`source`,`line`,`equipment`,`mobile`,`lighting`,`aux`,`pole`) | влияет на иконку, фильтры и правила графа |
 | `icon`, `color` | text | для карты и легенды |
@@ -193,6 +193,31 @@ erDiagram
 | `sort_order` | int | |
 
 Справочник **редактируемый админом** (добавить тип без релиза) — но с валидацией и записью в аудит.
+
+Примеры `attr_schema` (JSON-Schema, проверяется на API):
+
+```jsonc
+// gen_diesel / gen_petrol / cuckoo — мобильные и стационарные генераторы
+{ "power_kw": {"type":"number","minimum":0},
+  "power_kva": {"type":"number"},
+  "fuel": {"enum":["diesel","petrol"]},
+  "tank_l": {"type":"number"},
+  "fuel_rate_lph": {"type":"number"},
+  "engine_hours": {"type":"number"} }
+
+// ekg — экскаватор
+{ "bucket_m3": {"type":"number"},
+  "drive": {"enum":["electric","diesel_electric","hydraulic"]},
+  "supply_voltage_kv": {"enum":[0.4, 6, 10]} }
+
+// ktp — комплектная трансформаторная подстанция
+{ "power_kva": {"type":"number"},
+  "voltage_in_kv": {"type":"number"},
+  "voltage_out_kv": {"type":"number"},
+  "outgoing_count": {"type":"integer"} }
+```
+
+Обязательные атрибуты задаются в `asset_types.required_attrs`; при сохранении объекта API возвращает `validation.failed` с перечнем отсутствующих полей. Новые типы (ДМО, ДМП, БМП и любые будущие) добавляются через админку: код, название, категория, иконка, шаблон портов, схема атрибутов.
 
 ### 3.4 `gis.assets` — объект (узел графа)
 
