@@ -1,14 +1,16 @@
-/** Отправка офлайн-очереди на сервер. */
+/** Отправка офлайн-очереди: REST для обходов/фото, push для статусов и перемещений. */
 
 import { mapId, markFailed, getBlob, listOps, removeOp, resolveId } from './outbox'
 import type { OutboxOp } from './outbox'
 import { opsApi } from './opsApi'
 import type { PhotoResult } from './photo'
+import { deviceId, syncApi } from './syncApi'
 
 export interface SyncResult {
   sent: number
   failed: number
   remaining: number
+  conflicts: number
 }
 
 interface PhotoPayloadMeta {
@@ -32,7 +34,8 @@ function restorePhoto(blob: Blob, meta: PhotoPayloadMeta): PhotoResult {
   }
 }
 
-async function processOp(op: OutboxOp): Promise<void> {
+/** Результат одной операции: сколько конфликтов она породила. */
+async function processOp(op: OutboxOp): Promise<{ conflicts: number }> {
   const payload = op.payload as Record<string, any>
 
   if (op.kind === 'inspection_create') {
@@ -42,7 +45,7 @@ async function processOp(op: OutboxOp): Promise<void> {
       asset_ids: payload.asset_ids ?? [],
     })
     await mapId(payload.tempId ?? op.id, created.id)
-    return
+    return { conflicts: 0 }
   }
 
   if (op.kind === 'inspection_item') {
@@ -52,7 +55,7 @@ async function processOp(op: OutboxOp): Promise<void> {
       result: payload.result,
       comment: payload.comment ?? undefined,
     })
-    return
+    return { conflicts: 0 }
   }
 
   if (op.kind === 'inspection_submit') {
@@ -61,15 +64,14 @@ async function processOp(op: OutboxOp): Promise<void> {
       await opsApi.submitInspection(inspectionId)
     } catch (error) {
       const message = error instanceof Error ? error.message : ''
-      // обход уже отправлен — не считаем ошибкой
       if (!message.includes('409')) throw error
     }
-    return
+    return { conflicts: 0 }
   }
 
   if (op.kind === 'media') {
     const blob = await getBlob(op.id)
-    if (!blob) return
+    if (!blob) return { conflicts: 0 }
     await opsApi.uploadPhoto(
       payload.assetId,
       restorePhoto(blob, payload.meta),
@@ -79,7 +81,7 @@ async function processOp(op: OutboxOp): Promise<void> {
         defectId: payload.defectId ? await resolveId(payload.defectId) : undefined,
       },
     )
-    return
+    return { conflicts: 0 }
   }
 
   if (op.kind === 'defect') {
@@ -102,20 +104,53 @@ async function processOp(op: OutboxOp): Promise<void> {
       inspection_id: payload.inspectionId ? await resolveId(payload.inspectionId) : undefined,
       photo_before_id: photoId,
     })
-    return
+    return { conflicts: 0 }
   }
+
+  if (op.kind === 'asset_move') {
+    await syncApi.move(payload.assetId, {
+      x: payload.x,
+      y: payload.y,
+      note: payload.note ?? undefined,
+      client_ts: payload.client_ts ?? op.createdAt,
+      source: 'offline',
+    })
+    return { conflicts: 0 }
+  }
+
+  if (op.kind === 'asset_update') {
+    const response = await syncApi.push(deviceId(), [
+      {
+        op_id: op.id,
+        entity: 'asset',
+        entity_id: payload.assetId,
+        op: 'update',
+        patch: payload.patch ?? {},
+        base_version: payload.base_version ?? null,
+        client_ts: payload.client_ts ?? op.createdAt,
+      },
+    ])
+    const result = response.results[0]
+    if (result?.status === 'rejected') {
+      throw new Error(result.message ?? 'Операция отклонена сервером')
+    }
+    return { conflicts: result?.status === 'conflict_won' || result?.status === 'conflict_lost' ? 1 : 0 }
+  }
+
+  return { conflicts: 0 }
 }
 
 /** Последовательно отправить очередь. Останавливается на первой сетевой ошибке. */
 export async function syncOutbox(): Promise<SyncResult> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
     const remaining = (await listOps()).length
-    return { sent: 0, failed: 0, remaining }
+    return { sent: 0, failed: 0, remaining, conflicts: 0 }
   }
 
   const ops = await listOps()
   let sent = 0
   let failed = 0
+  let conflicts = 0
 
   for (const op of ops) {
     if (op.attempts >= 5) {
@@ -123,7 +158,8 @@ export async function syncOutbox(): Promise<SyncResult> {
       continue
     }
     try {
-      await processOp(op)
+      const outcome = await processOp(op)
+      conflicts += outcome.conflicts
       await removeOp(op.id)
       sent += 1
     } catch (error) {
@@ -136,5 +172,19 @@ export async function syncOutbox(): Promise<SyncResult> {
   }
 
   const remaining = (await listOps()).length
-  return { sent, failed, remaining }
+  return { sent, failed, remaining, conflicts }
+}
+
+/** Попросить браузер разбудить приложение, когда появится сеть. */
+export async function registerBackgroundSync(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+  try {
+    const registration = await navigator.serviceWorker.ready
+    const syncManager = (registration as ServiceWorkerRegistration & {
+      sync?: { register: (tag: string) => Promise<void> }
+    }).sync
+    await syncManager?.register('karier-outbox')
+  } catch {
+    // Background Sync не поддерживается — работаем по событию online
+  }
 }

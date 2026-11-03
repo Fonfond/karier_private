@@ -8,6 +8,9 @@ import { Alert, Badge } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetBrief, AssetType, MapLayer, TopologyGraph } from '../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
+import { enqueue } from '../lib/outbox'
+import { syncOutbox } from '../lib/sync'
+import { syncApi } from '../lib/syncApi'
 
 // Схема нужна реже карты: грузим React Flow отдельным чанком
 const SchemaView = lazy(() =>
@@ -66,6 +69,12 @@ export function MapPage() {
   const [linkMark, setLinkMark] = useState('')
   const [linkLength, setLinkLength] = useState('')
   const [linkType, setLinkType] = useState('cable')
+
+  const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
+  const [moveDraft, setMoveDraft] = useState<{ x: number; y: number } | null>(null)
+  const [moveNote, setMoveNote] = useState('')
+  const [moveHistory, setMoveHistory] = useState<Array<{ x: number; y: number }>>([])
+  const [moveSaving, setMoveSaving] = useState(false)
 
   const isAdmin = can('asset.create')
   const canSwitch = can('asset.status.edit')
@@ -128,12 +137,35 @@ export function MapPage() {
   }, [assets, category])
 
   const openAsset = (id: string) => {
+    if (movingAsset) return
     if (connecting) {
       void openConnectPicker(id)
       return
     }
     setSelectedId(id)
     setSheetOpen(true)
+    void gisApi
+      .asset(id)
+      .then((detail) => {
+        if (!detail.is_mobile) {
+          setMoveHistory([])
+          return
+        }
+        return syncApi.moves(id).then((data) => {
+          setMoveHistory(
+            data.items
+              .slice()
+              .reverse()
+              .flatMap((move) => {
+                const points: Array<{ x: number; y: number }> = []
+                if (move.from_x !== null && move.from_y !== null) points.push({ x: move.from_x, y: move.from_y })
+                points.push({ x: move.to_x, y: move.to_y })
+                return points
+              }),
+          )
+        })
+      })
+      .catch(() => setMoveHistory([]))
   }
 
   const openConnectPicker = async (id: string) => {
@@ -219,6 +251,12 @@ export function MapPage() {
     const rx = Math.round(x * 10) / 10
     const ry = Math.round(y * 10) / 10
 
+    if (movingAsset) {
+      setMoveDraft({ x: rx, y: ry })
+      setSheetOpen(true)
+      return
+    }
+
     if (placeAssetId) {
       try {
         await gisApi.update(placeAssetId, { x: rx, y: ry })
@@ -237,6 +275,32 @@ export function MapPage() {
     setFormPower('')
     setFormLocation('')
     setFormType(types[0]?.code ?? 'ktp')
+  }
+
+  const submitMove = async () => {
+    if (!movingAsset || !moveDraft) return
+    setMoveSaving(true)
+    setError(null)
+    try {
+      await enqueue('asset_move', {
+        assetId: movingAsset.id,
+        x: moveDraft.x,
+        y: moveDraft.y,
+        note: moveNote.trim() || undefined,
+        client_ts: new Date().toISOString(),
+      })
+      await syncOutbox()
+      await refresh()
+      setMoveHistory((prev) => [...prev, { x: moveDraft.x, y: moveDraft.y }])
+      setMovingAsset(null)
+      setMoveDraft(null)
+      setMoveNote('')
+      setSheetOpen(false)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить перемещение')
+    } finally {
+      setMoveSaving(false)
+    }
   }
 
   const submitCreate = async () => {
@@ -287,9 +351,10 @@ export function MapPage() {
             assets={filtered}
             selectedId={selectedId}
             onSelect={openAsset}
-            adding={adding || Boolean(placeAssetId)}
+            adding={adding || Boolean(placeAssetId) || Boolean(movingAsset)}
             onMapClick={handleMapClick}
-            draft={draft}
+            draft={draft ?? moveDraft}
+            history={moveHistory}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-ink2">
@@ -368,6 +433,26 @@ export function MapPage() {
           </div>
         ) : null}
 
+        {movingAsset ? (
+          <div className="pointer-events-auto mt-2 flex items-center justify-between gap-3 rounded-xl border border-warm/40 bg-warm/10 px-3 py-2 text-[13px] text-warm backdrop-blur">
+            <span>
+              {moveDraft
+                ? `Перемещение ${movingAsset.code}: X ${moveDraft.x} м, Y ${moveDraft.y} м`
+                : `Куда переставить «${movingAsset.code}»? Кликните по карте`}
+            </span>
+            <button
+              type="button"
+              className="text-[12px] underline"
+              onClick={() => {
+                setMovingAsset(null)
+                setMoveDraft(null)
+              }}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : null}
+
         {adding ? (
           <div className="pointer-events-auto mt-2 flex items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-[13px] text-accent backdrop-blur">
             <span>
@@ -433,7 +518,7 @@ export function MapPage() {
 
       {/* карточка объекта */}
       <BottomSheet
-        open={sheetOpen && !draft && !connectAssetId}
+        open={sheetOpen && !draft && !connectAssetId && !moveDraft}
         onClose={() => {
           setSheetOpen(false)
           setSelectedId(null)
@@ -447,8 +532,69 @@ export function MapPage() {
             canManage={can('asset.create')}
             canSwitch={canSwitch}
             canManageDocs={canManageDocs}
+            onMove={
+              can('asset.move')
+                ? (asset) => {
+                    setMovingAsset(asset)
+                    setMoveDraft(null)
+                    setSheetOpen(false)
+                  }
+                : undefined
+            }
           />
         ) : null}
+      </BottomSheet>
+
+      {/* форма перемещения «кукушки» */}
+      <BottomSheet
+        open={Boolean(moveDraft) && Boolean(movingAsset)}
+        onClose={() => {
+          setMoveDraft(null)
+          setMovingAsset(null)
+        }}
+        title={movingAsset ? `Перемещение · ${movingAsset.code}` : 'Перемещение'}
+      >
+        <div className="space-y-3">
+          <div className="rounded-xl bg-surface2/60 px-3 py-2 text-[13px]">
+            <div className="text-ink3">Новое положение</div>
+            <div className="mt-0.5">
+              X {moveDraft?.x} м · Y {moveDraft?.y} м
+            </div>
+          </div>
+          <label className="block">
+            <span className="label">Куда переставили / причина</span>
+            <input
+              className="input"
+              value={moveNote}
+              onChange={(e) => setMoveNote(e.target.value)}
+              placeholder="Гор. +85, у водоотлива"
+            />
+          </label>
+          {error ? <Alert kind="error">{error}</Alert> : null}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="btn-primary flex-1"
+              disabled={moveSaving}
+              onClick={() => void submitMove()}
+            >
+              {moveSaving ? 'Сохраняем…' : 'Переместить'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                setMoveDraft(null)
+                setMovingAsset(null)
+              }}
+            >
+              Отмена
+            </button>
+          </div>
+          <p className="text-[11px] text-ink3">
+            Перемещение сохраняется в истории объекта; без сети уйдёт при появлении связи.
+          </p>
+        </div>
       </BottomSheet>
 
       {/* выбор порта при соединении */}

@@ -11,6 +11,8 @@ from app.api.routers import (
     inspections,
     me,
     media,
+    moves,
+    sync,
 )
 
 __all__ = [
@@ -24,4 +26,6 @@ __all__ = [
     "inspections",
     "me",
     "media",
+    "moves",
+    "sync",
 ]

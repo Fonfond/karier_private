@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import L from 'leaflet'
-import { ImageOverlay, MapContainer, Marker, useMap, useMapEvents } from 'react-leaflet'
+import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
 import { STATUS_COLOR } from '../../lib/gis'
 
@@ -12,6 +12,7 @@ interface MapViewProps {
   adding: boolean
   onMapClick: (x: number, y: number) => void
   draft: { x: number; y: number } | null
+  history?: Array<{ x: number; y: number }>
 }
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
@@ -86,11 +87,13 @@ export function MapView({
   adding,
   onMapClick,
   draft,
+  history,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
     [layer.bounds[0][0], layer.bounds[0][1]],
     [layer.bounds[1][0], layer.bounds[1][1]],
   )
+  const historyPoints: Array<[number, number]> = (history ?? []).map((point) => [point.y, point.x])
 
   return (
     <MapContainer
@@ -121,6 +124,20 @@ export function MapView({
           />
         ),
       )}
+
+      {historyPoints.length > 1 ? (
+        <>
+          <Polyline positions={historyPoints} pathOptions={{ color: '#F5A524', weight: 2, dashArray: '6 6' }} />
+          {historyPoints.map((point, index) => (
+            <CircleMarker
+              key={`move-${index}`}
+              center={point}
+              radius={4}
+              pathOptions={{ color: '#F5A524', fillColor: '#F5A524', fillOpacity: 0.6, weight: 1 }}
+            />
+          ))}
+        </>
+      ) : null}
 
       {draft ? <Marker position={[draft.y, draft.x]} icon={draftIcon} interactive={false} /> : null}
     </MapContainer>

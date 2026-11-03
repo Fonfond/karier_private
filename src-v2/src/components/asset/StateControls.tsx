@@ -3,6 +3,8 @@ import { Alert } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { AssetOut } from '../../lib/gis'
 import { gisApi } from '../../lib/gis'
+import { enqueue } from '../../lib/outbox'
+import { syncOutbox } from '../../lib/sync'
 
 interface Props {
   asset: AssetOut
@@ -25,6 +27,28 @@ export function StateControls({ asset, onChanged, compact = false }: Props) {
     setBusy(true)
     setError(null)
     setNotice(null)
+
+    const patch: Record<string, unknown> = {}
+    if (payload.status) patch.status = payload.status
+    if (payload.grounded !== undefined) patch.grounded = payload.grounded
+
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine
+    if (offline) {
+      await enqueue('asset_update', {
+        assetId: asset.id,
+        patch,
+        base_version: asset.version,
+        client_ts: new Date().toISOString(),
+        reason: payload.reason,
+      })
+      onChanged({ ...asset, ...patch } as AssetOut)
+      setNotice('Нет сети: изменение сохранено на устройстве и уйдёт автоматически')
+      setAskGround(false)
+      setReason('')
+      setBusy(false)
+      return
+    }
+
     try {
       const result = await gisApi.setState(asset.id, payload)
       onChanged(result.asset)
@@ -39,9 +63,21 @@ export function StateControls({ asset, onChanged, compact = false }: Props) {
       setAskGround(false)
       setReason('')
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось изменить состояние')
+      if (err instanceof ApiError && err.status >= 500) {
+        await enqueue('asset_update', {
+          assetId: asset.id,
+          patch,
+          base_version: asset.version,
+          client_ts: new Date().toISOString(),
+          reason: payload.reason,
+        })
+        setNotice('Сервер недоступен: изменение сохранено на устройстве')
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Не удалось изменить состояние')
+      }
     } finally {
       setBusy(false)
+      void syncOutbox()
     }
   }
 

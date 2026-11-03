@@ -2,7 +2,14 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 
-export type OpKind = 'inspection_create' | 'inspection_item' | 'inspection_submit' | 'defect' | 'media'
+export type OpKind =
+  | 'inspection_create'
+  | 'inspection_item'
+  | 'inspection_submit'
+  | 'defect'
+  | 'media'
+  | 'asset_move'
+  | 'asset_update'
 
 export interface OutboxOp {
   id: string

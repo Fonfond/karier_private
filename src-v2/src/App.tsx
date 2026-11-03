@@ -14,6 +14,7 @@ import { MfaPage } from './pages/MfaPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { RegisterPage } from './pages/RegisterPage'
 import { RegistryPage } from './pages/RegistryPage'
+import { SyncPage } from './pages/SyncPage'
 import { TypesPage } from './pages/TypesPage'
 
 export default function App() {
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/registry" element={<RegistryPage />} />
         <Route path="/inspections" element={<InspectionPage />} />
         <Route path="/defects" element={<DefectsPage />} />
+        <Route path="/sync" element={<SyncPage />} />
         <Route path="/status" element={<HomePage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route

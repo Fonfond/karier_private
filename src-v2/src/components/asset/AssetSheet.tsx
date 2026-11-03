@@ -16,6 +16,7 @@ interface Props {
   canManage: boolean
   canSwitch: boolean
   canManageDocs: boolean
+  onMove?: (asset: AssetOut) => void
 }
 
 type Tab = 'passport' | 'photos' | 'docs' | 'history'
@@ -38,7 +39,7 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'history', label: 'История' },
 ]
 
-export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs }: Props) {
+export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs, onMove }: Props) {
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [path, setPath] = useState<PowerPath | null>(null)
   const [children, setChildren] = useState<ChildAsset[]>([])
@@ -103,6 +104,16 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             {asset.is_mobile ? <Badge tone="accent">мобильный</Badge> : null}
           </div>
         </div>
+        {onMove && asset.is_mobile ? (
+          <button
+            type="button"
+            className="btn-primary h-9 px-2.5 text-[12px]"
+            title="Переместить объект"
+            onClick={() => onMove(asset)}
+          >
+            🚚
+          </button>
+        ) : null}
         <button
           type="button"
           className="btn-ghost h-9 w-9 shrink-0 p-0 text-[13px]"
@@ -217,6 +228,11 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           ) : null}
 
           <div className="flex flex-wrap gap-2 pt-1">
+            {onMove && asset.is_mobile ? (
+              <button type="button" className="btn-primary h-10 px-3 text-[13px]" onClick={() => onMove(asset)}>
+                🚚 Переместить
+              </button>
+            ) : null}
             {children.length > 0 ? (
               <button type="button" className="btn-primary h-10 px-3 text-[13px]" onClick={() => setShowChildren(true)}>
                 Внутренняя схема · {children.length}

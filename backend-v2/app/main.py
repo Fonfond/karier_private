@@ -21,6 +21,8 @@ from app.api.routers import (
     inspections,
     me,
     media,
+    moves,
+    sync,
 )
 from app.core.config import settings
 from app.core.errors import ApiError, api_error_handler, problem_response
@@ -91,6 +93,8 @@ app.include_router(documents.router, prefix=api)
 app.include_router(media.router, prefix=api)
 app.include_router(inspections.router, prefix=api)
 app.include_router(defects.router, prefix=api)
+app.include_router(moves.router, prefix=api)
+app.include_router(sync.router, prefix=api)
 
 
 @app.get("/", tags=["health"])

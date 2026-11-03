@@ -14,7 +14,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const isMap = location.pathname === '/'
-  const { pending, online, syncing, sync } = useOutbox()
+  const { pending, online, syncing } = useOutbox()
   const [scanOpen, setScanOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -79,9 +79,8 @@ export function AppShell() {
               ▣
             </button>
 
-            <button
-              type="button"
-              onClick={() => void sync()}
+            <NavLink
+              to="/sync"
               className={`hidden h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] sm:flex ${
                 !online
                   ? 'border-warm/40 bg-warm/10 text-warm'
@@ -89,10 +88,10 @@ export function AppShell() {
                     ? 'border-accent/40 bg-accent/10 text-accent'
                     : 'border-line text-ink2'
               }`}
-              title={online ? 'Синхронизировать' : 'Нет сети'}
+              title={online ? 'Синхронизация' : 'Нет сети'}
             >
               {syncing ? '↻ синхронизация' : online ? (pending > 0 ? `↑ ${pending}` : '✓ синхронно') : `офлайн · ${pending}`}
-            </button>
+            </NavLink>
 
             <span className="hidden sm:inline-flex">
               {user?.mfa_enabled ? <Badge tone="ok">2FA</Badge> : <Badge tone="warm">без 2FA</Badge>}

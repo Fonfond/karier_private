@@ -52,6 +52,18 @@
 | Дефекты | создание, список с фильтрами, закрытие только с `photo_after_id` (иначе 422) |
 | История | `GET /api/assets/{id}/history` — обходы, дефекты, фото, переключения |
 
+### Спринт 5: синхронизация и перемещения
+
+| Блок | Детали |
+|---|---|
+| Журнал | `ops.change_log` + триггеры на `gis.assets`, `gis.links`, `ops.defects` (автор из `karier.actor_id`) |
+| Идемпотентность | `ops.sync_ops` по `op_id`; повторный push возвращает `duplicate` |
+| Push | `POST /api/sync/push` — до 200 операций, результат и `server_seq` |
+| Pull | `GET /api/sync/pull?since=&limit=` — дельта с курсором |
+| Конфликты | `ops.conflicts`; LWW по `client_ts` против `updated_at`, оба исхода фиксируются |
+| Перемещения | `gis.asset_moves`, `POST /api/assets/{id}/move`, `GET /api/assets/{id}/moves` |
+| Проверка | `pytest` — 44 теста, включая идемпотентность, LWW и сохранение графа после перемещения |
+
 ## Структура
 
 ```
@@ -68,10 +80,11 @@ backend-v2/
 ├── alembic/versions/0002_sprint2_gis.py
 ├── alembic/versions/0003_sprint3_topology.py
 ├── alembic/versions/0004_sprint4_ops.py
+├── alembic/versions/0005_sprint5_sync.py
 ├── scripts/
 │   ├── smoke.ps1       # сквозной тест через HTTP (26 проверок)
 │   └── smoke-result.txt
-├── tests/              # pytest: 35 тестов (auth, реестр, топология, обходы/дефекты)
+├── tests/              # pytest: 44 теста (auth, реестр, топология, обходы, синхронизация)
 ├── seed.py
 ├── requirements.txt
 └── .env / .env.example
