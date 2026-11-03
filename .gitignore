@@ -42,3 +42,6 @@ Thumbs.db
 # 2.js
 .env
 .env.local
+
+# —борка TypeScript
+*.tsbuildinfo
