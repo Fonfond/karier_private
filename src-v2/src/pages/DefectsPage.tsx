@@ -5,6 +5,7 @@ import { Alert, Badge, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { Defect } from '../lib/opsApi'
 import { DEFECT_STATUS_LABEL, SEVERITY_COLOR, SEVERITY_LABEL, opsApi } from '../lib/opsApi'
+import { openExport } from '../lib/dashboard'
 import type { PhotoResult } from '../lib/photo'
 
 const STATUS_TONE: Record<string, 'ok' | 'bad' | 'warm' | 'accent' | 'neutral'> = {
@@ -99,6 +100,15 @@ export function DefectsPage() {
         <span className="ml-auto text-[12px] text-ink3">
           всего {items.length} · открытых {stats.open} · критичных {stats.critical}
         </span>
+        {can('report.export') ? (
+          <button
+            type="button"
+            className="btn-ghost h-10 px-3 text-[12px]"
+            onClick={() => void openExport('defects')}
+          >
+            ⬇ Excel
+          </button>
+        ) : null}
       </div>
 
       <div className="space-y-2">

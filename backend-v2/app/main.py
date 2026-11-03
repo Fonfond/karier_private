@@ -22,6 +22,7 @@ from app.api.routers import (
     me,
     media,
     moves,
+    reports,
     sync,
 )
 from app.core.config import settings
@@ -37,6 +38,14 @@ logger = logging.getLogger("karier.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Karier API запущен: env=%s", settings.ENV)
+    if not settings.is_dev and not settings.COOKIE_SECURE:
+        logger.warning(
+            "ENV=%s, но COOKIE_SECURE=false — refresh-cookie будет передаваться по HTTP. "
+            "Для продакшена выставьте COOKIE_SECURE=true",
+            settings.ENV,
+        )
+    if not settings.is_dev and settings.SECRET_KEY.startswith("dev-"):
+        logger.warning("SECRET_KEY выглядит как дев-значение — замените его перед продакшеном")
     yield
     logger.info("Karier API остановлен")
 
@@ -64,6 +73,24 @@ app.add_middleware(
 app.add_middleware(AuditMiddleware)
 
 app.add_exception_handler(ApiError, api_error_handler)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Базовые защитные заголовки для API и отдаваемых файлов."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    # SAMEORIGIN, а не DENY: PDF-паспорт и фото открываются в iframe того же домена
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault(
+        "Permissions-Policy", "geolocation=(self), camera=(self), microphone=()"
+    )
+    if not settings.is_dev:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -95,6 +122,7 @@ app.include_router(inspections.router, prefix=api)
 app.include_router(defects.router, prefix=api)
 app.include_router(moves.router, prefix=api)
 app.include_router(sync.router, prefix=api)
+app.include_router(reports.router, prefix=api)
 
 
 @app.get("/", tags=["health"])

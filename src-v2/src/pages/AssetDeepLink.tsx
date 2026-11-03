@@ -7,8 +7,8 @@ export function AssetDeepLink() {
   const navigate = useNavigate()
 
   useEffect(() => {
-    if (id) navigate('/', { replace: true, state: { openAssetId: id } })
-    else navigate('/', { replace: true })
+    if (id) navigate('/map', { replace: true, state: { openAssetId: id } })
+    else navigate('/map', { replace: true })
   }, [id, navigate])
 
   return null

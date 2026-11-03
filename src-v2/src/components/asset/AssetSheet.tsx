@@ -9,6 +9,7 @@ import { PhotosTab } from './PhotosTab'
 import { HistoryTab } from './HistoryTab'
 import { ChildrenModal } from './ChildrenModal'
 import { QrModal } from '../QrModal'
+import { openExport } from '../../lib/dashboard'
 
 interface Props {
   assetId: string
@@ -233,6 +234,13 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
                 🚚 Переместить
               </button>
             ) : null}
+            <button
+              type="button"
+              className="btn-ghost h-10 px-3 text-[13px]"
+              onClick={() => void openExport('passport', asset.id)}
+            >
+              ⬇ Паспорт (PDF)
+            </button>
             {children.length > 0 ? (
               <button type="button" className="btn-primary h-10 px-3 text-[13px]" onClick={() => setShowChildren(true)}>
                 Внутренняя схема · {children.length}

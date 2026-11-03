@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     MAX_DOCUMENT_MB: int = 25
     DOCUMENT_URL_TTL_MIN: int = 30
 
+    # --- отчёты ---
+    EXPORT_URL_TTL_MIN: int = 30
+    # Публичный адрес фронтенда — нужен для QR в паспорте объекта
+    PUBLIC_BASE_URL: str = "http://localhost:5174"
+    # Путь к TTF с кириллицей; если пусто — ищем в системе
+    PDF_FONT_PATH: str = ""
+
     # --- хранилище медиа ---
     # auto → vercel_blob при наличии токена, иначе local
     STORAGE_BACKEND: str = "auto"

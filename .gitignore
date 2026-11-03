@@ -51,3 +51,7 @@ backend-v2/var/
 
 # Медиа стенда
 backend-v2/var/media/
+
+# Сборка и кэши тестов
+.pytest_cache/
+coverage/

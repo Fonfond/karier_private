@@ -5,6 +5,7 @@ import { Alert, Badge, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetBrief, AssetType } from '../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
+import { openExport } from '../lib/dashboard'
 
 type SortKey = 'code' | 'name' | 'type' | 'status' | 'x' | 'y'
 
@@ -138,6 +139,15 @@ export function RegistryPage() {
             ))}
           </select>
         </label>
+        {can('report.export') ? (
+          <button
+            type="button"
+            className="btn-ghost h-10 px-3 text-[12px]"
+            onClick={() => void openExport('assets')}
+          >
+            ⬇ Excel
+          </button>
+        ) : null}
         <span className="ml-auto text-[12px] text-ink3">Показано {rows.length} из {items.length}</span>
       </div>
 
@@ -183,7 +193,7 @@ export function RegistryPage() {
                     <button
                       type="button"
                       className="btn-ghost h-8 px-2.5 text-[12px]"
-                      onClick={() => navigate('/', { state: { openAssetId: item.id } })}
+                      onClick={() => navigate('/map', { state: { openAssetId: item.id } })}
                     >
                       На карте
                     </button>
@@ -191,7 +201,7 @@ export function RegistryPage() {
                       <button
                         type="button"
                         className="btn-ghost h-8 px-2.5 text-[12px]"
-                        onClick={() => navigate('/', { state: { placeAssetId: item.id } })}
+                        onClick={() => navigate('/map', { state: { placeAssetId: item.id } })}
                       >
                         {item.x === null ? 'Разместить' : 'Переместить'}
                       </button>

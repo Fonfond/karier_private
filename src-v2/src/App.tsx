@@ -5,6 +5,7 @@ import { RequireAuth, RequirePermission } from './auth/guards'
 import { AssetDeepLink } from './pages/AssetDeepLink'
 import { AuditPage } from './pages/AuditPage'
 import { DefectsPage } from './pages/DefectsPage'
+import { DashboardPage } from './pages/DashboardPage'
 import { EmployeesPage } from './pages/EmployeesPage'
 import { HomePage } from './pages/HomePage'
 import { InspectionPage } from './pages/InspectionPage'
@@ -33,7 +34,8 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route path="/" element={<MapPage />} />
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/map" element={<MapPage />} />
         <Route path="/asset/:id" element={<AssetDeepLink />} />
         <Route path="/registry" element={<RegistryPage />} />
         <Route path="/inspections" element={<InspectionPage />} />

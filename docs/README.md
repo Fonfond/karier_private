@@ -14,6 +14,7 @@
 | [`07-sprint-3-report.md`](07-sprint-3-report.md) | Спринт 3: топология, расчёт питания, схема, документы | все |
 | [`08-sprint-4-report.md`](08-sprint-4-report.md) | Спринт 4: фото с водяным знаком, обходы, дефекты, QR, офлайн-очередь | все |
 | [`09-sprint-5-report.md`](09-sprint-5-report.md) | Спринт 5: журнал изменений, push/pull, конфликты, перемещения, Service Worker | все |
+| [`10-sprint-6-7-report.md`](10-sprint-6-7-report.md) | Спринты 6–7: дашборд, Excel/PDF-отчёты, PWA, безопасность, деплой | все |
 
 ---
 

@@ -13,7 +13,7 @@ export function AppShell() {
   const { user, logout, can } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const isMap = location.pathname === '/'
+  const isMap = location.pathname === '/map'
   const { pending, online, syncing } = useOutbox()
   const [scanOpen, setScanOpen] = useState(false)
 
@@ -30,7 +30,7 @@ export function AppShell() {
   return (
     <div className="flex min-h-[100dvh] flex-col bg-bg">
       <header className="sticky top-0 z-[1300] shrink-0 border-b border-line bg-bg/95 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
           <div className="flex shrink-0 items-center gap-2">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/15 text-lg">⚡</span>
             <div className="hidden leading-tight lg:block">
@@ -41,6 +41,9 @@ export function AppShell() {
 
           <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <NavLink to="/" className={link} end>
+              Дашборд
+            </NavLink>
+            <NavLink to="/map" className={link}>
               Карта
             </NavLink>
             <NavLink to="/registry" className={link}>
@@ -54,12 +57,12 @@ export function AppShell() {
             </NavLink>
             {can('settings.edit') && (
               <NavLink to="/types" className={link}>
-                Справочник
+                Типы
               </NavLink>
             )}
             {can('employee.manage') && (
               <NavLink to="/employees" className={link}>
-                Сотрудники
+                Люди
               </NavLink>
             )}
             {can('audit.view') && (

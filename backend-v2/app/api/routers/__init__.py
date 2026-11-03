@@ -12,6 +12,7 @@ from app.api.routers import (
     me,
     media,
     moves,
+    reports,
     sync,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "me",
     "media",
     "moves",
+    "reports",
     "sync",
 ]

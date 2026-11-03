@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.core.config import settings
 
 TokenType = Literal[
-    "access", "mfa_challenge", "password_reset", "onboarding", "document", "media"
+    "access", "mfa_challenge", "password_reset", "onboarding", "document", "media", "export"
 ]
 
 # --- пароли ---------------------------------------------------------------
@@ -159,6 +159,17 @@ def create_media_token(media_id: str, *, employee_id: str) -> str:
         "media",
         timedelta(minutes=settings.MEDIA_URL_TTL_MIN),
         employee_id=employee_id,
+    )
+
+
+def create_export_token(kind: str, *, employee_id: str, asset_id: str | None = None) -> str:
+    """Короткоживущая ссылка на выгрузку (Excel/PDF) — для перехода по ссылке."""
+    return create_token(
+        kind,
+        "export",
+        timedelta(minutes=settings.EXPORT_URL_TTL_MIN),
+        employee_id=employee_id,
+        asset_id=asset_id,
     )
 
 
