@@ -6,6 +6,7 @@ import { AuditPage } from './pages/AuditPage'
 import { EmployeesPage } from './pages/EmployeesPage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
+import { MapPage } from './pages/MapPage'
 import { MfaPage } from './pages/MfaPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { RegisterPage } from './pages/RegisterPage'
@@ -26,7 +27,8 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route path="/" element={<HomePage />} />
+        <Route path="/" element={<MapPage />} />
+        <Route path="/status" element={<HomePage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route
           path="/employees"

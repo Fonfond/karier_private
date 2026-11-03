@@ -13,6 +13,7 @@ from app.models.auth import (
     role_permissions,
 )
 from app.models.base import Base
+from app.models.gis import Asset, AssetPort, AssetType, MapLayer, Pit
 
 __all__ = [
     "Base",
@@ -26,4 +27,9 @@ __all__ = [
     "RecoveryCode",
     "Role",
     "role_permissions",
+    "Pit",
+    "MapLayer",
+    "AssetType",
+    "Asset",
+    "AssetPort",
 ]

@@ -87,3 +87,66 @@
     @apply rounded-xl border border-ok/40 bg-ok/10 px-4 py-3 text-[13px] text-ok;
   }
 }
+
+/* --- карта (Leaflet, CRS.Simple) ---------------------------------------- */
+
+.leaflet-container {
+  background: #070c10;
+  font-family: inherit;
+  outline: none;
+}
+
+/* Tailwind preflight ограничивает img шириной 100% — для карты это ломает
+   масштабирование подложки, поэтому возвращаем нативное поведение Leaflet */
+.leaflet-container img {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+/* Подложка приглушена, чтобы маркеры и статусы читались и днём, и ночью */
+.karier-layer {
+  filter: brightness(0.72) saturate(0.8) contrast(1.05);
+}
+
+.karier-marker {
+  background: transparent;
+  border: 0;
+}
+
+.karier-marker__body {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  width: var(--s);
+  height: var(--s);
+  border-radius: 9999px;
+  border: 2px solid var(--ring);
+  background: color-mix(in srgb, var(--c) 22%, #0b1014);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--ring) 22%, transparent),
+    0 6px 16px rgba(0, 0, 0, 0.55);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.karier-marker:hover .karier-marker__body {
+  transform: scale(1.08);
+}
+
+.karier-marker__icon {
+  font-size: 16px;
+  line-height: 1;
+  filter: saturate(1.15);
+}
+
+.karier-marker--draft .karier-marker__body {
+  border-style: dashed;
+}
+
+/* Листовки Leaflet нам не нужны: атрибуция отключена */
+.leaflet-control-attribution {
+  display: none;
+}
+

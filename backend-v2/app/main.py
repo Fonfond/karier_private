@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware import AuditMiddleware
-from app.api.routers import audit, auth, employees, health, me
+from app.api.routers import audit, auth, employees, gis, health, me
 from app.core.config import settings
 from app.core.errors import ApiError, api_error_handler, problem_response
 
@@ -75,6 +75,7 @@ app.include_router(auth.router, prefix=api)
 app.include_router(me.router, prefix=api)
 app.include_router(employees.router, prefix=api)
 app.include_router(audit.router, prefix=api)
+app.include_router(gis.router, prefix=api)
 
 
 @app.get("/", tags=["health"])

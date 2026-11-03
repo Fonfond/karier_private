@@ -1,0 +1,499 @@
+"""Логика ГИС-реестра: объекты, порты, координаты, путь питания."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi import Request
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, selectinload
+
+from app.core.errors import ApiError, conflict, not_found
+from app.models import Asset, AssetPort, AssetType, MapLayer, Pit
+from app.schemas.gis import (
+    AssetBriefOut,
+    AssetCreate,
+    AssetOut,
+    AssetTypeCreate,
+    AssetUpdate,
+    MapLayerOut,
+    PortOut,
+    PowerPathNode,
+    PowerPathOut,
+    TypeRefOut,
+)
+
+SYNTHETIC_SOURCE = {
+    "code": "PS-356",
+    "name": "ПС-35/6 кВ «Карьер»",
+    "type_code": "substation",
+    "type_name": "Подстанция 35/6 кВ",
+}
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# --- карьер и подложка -----------------------------------------------------
+
+def get_pit(db: Session) -> Pit:
+    pit = db.scalar(select(Pit).where(Pit.is_active.is_(True)).order_by(Pit.created_at))
+    if pit is None:
+        raise ApiError(409, "gis.not_configured", "Карьер не настроен: выполните seed_gis.py")
+    return pit
+
+
+def get_active_layer(db: Session, pit_id: uuid.UUID) -> MapLayer | None:
+    return db.scalar(
+        select(MapLayer)
+        .where(MapLayer.pit_id == pit_id, MapLayer.is_active.is_(True))
+        .order_by(MapLayer.version.desc())
+    )
+
+
+def layer_size(layer: MapLayer) -> tuple[float, float]:
+    mpp = float(layer.meters_per_pixel or 0.5)
+    return layer.width_px * mpp, layer.height_px * mpp
+
+
+def layer_out(layer: MapLayer) -> MapLayerOut:
+    width_m, height_m = layer_size(layer)
+    return MapLayerOut(
+        id=layer.id,
+        name=layer.name,
+        image_url=layer.image_url,
+        width_px=layer.width_px,
+        height_px=layer.height_px,
+        meters_per_pixel=float(layer.meters_per_pixel),
+        width_m=width_m,
+        height_m=height_m,
+        # Leaflet CRS.Simple: [[0,0],[height, width]] в метрах
+        bounds=[[0.0, 0.0], [height_m, width_m]],
+        min_zoom=layer.min_zoom,
+        max_zoom=layer.max_zoom,
+        version=layer.version,
+    )
+
+
+# --- сериализация ----------------------------------------------------------
+
+def type_ref(asset_type: AssetType) -> TypeRefOut:
+    return TypeRefOut(
+        code=asset_type.code,
+        name=asset_type.name,
+        category=asset_type.category,
+        icon=asset_type.icon,
+        color=asset_type.color,
+    )
+
+
+def asset_brief(asset: Asset) -> AssetBriefOut:
+    return AssetBriefOut(
+        id=asset.id,
+        code=asset.code,
+        name=asset.name,
+        type=type_ref(asset.asset_type),
+        status=asset.status,
+        is_mobile=asset.is_mobile,
+        grounded=asset.grounded,
+        x=float(asset.x) if asset.x is not None else None,
+        y=float(asset.y) if asset.y is not None else None,
+        location_text=asset.location_text,
+        version=asset.version,
+        updated_at=asset.updated_at,
+    )
+
+
+def asset_full(asset: Asset) -> AssetOut:
+    return AssetOut(
+        id=asset.id,
+        pit_id=asset.pit_id,
+        code=asset.code,
+        name=asset.name,
+        type=type_ref(asset.asset_type),
+        status=asset.status,
+        lifecycle=asset.lifecycle,
+        grounded=asset.grounded,
+        is_mobile=asset.is_mobile,
+        x=float(asset.x) if asset.x is not None else None,
+        y=float(asset.y) if asset.y is not None else None,
+        z=float(asset.z) if asset.z is not None else None,
+        lat=float(asset.lat) if asset.lat is not None else None,
+        lon=float(asset.lon) if asset.lon is not None else None,
+        location_text=asset.location_text,
+        attrs=asset.attrs or {},
+        parent_id=asset.parent_asset_id,
+        parent_name=asset.parent.name if asset.parent else None,
+        ports=[
+            PortOut(
+                id=p.id,
+                code=p.code,
+                name=p.name,
+                kind=p.kind,
+                nominal_voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
+                sort_order=p.sort_order,
+            )
+            for p in asset.ports
+        ],
+        version=asset.version,
+        updated_at=asset.updated_at,
+    )
+
+
+# --- выборки ---------------------------------------------------------------
+
+def asset_query(pit_id: uuid.UUID):
+    return (
+        select(Asset)
+        .where(Asset.pit_id == pit_id, Asset.deleted_at.is_(None))
+        .options(selectinload(Asset.ports))
+    )
+
+
+def list_assets(
+    db: Session,
+    *,
+    pit_id: uuid.UUID,
+    q: str | None = None,
+    type_code: str | None = None,
+    status: str | None = None,
+    is_mobile: bool | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> tuple[list[Asset], int]:
+    stmt = asset_query(pit_id)
+    if q:
+        needle = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Asset.name.ilike(needle), Asset.code.ilike(needle)))
+    if type_code:
+        stmt = stmt.join(AssetType, Asset.asset_type_id == AssetType.id).where(
+            AssetType.code == type_code
+        )
+    if status:
+        stmt = stmt.where(Asset.status == status)
+    if is_mobile is not None:
+        stmt = stmt.where(Asset.is_mobile.is_(is_mobile))
+
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(stmt.order_by(Asset.code).limit(limit).offset(offset)).unique().all()
+    return list(rows), total
+
+
+def get_asset(db: Session, asset_id: uuid.UUID, *, pit_id: uuid.UUID | None = None) -> Asset:
+    asset = db.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.deleted_at.is_(None))
+        .options(selectinload(Asset.ports))
+    )
+    if asset is None or (pit_id is not None and asset.pit_id != pit_id):
+        raise not_found("Объект не найден")
+    return asset
+
+
+def get_type(db: Session, code: str) -> AssetType:
+    asset_type = db.scalar(select(AssetType).where(AssetType.code == code, AssetType.is_active.is_(True)))
+    if asset_type is None:
+        raise ApiError(400, "asset.unknown_type", f"Неизвестный тип объекта: {code}")
+    return asset_type
+
+
+def list_types(db: Session) -> list[AssetType]:
+    return list(
+        db.scalars(
+            select(AssetType).where(AssetType.is_active.is_(True)).order_by(AssetType.sort_order)
+        )
+    )
+
+
+# --- валидация -------------------------------------------------------------
+
+def validate_attrs(asset_type: AssetType, attrs: dict[str, Any]) -> dict[str, str]:
+    """Проверить атрибуты по required_attrs и типам из attr_schema."""
+    errors: dict[str, str] = {}
+    schema = asset_type.attr_schema or {}
+    for field in asset_type.required_attrs or []:
+        if attrs.get(field) in (None, ""):
+            errors[field] = "Обязательное поле"
+
+    for field, value in attrs.items():
+        rule = schema.get(field)
+        if not rule or value in (None, ""):
+            continue
+        expected = rule.get("type")
+        if expected == "number" and not isinstance(value, (int, float)):
+            errors[field] = "Ожидается число"
+        elif expected == "integer" and not isinstance(value, int):
+            errors[field] = "Ожидается целое число"
+        elif expected == "boolean" and not isinstance(value, bool):
+            errors[field] = "Ожидается да/нет"
+    return errors
+
+
+def check_bounds(db: Session, pit_id: uuid.UUID, x: float | None, y: float | None) -> None:
+    if x is None or y is None:
+        return
+    layer = get_active_layer(db, pit_id)
+    if layer is None:
+        return
+    width_m, height_m = layer_size(layer)
+    if not (0 <= x <= width_m and 0 <= y <= height_m):
+        raise ApiError(
+            422,
+            "asset.out_of_bounds",
+            f"Координаты вне карты: допустимо X 0…{width_m:.0f} м, Y 0…{height_m:.0f} м",
+            fields={"x": f"0…{width_m:.0f}", "y": f"0…{height_m:.0f}"},
+        )
+
+
+# --- изменение -------------------------------------------------------------
+
+def generate_code(db: Session, pit_id: uuid.UUID, asset_type: AssetType) -> str:
+    prefix = asset_type.code.upper()
+    existing = db.scalars(
+        select(Asset.code).where(Asset.pit_id == pit_id, Asset.code.ilike(f"{prefix}-%"))
+    ).all()
+    numbers = []
+    for code in existing:
+        tail = code.split("-", 1)[-1]
+        if tail.isdigit():
+            numbers.append(int(tail))
+    next_number = (max(numbers) + 1) if numbers else 1
+    return f"{prefix}-{next_number}"
+
+
+def create_ports(db: Session, asset: Asset, asset_type: AssetType) -> None:
+    template = asset_type.port_template or {}
+    ports = template.get("ports") or []
+    for index, port in enumerate(ports):
+        db.add(
+            AssetPort(
+                id=uuid.uuid4(),
+                asset_id=asset.id,
+                code=port.get("code", f"P-{index + 1}"),
+                name=port.get("name", "Порт"),
+                kind=port.get("kind", "in"),
+                nominal_voltage_kv=port.get("voltage_kv"),
+                sort_order=port.get("sort_order", index),
+            )
+        )
+
+
+def create_asset(db: Session, payload: AssetCreate, *, actor) -> Asset:
+    pit = get_pit(db)
+    asset_type = get_type(db, payload.type_code)
+
+    errors = validate_attrs(asset_type, payload.attrs)
+    if errors:
+        raise ApiError(422, "validation.failed", "Проверьте атрибуты объекта", fields=errors)
+    check_bounds(db, pit.id, payload.x, payload.y)
+
+    code = (payload.code or "").strip() or generate_code(db, pit.id, asset_type)
+    duplicate = db.scalar(
+        select(Asset).where(Asset.pit_id == pit.id, Asset.code == code, Asset.deleted_at.is_(None))
+    )
+    if duplicate is not None:
+        raise conflict(f"Объект с кодом {code} уже существует", "asset.duplicate_code")
+
+    parent_id = payload.parent_id
+    if parent_id is not None:
+        parent = db.scalar(select(Asset).where(Asset.id == parent_id, Asset.deleted_at.is_(None)))
+        if parent is None:
+            raise ApiError(400, "asset.parent_not_found", "Родительский объект не найден")
+
+    asset = Asset(
+        id=uuid.uuid4(),
+        pit_id=pit.id,
+        asset_type_id=asset_type.id,
+        parent_asset_id=parent_id,
+        code=code,
+        name=payload.name,
+        location_text=payload.location_text,
+        status=payload.status,
+        lifecycle=payload.lifecycle,
+        is_mobile=asset_type.is_mobile_default if payload.is_mobile is None else payload.is_mobile,
+        x=payload.x,
+        y=payload.y,
+        z=payload.z,
+        lat=payload.lat,
+        lon=payload.lon,
+        attrs=payload.attrs or {},
+        created_by=actor.id,
+        updated_by=actor.id,
+        version=1,
+    )
+    db.add(asset)
+    db.flush()
+    create_ports(db, asset, asset_type)
+    db.commit()
+    db.refresh(asset)
+    return get_asset(db, asset.id)
+
+
+def update_asset(db: Session, asset: Asset, payload: AssetUpdate, *, actor) -> Asset:
+    if payload.expected_version is not None and payload.expected_version != asset.version:
+        raise conflict(
+            f"Объект изменён другим пользователем (версия {asset.version})", "conflict.version"
+        )
+
+    data = payload.model_dump(exclude_unset=True)
+    data.pop("expected_version", None)
+
+    if "x" in data or "y" in data:
+        check_bounds(
+            db,
+            asset.pit_id,
+            data.get("x", float(asset.x) if asset.x is not None else None),
+            data.get("y", float(asset.y) if asset.y is not None else None),
+        )
+
+    if "attrs" in data and data["attrs"] is not None:
+        errors = validate_attrs(asset.asset_type, data["attrs"])
+        if errors:
+            raise ApiError(422, "validation.failed", "Проверьте атрибуты объекта", fields=errors)
+        asset.attrs = data.pop("attrs")
+
+    if "parent_id" in data:
+        parent_id = data.pop("parent_id")
+        if parent_id is not None:
+            if parent_id == asset.id:
+                raise ApiError(400, "asset.parent_cycle", "Объект не может быть родителем сам себе")
+            parent = db.scalar(select(Asset).where(Asset.id == parent_id, Asset.deleted_at.is_(None)))
+            if parent is None:
+                raise ApiError(400, "asset.parent_not_found", "Родительский объект не найден")
+        asset.parent_asset_id = parent_id
+
+    if "code" in data and data["code"]:
+        duplicate = db.scalar(
+            select(Asset).where(
+                Asset.pit_id == asset.pit_id,
+                Asset.code == data["code"],
+                Asset.id != asset.id,
+                Asset.deleted_at.is_(None),
+            )
+        )
+        if duplicate is not None:
+            raise conflict(f"Объект с кодом {data['code']} уже существует", "asset.duplicate_code")
+
+    for field, value in data.items():
+        setattr(asset, field, value)
+
+    asset.updated_by = actor.id
+    asset.version = (asset.version or 1) + 1
+    db.commit()
+    return get_asset(db, asset.id)
+
+
+def soft_delete(db: Session, asset: Asset, *, actor) -> None:
+    asset.deleted_at = now()
+    asset.deleted_by = actor.id
+    asset.version = (asset.version or 1) + 1
+    db.commit()
+
+
+# --- путь питания (Спринт 2: по вложенности, до связей Спринта 3) -----------
+
+def power_path(db: Session, asset: Asset) -> PowerPathOut:
+    chain: list[Asset] = []
+    visited: set[uuid.UUID] = set()
+    current: Asset | None = asset
+    depth = 0
+
+    while current is not None and depth < 32:
+        if current.id in visited:
+            break
+        visited.add(current.id)
+        chain.append(current)
+        current = current.parent
+        depth += 1
+
+    chain.reverse()  # от источника к объекту
+
+    nodes: list[PowerPathNode] = []
+    top = chain[0] if chain else None
+    if top is not None and top.asset_type and top.asset_type.category == "source":
+        source = PowerPathNode(
+            id=top.id,
+            code=top.code,
+            name=top.name,
+            type_code=top.asset_type.code,
+            type_name=top.asset_type.name,
+            role="source",
+        )
+        rest = chain[1:]
+    else:
+        source = PowerPathNode(
+            code=SYNTHETIC_SOURCE["code"],
+            name=SYNTHETIC_SOURCE["name"],
+            type_code=SYNTHETIC_SOURCE["type_code"],
+            type_name=SYNTHETIC_SOURCE["type_name"],
+            role="source",
+            synthetic=True,
+        )
+        rest = chain
+
+    for index, node in enumerate(rest):
+        is_last = index == len(rest) - 1
+        nodes.append(
+            PowerPathNode(
+                id=node.id,
+                code=node.code,
+                name=node.name,
+                type_code=node.asset_type.code if node.asset_type else None,
+                type_name=node.asset_type.name if node.asset_type else None,
+                role="asset" if is_last else "feed",
+            )
+        )
+
+    return PowerPathOut(
+        asset_id=asset.id,
+        asset_name=asset.name,
+        source=source,
+        chain=nodes,
+        note=(
+            "Предварительная цепочка по вложенности объектов. "
+            "Полный расчёт по графу связей — Спринт 3."
+        ),
+    )
+
+
+# --- типы объектов (админка) ----------------------------------------------
+
+def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
+    if db.scalar(select(AssetType).where(AssetType.code == payload.code)) is not None:
+        raise conflict(f"Тип {payload.code} уже существует", "asset_type.duplicate_code")
+    asset_type = AssetType(
+        id=uuid.uuid4(),
+        code=payload.code,
+        name=payload.name,
+        category=payload.category,
+        icon=payload.icon or "●",
+        color=payload.color or "#4C9AFF",
+        port_template=payload.port_template or {"ports": []},
+        attr_schema=payload.attr_schema or {},
+        required_attrs=payload.required_attrs or [],
+        is_mobile_default=payload.is_mobile_default,
+        sort_order=payload.sort_order,
+        description=payload.description,
+        is_active=True,
+    )
+    db.add(asset_type)
+    db.commit()
+    db.refresh(asset_type)
+    return asset_type
+
+
+def update_type(db: Session, asset_type: AssetType, data: dict[str, Any]) -> AssetType:
+    for field in ("name", "icon", "color", "port_template", "attr_schema", "required_attrs",
+                  "is_mobile_default", "sort_order", "description", "is_active"):
+        if field in data and data[field] is not None:
+            setattr(asset_type, field, data[field])
+    db.commit()
+    db.refresh(asset_type)
+    return asset_type
+
+
+def request_meta(request: Request) -> dict[str, str]:
+    return {"ip": request.client.host if request.client else "unknown"}

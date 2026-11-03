@@ -257,3 +257,6 @@ export const api = {
     return request<{ items: AuditRecord[]; total: number }>(`/api/audit?${query.toString()}`)
   },
 }
+
+/** Доступ к низкоуровневому запросу для других модулей (например, ГИС). */
+export const apiRequest = request

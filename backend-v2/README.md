@@ -16,6 +16,17 @@
 | Сотрудники | CRUD, блокировка, сброс пароля (временный), повторная отправка кода |
 | Аудит | `audit.audit_log`, append-only (триггер в БД), `request_id`, IP, UA, before/after |
 
+### Спринт 2: реестр и карта
+
+| Блок | Детали |
+|---|---|
+| Схема `gis` | `pits`, `map_layers`, `asset_types`, `assets`, `asset_ports` (миграция `0002_sprint2_gis`) |
+| Координаты | `assets.x/y` — **метры** местной СК карьера; подложка привязана масштабом (`meters_per_pixel`) |
+| Справочник | 15 типов с иконками, шаблонами портов и JSON-схемами атрибутов; расширяется через API |
+| API | `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/{id}`, `GET /api/assets/{id}/power-path`, `GET /api/asset-types`, `GET /api/map/layers/active` |
+| Права | чтение — любой вход; создание/правка — `asset.create`; удаление — `asset.delete` |
+| Валидация | тип, обязательные атрибуты, границы карты, уникальность кода, `expected_version` → 409 |
+
 ## Структура
 
 ```
@@ -29,10 +40,11 @@ backend-v2/
 │   ├── services/       # бизнес-логика: auth, audit, notify
 │   └── main.py
 ├── alembic/versions/0001_sprint1_auth.py
+├── alembic/versions/0002_sprint2_gis.py
 ├── scripts/
 │   ├── smoke.ps1       # сквозной тест через HTTP (26 проверок)
 │   └── smoke-result.txt
-├── tests/              # pytest: 9 тестов
+├── tests/              # pytest: 20 тестов (9 auth + 11 ГИС)
 ├── seed.py
 ├── requirements.txt
 └── .env / .env.example
@@ -54,6 +66,9 @@ Copy-Item .env.example .env      # и проверьте DATABASE_URL / SECRET_K
 
 # 4. роли, права, тестовые сотрудники
 .\venv\Scripts\python.exe seed.py
+
+# 4b. карьер, подложка, справочник типов и 16 объектов с координатами
+.\venv\Scripts\python.exe seed_gis.py
 
 # 5. сервер
 .\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
