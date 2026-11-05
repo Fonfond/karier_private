@@ -432,6 +432,7 @@ export function MapPage() {
             </button>
             <button
               type="button"
+              data-tour="schema"
               onClick={() => setView('schema')}
               className={`rounded-full px-3 py-1.5 text-[12px] ${view === 'schema' ? 'bg-accent text-[#08131F]' : 'text-ink2'}`}
             >

@@ -190,3 +190,12 @@
   display: none;
 }
 
+
+/* Режим презентации: крупнее интерфейс, без админских и технических деталей */
+html.presentation {
+  zoom: 1.12;
+}
+html.presentation .admin-only,
+html.presentation .tech-only {
+  display: none !important;
+}

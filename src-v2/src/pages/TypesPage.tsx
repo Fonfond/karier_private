@@ -432,7 +432,7 @@ export function TypesPage() {
             />
             архивные
           </label>
-          <button type="button" className="btn-primary h-10 px-4 text-[13px]" onClick={() => setDraft({ ...EMPTY })}>
+          <button type="button" className="btn-primary admin-only h-10 px-4 text-[13px]" onClick={() => setDraft({ ...EMPTY })}>
             + Тип
           </button>
         </div>

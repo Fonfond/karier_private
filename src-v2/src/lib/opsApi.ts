@@ -138,6 +138,9 @@ export const opsApi = {
   submitInspection: (id: string) =>
     apiRequest<Inspection>(`/api/inspections/${id}/submit`, { method: 'POST' }),
 
+  deleteDefect: (id: string) =>
+    apiRequest<{ message: string; id: string }>(`/api/defects/${id}`, { method: 'DELETE' }),
+
   createDefect: (payload: {
     asset_id: string
     severity: string

@@ -124,6 +124,9 @@ class Defect(Base):
     deadline_at = Column(DateTime(timezone=True))
     note = Column(Text)
 
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+
     asset = relationship("Asset", lazy="joined")
 
 

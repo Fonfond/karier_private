@@ -276,7 +276,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
 
           <div className="flex flex-wrap gap-2 pt-1">
             {canManage ? (
-              <button type="button" className="btn-ghost h-10 px-3 text-[13px]" onClick={openEditor}>
+              <button type="button" className="btn-ghost admin-only h-10 px-3 text-[13px]" onClick={openEditor}>
                 ✎ Редактировать
               </button>
             ) : null}

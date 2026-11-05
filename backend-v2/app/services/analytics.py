@@ -36,7 +36,7 @@ def dashboard_summary(db: Session, pit: Pit) -> dict:
 
     open_defects = list(
         db.scalars(
-            select(Defect).where(Defect.pit_id == pit.id, Defect.status.in_(("open", "in_progress")))
+            select(Defect).where(Defect.pit_id == pit.id, Defect.deleted_at.is_(None), Defect.status.in_(("open", "in_progress")))
         ).all()
     )
     defects_by_severity: dict[str, int] = {}
@@ -57,7 +57,7 @@ def dashboard_summary(db: Session, pit: Pit) -> dict:
 
     week_defects = db.scalar(
         select(func.count(Defect.id)).where(
-            Defect.pit_id == pit.id, Defect.detected_at >= week_ago
+            Defect.pit_id == pit.id, Defect.deleted_at.is_(None), Defect.detected_at >= week_ago
         )
     ) or 0
 
@@ -98,7 +98,7 @@ def dashboard_summary(db: Session, pit: Pit) -> dict:
 
     fixed_week = db.scalar(
         select(func.count(Defect.id)).where(
-            Defect.pit_id == pit.id, Defect.fixed_at.is_not(None), Defect.fixed_at >= week_ago
+            Defect.pit_id == pit.id, Defect.deleted_at.is_(None), Defect.fixed_at.is_not(None), Defect.fixed_at >= week_ago
         )
     ) or 0
 

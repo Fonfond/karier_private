@@ -2,6 +2,8 @@ import { lazy, Suspense, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { useOutbox } from '../lib/useOutbox'
+import { usePresentation } from '../lib/usePresentation'
+import { Tour } from './Tour'
 import { Badge } from './ui'
 
 // Сканер тянет html5-qrcode (~300 КБ) — грузим только при открытии
@@ -15,6 +17,7 @@ export function AppShell() {
   const location = useLocation()
   const isMap = location.pathname === '/map'
   const { pending, online, syncing } = useOutbox()
+  const { presentation, togglePresentation } = usePresentation()
   const [scanOpen, setScanOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -40,16 +43,16 @@ export function AppShell() {
           </div>
 
           <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <NavLink to="/" className={link} end>
+            <NavLink to="/" className={link} end data-tour="dashboard">
               Дашборд
             </NavLink>
-            <NavLink to="/map" className={link}>
+            <NavLink to="/map" className={link} data-tour="map">
               Карта
             </NavLink>
             <NavLink to="/registry" className={link}>
               Реестр
             </NavLink>
-            <NavLink to="/inspections" className={link}>
+            <NavLink to="/inspections" className={link} data-tour="inspections">
               Обход
             </NavLink>
             <NavLink to="/defects" className={link}>
@@ -73,6 +76,14 @@ export function AppShell() {
           </nav>
 
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className={`hidden h-9 px-2.5 text-[12px] sm:inline-flex ${presentation ? 'btn-primary' : 'btn-ghost'}`}
+              title="Режим презентации: крупнее интерфейс, скрыты админские кнопки"
+              onClick={togglePresentation}
+            >
+              🎬
+            </button>
             <button
               type="button"
               className="btn-ghost h-9 w-9 p-0 text-[15px]"
@@ -116,6 +127,8 @@ export function AppShell() {
       <main className={isMap ? 'relative min-h-0 flex-1' : 'mx-auto w-full max-w-6xl flex-1 px-4 py-6'}>
         <Outlet />
       </main>
+
+      <Tour />
 
       {scanOpen ? (
         <Suspense fallback={null}>

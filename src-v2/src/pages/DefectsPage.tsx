@@ -190,6 +190,22 @@ export function DefectsPage() {
                   Принять
                 </button>
               ) : null}
+              {can('settings.edit') ? (
+                <button
+                  type="button"
+                  className="btn-ghost admin-only h-9 px-3 text-[12px] text-bad"
+                  title="Удалить дефект (статистика и списки обновятся)"
+                  onClick={async () => {
+                    if (!window.confirm('Удалить дефект? Он исчезнет из списков и статистики, событие останется в аудите.')) {
+                      return
+                    }
+                    await opsApi.deleteDefect(defect.id)
+                    await load()
+                  }}
+                >
+                  🗑 Удалить
+                </button>
+              ) : null}
             </div>
           </div>
         ))}

@@ -232,7 +232,7 @@ export function RegistryPage() {
         {can('asset.create') ? (
           <button
             type="button"
-            className="btn-primary h-10 px-3 text-[12px]"
+            className="btn-primary admin-only h-10 px-3 text-[12px]"
             onClick={() => {
               setForm((prev) => ({ ...prev, type_code: prev.type_code || types[0]?.code || '' }))
               setCreateOpen(true)
@@ -301,7 +301,7 @@ export function RegistryPage() {
                         </button>
                         <button
                           type="button"
-                          className="btn-ghost h-8 px-2.5 text-[12px] text-warm"
+                          className="btn-ghost admin-only h-8 px-2.5 text-[12px] text-warm"
                           title="Удалить объект"
                           onClick={() => void removeAsset(item)}
                         >

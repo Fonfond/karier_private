@@ -35,12 +35,12 @@ function portLabel(port: AssetPort): string {
   return `${port.code}${port.nominal_voltage_kv ? ` · ${port.nominal_voltage_kv} кВ` : ''}`
 }
 
-/** Положение порта по умолчанию: вводы слева, отходящие справа, равномерно по высоте. */
+/** Положение порта по умолчанию: вводы слева, отходящие справа, io — снизу. */
 export function defaultPortPosition(port: AssetPort, index: number, total: number): XYPosition {
   const step = (index + 1) / (total + 1)
   if (port.kind === 'in') return { x: 0, y: step }
   if (port.kind === 'out') return { x: 1, y: step }
-  return { x: 0.5, y: 1 }
+  return { x: step, y: 1 }
 }
 
 /** Сторона узла, ближайшая к точке — от неё зависит направление стрелки связи. */
@@ -72,8 +72,6 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   const { node, editable, portDrag, portPositions, onPortMove } = data
   const statusColor = STATUS_COLOR[node.status] ?? '#6B7A8A'
   const dim = !node.energized
-  const inputs = node.ports.filter((port) => port.kind === 'in' || port.kind === 'io')
-  const outputs = node.ports.filter((port) => port.kind === 'out' || port.kind === 'io')
   const box = useRef<HTMLDivElement | null>(null)
   const dragging = useRef<string | null>(null)
 
@@ -154,16 +152,12 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
 
       {editable ? (
         <>
-          {portDrag
-            ? node.ports.map((port) => {
-                const siblings = node.ports.filter((item) => item.kind === port.kind)
-                const index = siblings.findIndex((item) => item.id === port.id)
-                return renderPort(port, index, siblings.length)
-              })
-            : [
-                ...inputs.map((port, index) => renderPort(port, index, inputs.length)),
-                ...outputs.map((port, index) => renderPort(port, index, outputs.length)),
-              ]}
+          {node.ports.map((port) => {
+            // каждый порт рисуется ровно один раз, иначе React Flow получает дубли handle id
+            const siblings = node.ports.filter((item) => item.kind === port.kind)
+            const index = siblings.findIndex((item) => item.id === port.id)
+            return renderPort(port, Math.max(index, 0), siblings.length)
+          })}
           {node.ports.length === 0 ? (
             <>
               <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-line" />
@@ -190,10 +184,10 @@ function buildPortPositions(
 ): Record<string, XYPosition> {
   const result: Record<string, XYPosition> = {}
   graph.nodes.forEach((node) => {
-    const groups: Record<string, AssetPort[]> = {
-      in: node.ports.filter((port) => port.kind === 'in' || port.kind === 'io'),
-      out: node.ports.filter((port) => port.kind === 'out' || port.kind === 'io'),
-    }
+    const groups: Record<string, AssetPort[]> = {}
+    node.ports.forEach((port) => {
+      ;(groups[port.kind] ||= []).push(port)
+    })
     node.ports.forEach((port) => {
       if (overrides[port.id]) {
         result[port.id] = overrides[port.id]
@@ -203,7 +197,7 @@ function buildPortPositions(
         result[port.id] = { x: port.schema_x, y: port.schema_y }
         return
       }
-      const siblings = groups[port.kind === 'out' ? 'out' : 'in']
+      const siblings = groups[port.kind] ?? [port]
       const index = siblings.findIndex((item) => item.id === port.id)
       result[port.id] = defaultPortPosition(port, Math.max(index, 0), siblings.length)
     })
