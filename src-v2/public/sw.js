@@ -1,6 +1,6 @@
 /* Service Worker: оболочка, подложка карты и кэш GET-API для работы без сети. */
 
-const VERSION = 'karier-v1'
+const VERSION = 'karier-v2'
 const SHELL_CACHE = `${VERSION}-shell`
 const API_CACHE = `${VERSION}-api`
 const SHELL_URLS = ['/', '/index.html', '/karier-map.jpg']
