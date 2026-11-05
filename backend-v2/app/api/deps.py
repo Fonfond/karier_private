@@ -60,3 +60,17 @@ def require_permission(code: str):
         return user
 
     return dependency
+
+
+def require_admin(user: Employee = Depends(current_user)) -> Employee:
+    """Только роль admin — для ручной раскладки схемы и управления учётками."""
+    if user.role is None or user.role.code != "admin":
+        audit.add(
+            "perm.denied",
+            entity="permission",
+            entity_id="role:admin",
+            result="denied",
+            detail=f"Роль {user.role.code if user.role else '-'} не является администратором",
+        )
+        raise forbidden("Действие доступно только администратору")
+    return user

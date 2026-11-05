@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_permission
+from app.api.deps import current_user, require_admin, require_permission
 from app.core.errors import not_found
 from app.db.session import get_db
 from app.models import Asset, AssetType, Employee, Line, Link
@@ -19,6 +19,7 @@ from app.schemas.gis import (
     AssetOut,
     AssetTypeCreate,
     AssetTypeOut,
+    AssetTypeUpdate,
     AssetUpdate,
     ChildAssetOut,
     GraphEdgeOut,
@@ -33,6 +34,8 @@ from app.schemas.gis import (
     PortRefOut,
     PowerPathNode,
     PowerPathOut,
+    SchemaLayoutIn,
+    SchemaLayoutOut,
     StateChangeIn,
     StateChangeOut,
     TopologyGraphOut,
@@ -49,10 +52,14 @@ router = APIRouter(tags=["gis"])
 
 @router.get("/asset-types", response_model=list[AssetTypeOut], summary="Справочник типов")
 def list_asset_types(
+    include_inactive: bool = Query(default=False, description="Показать и архивные типы"),
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> list[AssetTypeOut]:
-    return [AssetTypeOut.model_validate(item) for item in gis.list_types(db)]
+    return [
+        AssetTypeOut(**gis.type_out(db, item))
+        for item in gis.list_types(db, include_inactive=include_inactive)
+    ]
 
 
 @router.post(
@@ -71,7 +78,7 @@ def create_asset_type(
         detail=f"Добавлен тип {asset_type.code}",
         payload={"code": asset_type.code, "category": asset_type.category},
     )
-    return AssetTypeOut.model_validate(asset_type)
+    return AssetTypeOut(**gis.type_out(db, asset_type))
 
 
 @router.patch(
@@ -79,7 +86,7 @@ def create_asset_type(
 )
 def patch_asset_type(
     type_id: uuidlib.UUID,
-    payload: dict[str, Any],
+    payload: AssetTypeUpdate,
     _: Employee = Depends(require_permission("settings.edit")),
     db: Session = Depends(get_db),
 ) -> AssetTypeOut:
@@ -90,7 +97,26 @@ def patch_asset_type(
     audit.add(
         "asset_type.updated", entity="asset_type", entity_id=updated.id, detail=f"Изменён тип {updated.code}"
     )
-    return AssetTypeOut.model_validate(updated)
+    return AssetTypeOut(**gis.type_out(db, updated))
+
+
+@router.delete("/asset-types/{type_id}", response_model=AssetTypeOut, summary="Архивировать тип (админ)")
+def delete_asset_type(
+    type_id: uuidlib.UUID,
+    _: Employee = Depends(require_permission("settings.edit")),
+    db: Session = Depends(get_db),
+) -> AssetTypeOut:
+    asset_type = db.get(AssetType, type_id)
+    if asset_type is None:
+        raise not_found("Тип не найден")
+    gis.deactivate_type(db, asset_type)
+    audit.add(
+        "asset_type.deactivated",
+        entity="asset_type",
+        entity_id=asset_type.id,
+        detail=f"Тип {asset_type.code} переведён в архив",
+    )
+    return AssetTypeOut(**gis.type_out(db, asset_type))
 
 
 # --- объекты ---------------------------------------------------------------
@@ -442,6 +468,18 @@ def topology_graph(
             energized=item["energized"],
             is_source=item["is_source"],
             parent_id=item["asset"].parent_asset_id,
+            schema_x=float(item["asset"].schema_x) if item["asset"].schema_x is not None else None,
+            schema_y=float(item["asset"].schema_y) if item["asset"].schema_y is not None else None,
+            ports=[
+                PortRefOut(
+                    id=p.id,
+                    code=p.code,
+                    name=p.name,
+                    kind=p.kind,
+                    voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
+                )
+                for p in item["asset"].ports
+            ],
         )
         for item in data["nodes"]
     ]
@@ -458,6 +496,23 @@ def topology_graph(
         for item in data["edges"]
     ]
     return TopologyGraphOut(nodes=nodes, edges=edges)
+
+
+@router.put(
+    "/topology/layout",
+    response_model=SchemaLayoutOut,
+    summary="Сохранить ручную раскладку схемы (только админ)",
+)
+def save_schema_layout(
+    payload: SchemaLayoutIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SchemaLayoutOut:
+    pit = gis.get_pit(db)
+    result = gis.set_schema_layout(
+        db, pit.id, [item.model_dump() for item in payload.items], admin
+    )
+    return SchemaLayoutOut(**result)
 
 
 @router.get("/topology/issues", response_model=list[TopologyIssueOut], summary="Проверки схемы")

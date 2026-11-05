@@ -252,6 +252,10 @@ export const api = {
 
   blockEmployee: (id: string) => request<Employee>(`/api/employees/${id}/block`, { method: 'POST' }),
   unblockEmployee: (id: string) => request<Employee>(`/api/employees/${id}/unblock`, { method: 'POST' }),
+  updateEmployee: (id: string, payload: Record<string, unknown>) =>
+    request<Employee>(`/api/employees/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  dismissEmployee: (id: string) =>
+    request<Employee>(`/api/employees/${id}`, { method: 'DELETE' }),
   resetPassword: (id: string) =>
     request<{ temp_password: string; note: string }>(`/api/employees/${id}/reset-password`, {
       method: 'POST',

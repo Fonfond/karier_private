@@ -124,6 +124,8 @@ def asset_full(asset: Asset) -> AssetOut:
         z=float(asset.z) if asset.z is not None else None,
         lat=float(asset.lat) if asset.lat is not None else None,
         lon=float(asset.lon) if asset.lon is not None else None,
+        schema_x=float(asset.schema_x) if asset.schema_x is not None else None,
+        schema_y=float(asset.schema_y) if asset.schema_y is not None else None,
         location_text=asset.location_text,
         attrs=asset.attrs or {},
         parent_id=asset.parent_asset_id,
@@ -204,12 +206,38 @@ def get_type(db: Session, code: str) -> AssetType:
     return asset_type
 
 
-def list_types(db: Session) -> list[AssetType]:
-    return list(
-        db.scalars(
-            select(AssetType).where(AssetType.is_active.is_(True)).order_by(AssetType.sort_order)
+def list_types(db: Session, *, include_inactive: bool = False) -> list[AssetType]:
+    stmt = select(AssetType).order_by(AssetType.sort_order, AssetType.name)
+    if not include_inactive:
+        stmt = stmt.where(AssetType.is_active.is_(True))
+    return list(db.scalars(stmt).unique())
+
+
+def type_out(db: Session, asset_type: AssetType) -> dict[str, Any]:
+    """Тип для админки: с родителем и числом объектов."""
+    assets_count = db.scalar(
+        select(func.count(Asset.id)).where(
+            Asset.asset_type_id == asset_type.id, Asset.deleted_at.is_(None)
         )
-    )
+    ) or 0
+    return {
+        "id": asset_type.id,
+        "code": asset_type.code,
+        "name": asset_type.name,
+        "category": asset_type.category,
+        "icon": asset_type.icon,
+        "color": asset_type.color,
+        "port_template": asset_type.port_template or {},
+        "attr_schema": asset_type.attr_schema or {},
+        "required_attrs": list(asset_type.required_attrs or []),
+        "is_mobile_default": asset_type.is_mobile_default,
+        "sort_order": asset_type.sort_order,
+        "is_active": asset_type.is_active,
+        "description": asset_type.description,
+        "parent_id": asset_type.parent_id,
+        "parent_name": asset_type.parent.name if asset_type.parent else None,
+        "assets_count": int(assets_count),
+    }
 
 
 # --- валидация -------------------------------------------------------------
@@ -468,6 +496,10 @@ def power_path(db: Session, asset: Asset) -> PowerPathOut:
 def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
     if db.scalar(select(AssetType).where(AssetType.code == payload.code)) is not None:
         raise conflict(f"Тип {payload.code} уже существует", "asset_type.duplicate_code")
+    if payload.parent_id is not None:
+        parent = db.get(AssetType, payload.parent_id)
+        if parent is None:
+            raise ApiError(400, "asset_type.parent_not_found", "Родительский тип не найден")
     asset_type = AssetType(
         id=uuid.uuid4(),
         code=payload.code,
@@ -481,6 +513,7 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
         is_mobile_default=payload.is_mobile_default,
         sort_order=payload.sort_order,
         description=payload.description,
+        parent_id=payload.parent_id,
         is_active=True,
     )
     db.add(asset_type)
@@ -489,14 +522,114 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
     return asset_type
 
 
-def update_type(db: Session, asset_type: AssetType, data: dict[str, Any]) -> AssetType:
-    for field in ("name", "icon", "color", "port_template", "attr_schema", "required_attrs",
-                  "is_mobile_default", "sort_order", "description", "is_active"):
-        if field in data and data[field] is not None:
-            setattr(asset_type, field, data[field])
+def _descendants(db: Session, asset_type: AssetType) -> set[uuid.UUID]:
+    """Все потомки типа — чтобы не создать цикл в дереве."""
+    found: set[uuid.UUID] = set()
+    stack = [asset_type.id]
+    while stack:
+        current = stack.pop()
+        children = db.scalars(
+            select(AssetType).where(AssetType.parent_id == current)
+        ).all()
+        for child in children:
+            if child.id not in found:
+                found.add(child.id)
+                stack.append(child.id)
+    return found
+
+
+def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
+    payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else dict(data)
+
+    parent_marker = payload.pop("clear_parent", False)
+    if "parent_id" in payload:
+        parent_id = payload.pop("parent_id")
+        if parent_id is not None and parent_id == asset_type.id:
+            raise ApiError(400, "asset_type.parent_cycle", "Тип не может быть родителем сам себе")
+        if parent_id is not None and parent_id in _descendants(db, asset_type):
+            raise ApiError(400, "asset_type.parent_cycle", "Нельзя вложить тип в собственный подтип")
+        if parent_id is not None and db.get(AssetType, parent_id) is None:
+            raise ApiError(400, "asset_type.parent_not_found", "Родительский тип не найден")
+        asset_type.parent_id = parent_id
+    elif parent_marker:
+        asset_type.parent_id = None
+
+    for field in (
+        "name",
+        "category",
+        "icon",
+        "color",
+        "port_template",
+        "attr_schema",
+        "required_attrs",
+        "is_mobile_default",
+        "sort_order",
+        "description",
+        "is_active",
+    ):
+        if field in payload and payload[field] is not None:
+            setattr(asset_type, field, payload[field])
     db.commit()
     db.refresh(asset_type)
     return asset_type
+
+
+def deactivate_type(db: Session, asset_type: AssetType) -> None:
+    """Мягкое удаление типа: запрещено, если он используется или имеет подтипы."""
+    used = db.scalar(
+        select(func.count(Asset.id)).where(
+            Asset.asset_type_id == asset_type.id, Asset.deleted_at.is_(None)
+        )
+    ) or 0
+    if used:
+        raise conflict(
+            f"Тип используется объектами: {used}. Сначала переназначьте их",
+            "asset_type.in_use",
+        )
+    children = db.scalar(
+        select(func.count(AssetType.id)).where(
+            AssetType.parent_id == asset_type.id, AssetType.is_active.is_(True)
+        )
+    ) or 0
+    if children:
+        raise conflict(
+            f"У типа есть подтипы: {children}. Сначала удалите или перенесите их",
+            "asset_type.has_children",
+        )
+    asset_type.is_active = False
+    db.commit()
+
+
+def set_schema_layout(
+    db: Session, pit_id: uuid.UUID, items: list[dict[str, float]], actor: Any
+) -> dict[str, Any]:
+    """Сохранить ручные координаты узлов однолинейной схемы."""
+    updated = 0
+    skipped: list[uuid.UUID] = []
+    for item in items:
+        asset = db.scalar(
+            select(Asset).where(
+                Asset.id == item["asset_id"], Asset.pit_id == pit_id, Asset.deleted_at.is_(None)
+            )
+        )
+        if asset is None:
+            skipped.append(item["asset_id"])
+            continue
+        asset.schema_x = item["x"]
+        asset.schema_y = item["y"]
+        updated += 1
+    db.commit()
+    if updated:
+        from app.services import audit
+
+        audit.add(
+            "schema.layout_saved",
+            entity="pit",
+            entity_id=pit_id,
+            detail=f"Сохранена ручная раскладка схемы: узлов {updated}",
+            payload={"updated": updated, "skipped": [str(x) for x in skipped]},
+        )
+    return {"updated": updated, "skipped": skipped}
 
 
 def request_meta(request: Request) -> dict[str, str]:

@@ -363,7 +363,13 @@ export function MapPage() {
         )
       ) : graph ? (
         <Suspense fallback={<div className="flex h-full items-center justify-center text-ink2">Строим схему…</div>}>
-          <SchemaView graph={graph} selectedId={selectedId} onSelect={openAsset} />
+          <SchemaView
+            graph={graph}
+            selectedId={selectedId}
+            onSelect={openAsset}
+            canEdit={can('settings.edit')}
+            onGraphChanged={() => void loadGraph()}
+          />
         </Suspense>
       ) : (
         <div className="flex h-full items-center justify-center text-ink2">Строим схему…</div>

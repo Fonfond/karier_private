@@ -33,6 +33,9 @@ export interface AssetType {
   sort_order: number
   is_active: boolean
   description: string | null
+  parent_id: string | null
+  parent_name: string | null
+  assets_count: number
 }
 
 export interface AssetBrief {
@@ -116,6 +119,9 @@ export interface GraphNode {
   energized: boolean
   is_source: boolean
   parent_id: string | null
+  schema_x: number | null
+  schema_y: number | null
+  ports: AssetPort[]
 }
 
 export interface GraphEdge {
@@ -220,8 +226,8 @@ export const gisApi = {
     name: string
     type_code: string
     code?: string
-    x: number
-    y: number
+    x?: number | null
+    y?: number | null
     status?: string
     parent_id?: string | null
     location_text?: string | null
@@ -294,6 +300,17 @@ export const gisApi = {
 
   updateType: (id: string, payload: Record<string, unknown>) =>
     apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  deleteType: (id: string) =>
+    apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'DELETE' }),
+
+  saveSchemaLayout: (items: Array<{ asset_id: string; x: number; y: number }>) =>
+    apiRequest<{ updated: number; skipped: string[] }>('/api/topology/layout', {
+      method: 'PUT',
+      body: JSON.stringify({ items }),
+    }),
+
+  allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
 }
 
 export const STATUS_LABEL: Record<string, string> = {

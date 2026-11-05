@@ -45,6 +45,8 @@ class AssetOut(BaseModel):
     z: float | None = None
     lat: float | None = None
     lon: float | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
     location_text: str | None = None
     attrs: dict[str, Any] = {}
     parent_id: uuid.UUID | None = None
@@ -134,6 +136,9 @@ class AssetTypeOut(BaseModel):
     sort_order: int = 100
     is_active: bool = True
     description: str | None = None
+    parent_id: uuid.UUID | None = None
+    parent_name: str | None = None
+    assets_count: int = 0
 
 
 class AssetTypeCreate(BaseModel):
@@ -148,6 +153,38 @@ class AssetTypeCreate(BaseModel):
     is_mobile_default: bool = False
     sort_order: int = 100
     description: str | None = None
+    parent_id: uuid.UUID | None = None
+
+
+class AssetTypeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=128)
+    category: Literal["source", "line", "equipment", "mobile", "lighting", "aux", "pole"] | None = None
+    icon: str | None = Field(default=None, max_length=16)
+    color: str | None = Field(default=None, max_length=16)
+    port_template: dict[str, Any] | None = None
+    attr_schema: dict[str, Any] | None = None
+    required_attrs: list[str] | None = None
+    is_mobile_default: bool | None = None
+    sort_order: int | None = None
+    description: str | None = None
+    parent_id: uuid.UUID | None = None
+    clear_parent: bool = False
+    is_active: bool | None = None
+
+
+class SchemaLayoutItem(BaseModel):
+    asset_id: uuid.UUID
+    x: float
+    y: float
+
+
+class SchemaLayoutIn(BaseModel):
+    items: list[SchemaLayoutItem] = Field(default_factory=list, max_length=500)
+
+
+class SchemaLayoutOut(BaseModel):
+    updated: int
+    skipped: list[uuid.UUID] = []
 
 
 class MapLayerOut(BaseModel):
@@ -313,6 +350,9 @@ class GraphNodeOut(BaseModel):
     is_source: bool
     parent_id: uuid.UUID | None = None
     level: int = 0
+    schema_x: float | None = None
+    schema_y: float | None = None
+    ports: list[PortRefOut] = []
 
 
 class GraphEdgeOut(BaseModel):

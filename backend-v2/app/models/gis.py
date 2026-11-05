@@ -104,6 +104,11 @@ class AssetType(Base, TimestampMixin):
     is_active = Column(Boolean, nullable=False, default=True)
     description = Column(Text)
 
+    # иерархия: категория → тип → подтип
+    parent_id = Column(Uuid, ForeignKey(f"{SCHEMA}.asset_types.id", ondelete="SET NULL"))
+    parent = relationship("AssetType", remote_side="AssetType.id", back_populates="children")
+    children = relationship("AssetType", back_populates="parent", order_by="AssetType.sort_order")
+
     assets = relationship("Asset", back_populates="asset_type")
 
 
@@ -151,6 +156,10 @@ class Asset(Base, TimestampMixin):
     z = Column(Numeric(10, 2))
     lat = Column(Numeric(10, 7))
     lon = Column(Numeric(10, 7))
+
+    # ручная раскладка в однолинейной схеме (пиксели холста)
+    schema_x = Column(Numeric(10, 2))
+    schema_y = Column(Numeric(10, 2))
 
     attrs = Column(JSONB, nullable=False, default=dict)
 

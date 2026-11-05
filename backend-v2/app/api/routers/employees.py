@@ -180,6 +180,45 @@ def update_employee(
     return _serialize(db, employee)
 
 
+@router.delete(
+    "/{employee_id}",
+    response_model=EmployeeOut,
+    summary="Уволить сотрудника (архивировать учётную запись)",
+)
+def dismiss_employee(
+    employee_id: uuid.UUID,
+    admin: Employee = Permission,
+    db: Session = Depends(get_db),
+) -> EmployeeOut:
+    employee = _get_or_404(db, employee_id)
+    if employee.id == admin.id:
+        raise ApiError(400, "employee.self_action", "Нельзя уволить самого себя")
+
+    if employee.role is not None and employee.role.code == "admin":
+        active_admins = db.scalar(
+            select(func.count(Employee.id))
+            .join(Role, Employee.role_id == Role.id)
+            .where(Role.code == "admin", Employee.status == "active")
+        ) or 0
+        if active_admins <= 1:
+            raise conflict(
+                "Нельзя уволить последнего администратора", "employee.last_admin"
+            )
+
+    employee.status = "dismissed"
+    db.commit()
+    from app.services.auth import revoke_all_sessions
+
+    revoked = revoke_all_sessions(db, employee, reason="employee_dismissed")
+    audit.add(
+        "employee.dismissed",
+        entity="employee",
+        entity_id=employee.id,
+        detail=f"Сотрудник {employee.tab_no} уволен, отозвано сессий: {revoked}",
+    )
+    return _serialize(db, employee)
+
+
 @router.post("/{employee_id}/block", response_model=EmployeeOut, summary="Заблокировать")
 def block_employee(
     employee_id: uuid.UUID,
