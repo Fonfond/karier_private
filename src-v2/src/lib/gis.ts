@@ -17,6 +17,8 @@ export interface AssetPort {
   kind: 'in' | 'out' | 'io'
   nominal_voltage_kv: number | null
   sort_order: number
+  schema_x?: number | null
+  schema_y?: number | null
 }
 
 export interface AssetType {
@@ -304,10 +306,13 @@ export const gisApi = {
   deleteType: (id: string) =>
     apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'DELETE' }),
 
-  saveSchemaLayout: (items: Array<{ asset_id: string; x: number; y: number }>) =>
-    apiRequest<{ updated: number; skipped: string[] }>('/api/topology/layout', {
+  saveSchemaLayout: (
+    items: Array<{ asset_id: string; x: number; y: number }>,
+    ports: Array<{ port_id: string; x: number; y: number }> = [],
+  ) =>
+    apiRequest<{ updated: number; updated_ports: number; skipped: string[] }>('/api/topology/layout', {
       method: 'PUT',
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ items, ports }),
     }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),

@@ -178,12 +178,20 @@ class SchemaLayoutItem(BaseModel):
     y: float
 
 
+class SchemaPortItem(BaseModel):
+    port_id: uuid.UUID
+    x: float = Field(ge=0, le=1, description="Доля ширины узла, 0…1")
+    y: float = Field(ge=0, le=1, description="Доля высоты узла, 0…1")
+
+
 class SchemaLayoutIn(BaseModel):
     items: list[SchemaLayoutItem] = Field(default_factory=list, max_length=500)
+    ports: list[SchemaPortItem] = Field(default_factory=list, max_length=1000)
 
 
 class SchemaLayoutOut(BaseModel):
     updated: int
+    updated_ports: int = 0
     skipped: list[uuid.UUID] = []
 
 
@@ -234,6 +242,8 @@ class PortRefOut(BaseModel):
     name: str
     kind: str
     voltage_kv: float | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
 
 
 class AssetRefOut(BaseModel):

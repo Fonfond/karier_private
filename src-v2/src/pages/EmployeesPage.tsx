@@ -71,6 +71,31 @@ export function EmployeesPage() {
     }
   }
 
+  const removePermanently = async (employee: Employee) => {
+    if (
+      !window.confirm(
+        `Удалить ${employee.full_name} (таб. ${employee.tab_no}) НАВСЕГДА? Действие необратимо.`,
+      )
+    ) {
+      return
+    }
+    setError(null)
+    try {
+      await api.deleteEmployeePermanent(employee.id)
+      setNotice(`Сотрудник ${employee.tab_no} удалён из базы`)
+      await load()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setNotice(
+          'У сотрудника есть действия в журнале — удаление стёрло бы авторство. Используйте «Уволить».',
+        )
+        setError(err.message)
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Не удалось удалить сотрудника')
+      }
+    }
+  }
+
   const dismiss = async (employee: Employee) => {
     if (
       !window.confirm(
@@ -313,6 +338,14 @@ export function EmployeesPage() {
                           Уволить
                         </button>
                       ) : null}
+                      <button
+                        type="button"
+                        className="btn-ghost h-8 px-2.5 text-[12px] text-bad"
+                        title="Удалить навсегда (только без истории)"
+                        onClick={() => void removePermanently(employee)}
+                      >
+                        🗑
+                      </button>
                       <button
                         type="button"
                         className="btn-ghost h-8 px-2.5 text-[12px]"

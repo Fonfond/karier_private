@@ -601,9 +601,13 @@ def deactivate_type(db: Session, asset_type: AssetType) -> None:
 
 
 def set_schema_layout(
-    db: Session, pit_id: uuid.UUID, items: list[dict[str, float]], actor: Any
+    db: Session,
+    pit_id: uuid.UUID,
+    items: list[dict[str, float]],
+    actor: Any,
+    ports: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Сохранить ручные координаты узлов однолинейной схемы."""
+    """Сохранить ручные координаты узлов и позиции портов однолинейной схемы."""
     updated = 0
     skipped: list[uuid.UUID] = []
     for item in items:
@@ -618,18 +622,32 @@ def set_schema_layout(
         asset.schema_x = item["x"]
         asset.schema_y = item["y"]
         updated += 1
+
+    updated_ports = 0
+    for item in ports or []:
+        port = db.get(AssetPort, item["port_id"])
+        if port is None or port.asset is None or port.asset.pit_id != pit_id:
+            continue
+        port.schema_x = max(0.0, min(1.0, float(item["x"])))
+        port.schema_y = max(0.0, min(1.0, float(item["y"])))
+        updated_ports += 1
+
     db.commit()
-    if updated:
+    if updated or updated_ports:
         from app.services import audit
 
         audit.add(
             "schema.layout_saved",
             entity="pit",
             entity_id=pit_id,
-            detail=f"Сохранена ручная раскладка схемы: узлов {updated}",
-            payload={"updated": updated, "skipped": [str(x) for x in skipped]},
+            detail=f"Сохранена ручная раскладка схемы: узлов {updated}, портов {updated_ports}",
+            payload={
+                "updated": updated,
+                "updated_ports": updated_ports,
+                "skipped": [str(x) for x in skipped],
+            },
         )
-    return {"updated": updated, "skipped": skipped}
+    return {"updated": updated, "updated_ports": updated_ports, "skipped": skipped}
 
 
 def request_meta(request: Request) -> dict[str, str]:

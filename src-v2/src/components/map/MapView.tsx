@@ -13,6 +13,8 @@ interface MapViewProps {
   onMapClick: (x: number, y: number) => void
   draft: { x: number; y: number } | null
   history?: Array<{ x: number; y: number }>
+  draggable?: boolean
+  onDragEnd?: (id: string, x: number, y: number) => void
 }
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
@@ -88,6 +90,8 @@ export function MapView({
   onMapClick,
   draft,
   history,
+  draggable = false,
+  onDragEnd,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
     [layer.bounds[0][0], layer.bounds[0][1]],
@@ -119,7 +123,15 @@ export function MapView({
             key={asset.id}
             position={[asset.y, asset.x]}
             icon={markerIcon(asset, asset.id === selectedId)}
-            eventHandlers={{ click: () => onSelect(asset.id) }}
+            draggable={draggable}
+            eventHandlers={{
+              click: () => onSelect(asset.id),
+              dragend: (event) => {
+                if (!onDragEnd) return
+                const { lat, lng } = (event.target as L.Marker).getLatLng()
+                onDragEnd(asset.id, Math.round(lng * 10) / 10, Math.round(lat * 10) / 10)
+              },
+            }}
             zIndexOffset={asset.id === selectedId ? 1000 : 0}
           />
         ),

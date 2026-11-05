@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Controls,
@@ -23,26 +23,113 @@ import { ApiError } from '../../lib/api'
 const NODE_W = 210
 const NODE_H = 84
 
-type AssetNodeData = { node: GraphNode; editable: boolean }
+type AssetNodeData = {
+  node: GraphNode
+  editable: boolean
+  portDrag: boolean
+  portPositions: Record<string, XYPosition>
+  onPortMove: (portId: string, x: number, y: number) => void
+}
 
 function portLabel(port: AssetPort): string {
   return `${port.code}${port.nominal_voltage_kv ? ` · ${port.nominal_voltage_kv} кВ` : ''}`
 }
 
+/** Положение порта по умолчанию: вводы слева, отходящие справа, равномерно по высоте. */
+export function defaultPortPosition(port: AssetPort, index: number, total: number): XYPosition {
+  const step = (index + 1) / (total + 1)
+  if (port.kind === 'in') return { x: 0, y: step }
+  if (port.kind === 'out') return { x: 1, y: step }
+  return { x: 0.5, y: 1 }
+}
+
+/** Сторона узла, ближайшая к точке — от неё зависит направление стрелки связи. */
+function sideOf(position: XYPosition): Position {
+  const distances: Array<[Position, number]> = [
+    [Position.Left, position.x],
+    [Position.Right, 1 - position.x],
+    [Position.Top, position.y],
+    [Position.Bottom, 1 - position.y],
+  ]
+  distances.sort((a, b) => a[1] - b[1])
+  return distances[0][0]
+}
+
+/** Спроецировать точку на периметр прямоугольника узла (доли 0…1). */
+function clampToPerimeter(x: number, y: number): XYPosition {
+  const dx = x - 0.5
+  const dy = y - 0.5
+  if (dx === 0 && dy === 0) return { x: 0.5, y: 1 }
+  const tx = dx === 0 ? Number.POSITIVE_INFINITY : 0.5 / Math.abs(dx)
+  const ty = dy === 0 ? Number.POSITIVE_INFINITY : 0.5 / Math.abs(dy)
+  const t = Math.min(tx, ty, 1)
+  const px = Math.min(1, Math.max(0, 0.5 + dx * Math.min(1, t)))
+  const py = Math.min(1, Math.max(0, 0.5 + dy * Math.min(1, t)))
+  return { x: px, y: py }
+}
+
 function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
-  const { node, editable } = data
+  const { node, editable, portDrag, portPositions, onPortMove } = data
   const statusColor = STATUS_COLOR[node.status] ?? '#6B7A8A'
   const dim = !node.energized
   const inputs = node.ports.filter((port) => port.kind === 'in' || port.kind === 'io')
   const outputs = node.ports.filter((port) => port.kind === 'out' || port.kind === 'io')
+  const box = useRef<HTMLDivElement | null>(null)
+  const dragging = useRef<string | null>(null)
 
-  const handleStyle = (index: number, total: number): React.CSSProperties => ({
-    top: `${((index + 1) / (total + 1)) * 100}%`,
-  })
+  const positionOf = (port: AssetPort, index: number, total: number): XYPosition =>
+    portPositions[port.id] ?? defaultPortPosition(port, index, total)
+
+  const startPortDrag = (port: AssetPort, event: React.PointerEvent) => {
+    if (!portDrag) return
+    event.stopPropagation()
+    event.preventDefault()
+    dragging.current = port.id
+    ;(event.target as HTMLElement).setPointerCapture?.(event.pointerId)
+  }
+
+  const movePort = (event: React.PointerEvent) => {
+    if (!dragging.current || !box.current) return
+    const rect = box.current.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const raw = {
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+    }
+    const point = clampToPerimeter(raw.x, raw.y)
+    onPortMove(dragging.current, point.x, point.y)
+  }
+
+  const stopPortDrag = (event: React.PointerEvent) => {
+    if (!dragging.current) return
+    ;(event.target as HTMLElement).releasePointerCapture?.(event.pointerId)
+    dragging.current = null
+  }
+
+  const renderPort = (port: AssetPort, index: number, total: number) => {
+    const position = positionOf(port, index, total)
+    return (
+      <Handle
+        key={port.id}
+        id={port.id}
+        type={port.kind === 'out' ? 'source' : 'target'}
+        position={sideOf(position)}
+        title={portLabel(port)}
+        style={{ left: `${position.x * 100}%`, top: `${position.y * 100}%` }}
+        className={`!h-3 !w-3 !border-2 ${
+          portDrag ? '!border-warm !bg-warm/40 cursor-grab' : '!border-accent !bg-surface1'
+        }`}
+        onPointerDown={(event) => startPortDrag(port, event)}
+        onPointerMove={movePort}
+        onPointerUp={stopPortDrag}
+      />
+    )
+  }
 
   return (
     <div
-      className={`w-[210px] rounded-xl border bg-surface1 px-3 py-2 text-left transition ${
+      ref={box}
+      className={`relative w-[210px] rounded-xl border bg-surface1 px-3 py-2 text-left transition ${
         selected ? 'ring-2 ring-accent' : ''
       } ${node.grounded ? 'border-ground' : 'border-line'} ${dim ? 'opacity-70' : ''}`}
     >
@@ -67,41 +154,21 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
 
       {editable ? (
         <>
-          {inputs.map((port, index) => (
-            <Handle
-              key={port.id}
-              id={port.id}
-              type="target"
-              position={Position.Left}
-              style={handleStyle(index, inputs.length)}
-              title={portLabel(port)}
-              className="!h-3 !w-3 !border-2 !border-accent !bg-surface1"
-            />
-          ))}
-          {outputs.map((port, index) => (
-            <Handle
-              key={port.id}
-              id={port.id}
-              type="source"
-              position={Position.Right}
-              style={handleStyle(index, outputs.length)}
-              title={portLabel(port)}
-              className="!h-3 !w-3 !border-2 !border-accent !bg-surface1"
-            />
-          ))}
-          {inputs.length === 0 ? (
-            <Handle
-              type="target"
-              position={Position.Left}
-              className="!h-2 !w-2 !border-0 !bg-line"
-            />
-          ) : null}
-          {outputs.length === 0 ? (
-            <Handle
-              type="source"
-              position={Position.Right}
-              className="!h-2 !w-2 !border-0 !bg-line"
-            />
+          {portDrag
+            ? node.ports.map((port) => {
+                const siblings = node.ports.filter((item) => item.kind === port.kind)
+                const index = siblings.findIndex((item) => item.id === port.id)
+                return renderPort(port, index, siblings.length)
+              })
+            : [
+                ...inputs.map((port, index) => renderPort(port, index, inputs.length)),
+                ...outputs.map((port, index) => renderPort(port, index, outputs.length)),
+              ]}
+          {node.ports.length === 0 ? (
+            <>
+              <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-line" />
+              <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-line" />
+            </>
           ) : null}
         </>
       ) : (
@@ -115,6 +182,34 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
 }
 
 const nodeTypes = { asset: AssetNode }
+
+/** Позиции всех портов: сохранённые, локальные сдвиги или значения по умолчанию. */
+function buildPortPositions(
+  graph: TopologyGraph,
+  overrides: Record<string, XYPosition>,
+): Record<string, XYPosition> {
+  const result: Record<string, XYPosition> = {}
+  graph.nodes.forEach((node) => {
+    const groups: Record<string, AssetPort[]> = {
+      in: node.ports.filter((port) => port.kind === 'in' || port.kind === 'io'),
+      out: node.ports.filter((port) => port.kind === 'out' || port.kind === 'io'),
+    }
+    node.ports.forEach((port) => {
+      if (overrides[port.id]) {
+        result[port.id] = overrides[port.id]
+        return
+      }
+      if (port.schema_x != null && port.schema_y != null) {
+        result[port.id] = { x: port.schema_x, y: port.schema_y }
+        return
+      }
+      const siblings = groups[port.kind === 'out' ? 'out' : 'in']
+      const index = siblings.findIndex((item) => item.id === port.id)
+      result[port.id] = defaultPortPosition(port, Math.max(index, 0), siblings.length)
+    })
+  })
+  return result
+}
 
 function dagrePositions(graph: TopologyGraph): Record<string, XYPosition> {
   const layout = new dagre.graphlib.Graph()
@@ -192,6 +287,8 @@ function Flow({
   const [pending, setPending] = useState<Connection | null>(null)
   const [cableMark, setCableMark] = useState('')
   const [linkType, setLinkType] = useState('cable')
+  const [portOverrides, setPortOverrides] = useState<Record<string, XYPosition>>({})
+  const [portDrag, setPortDrag] = useState(false)
 
   const auto = useMemo(() => dagrePositions(graph), [graph])
 
@@ -208,10 +305,23 @@ function Flow({
   }, [graph, auto])
 
   const positions = useMemo(() => ({ ...base, ...overrides }), [base, overrides])
+  const portPositions = useMemo(
+    () => buildPortPositions(graph, portOverrides),
+    [graph, portOverrides],
+  )
+
+  const movePort = useCallback((portId: string, x: number, y: number) => {
+    setPortOverrides((prev) => ({
+      ...prev,
+      [portId]: { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 },
+    }))
+    setDirty(true)
+  }, [])
 
   useEffect(() => {
     // при обновлении графа после сохранения режим редактирования не сбрасываем
     setOverrides({})
+    setPortOverrides({})
     setDirty(false)
     setStatus(null)
     setError(null)
@@ -228,22 +338,34 @@ function Flow({
         id: node.id,
         type: 'asset',
         position: positions[node.id] ?? { x: 0, y: 0 },
-        data: { node, editable: editMode && canEdit },
+        data: {
+          node,
+          editable: editMode && canEdit,
+          portDrag: editMode && canEdit && portDrag,
+          portPositions,
+          onPortMove: movePort,
+        },
         selected: node.id === selectedId,
-        draggable: editMode && canEdit,
+        draggable: editMode && canEdit && !portDrag,
       })),
-    [graph.nodes, positions, selectedId, editMode, canEdit],
+    [graph.nodes, positions, selectedId, editMode, canEdit, portDrag, portPositions, movePort],
   )
 
   const edges = useMemo(() => buildEdges(graph), [graph])
 
   const save = useCallback(
-    async (items: Array<{ asset_id: string; x: number; y: number }>, message: string) => {
+    async (
+      items: Array<{ asset_id: string; x: number; y: number }>,
+      ports: Array<{ port_id: string; x: number; y: number }>,
+      message: string,
+    ) => {
       setSaving(true)
       setError(null)
       try {
-        const result = await gisApi.saveSchemaLayout(items)
-        setStatus(`${message}: сохранено узлов ${result.updated}`)
+        const result = await gisApi.saveSchemaLayout(items, ports)
+        setStatus(
+          `${message}: узлов ${result.updated}, портов ${result.updated_ports}`,
+        )
         setDirty(false)
         onGraphChanged()
       } catch (err) {
@@ -261,6 +383,11 @@ function Flow({
         asset_id: node.id,
         x: Math.round((positions[node.id]?.x ?? 0) * 10) / 10,
         y: Math.round((positions[node.id]?.y ?? 0) * 10) / 10,
+      })),
+      Object.entries(portPositions).map(([portId, point]) => ({
+        port_id: portId,
+        x: Math.round(point.x * 1000) / 1000,
+        y: Math.round(point.y * 1000) / 1000,
       })),
       'Ручная раскладка',
     )
@@ -309,7 +436,13 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
-              <span className="hidden text-[11px] text-ink3 sm:inline">порты: потяните от кружка к кружку</span>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={portDrag} onChange={(e) => setPortDrag(e.target.checked)} />
+                Двигать порты
+              </label>
+              <span className="hidden text-[11px] text-ink3 sm:inline">
+                {portDrag ? 'тяните кружки по краю узла' : 'порты: потяните от кружка к кружку'}
+              </span>
             </>
           ) : (
             <span className="hidden text-[11px] text-ink3 sm:inline">
@@ -347,7 +480,7 @@ function Flow({
           setError(null)
         }}
         nodesDraggable={editMode && canEdit}
-        nodesConnectable={editMode && canEdit}
+        nodesConnectable={editMode && canEdit && !portDrag}
         elementsSelectable
         fitView
         minZoom={0.15}

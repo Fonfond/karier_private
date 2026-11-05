@@ -277,6 +277,48 @@ export function MapPage() {
     setFormType(types[0]?.code ?? 'ktp')
   }
 
+  const handleAssetDrop = async (id: string, x: number, y: number) => {
+    const asset = assets.find((item) => item.id === id)
+    if (!asset) return
+
+    // сразу показываем новое место, не дожидаясь сервера
+    setAssets((prev) => prev.map((item) => (item.id === id ? { ...item, x, y } : item)))
+    setMoveHistory((prev) => [...prev, { x, y }])
+    setError(null)
+
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine
+    try {
+      if (offline) {
+        if (asset.is_mobile) {
+          await enqueue('asset_move', {
+            assetId: id,
+            x,
+            y,
+            note: 'перетащен на карте (офлайн)',
+            client_ts: new Date().toISOString(),
+          })
+        } else {
+          await enqueue('asset_update', {
+            assetId: id,
+            patch: { x, y },
+            base_version: asset.version,
+            client_ts: new Date().toISOString(),
+          })
+        }
+        await syncOutbox()
+      } else if (asset.is_mobile) {
+        await syncApi.move(id, { x, y, note: 'перетащен на карте', source: 'online' })
+        await refresh()
+      } else {
+        await gisApi.update(id, { x, y })
+        await refresh()
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось переместить объект')
+      await refresh()
+    }
+  }
+
   const submitMove = async () => {
     if (!movingAsset || !moveDraft) return
     setMoveSaving(true)
@@ -355,6 +397,8 @@ export function MapPage() {
             onMapClick={handleMapClick}
             draft={draft ?? moveDraft}
             history={moveHistory}
+            draggable={can('asset.create') && !movingAsset && !placeAssetId}
+            onDragEnd={(id, x, y) => void handleAssetDrop(id, x, y)}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-ink2">

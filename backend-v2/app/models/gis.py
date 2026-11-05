@@ -199,4 +199,8 @@ class AssetPort(Base):
     phase = Column(String(8), default="3ph")
     sort_order = Column(Integer, nullable=False, default=0)
 
+    # положение кружка порта на узле схемы: доли ширины/высоты узла (0…1)
+    schema_x = Column(Numeric(6, 4))
+    schema_y = Column(Numeric(6, 4))
+
     asset = relationship("Asset", back_populates="ports")

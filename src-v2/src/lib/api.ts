@@ -256,6 +256,8 @@ export const api = {
     request<Employee>(`/api/employees/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   dismissEmployee: (id: string) =>
     request<Employee>(`/api/employees/${id}`, { method: 'DELETE' }),
+  deleteEmployeePermanent: (id: string) =>
+    request<Employee>(`/api/employees/${id}/permanent`, { method: 'DELETE' }),
   resetPassword: (id: string) =>
     request<{ temp_password: string; note: string }>(`/api/employees/${id}/reset-password`, {
       method: 'POST',

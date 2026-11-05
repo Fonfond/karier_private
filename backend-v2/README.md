@@ -75,6 +75,15 @@
 | Сотрудники | `DELETE /employees/{id}` — увольнение с отзывом сессий, защита последнего админа |
 | Права | новый `require_admin`; типы — `settings.edit`, объекты — `asset.create` |
 
+### Спринт 9: UX-полировка
+
+| Блок | Детали |
+|---|---|
+| Позиции портов | `gis.asset_ports.schema_x/schema_y` (доли 0…1), отдаются в графе и связях |
+| Раскладка | `PUT /topology/layout` принимает `items` и `ports` |
+| Удаление людей | `DELETE /employees/{id}/permanent` с защитой истории (`employee.has_history`) |
+| Тесты | 68 pytest |
+
 ### Спринты 6–7: дашборд, отчёты, деплой
 
 | Блок | Детали |

@@ -55,3 +55,6 @@ backend-v2/var/media/
 # —борка и кэши тестов
 .pytest_cache/
 coverage/
+
+# локальные скрипты проверок
+

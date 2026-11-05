@@ -477,6 +477,8 @@ def topology_graph(
                     name=p.name,
                     kind=p.kind,
                     voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
+                    schema_x=float(p.schema_x) if p.schema_x is not None else None,
+                    schema_y=float(p.schema_y) if p.schema_y is not None else None,
                 )
                 for p in item["asset"].ports
             ],
@@ -510,7 +512,11 @@ def save_schema_layout(
 ) -> SchemaLayoutOut:
     pit = gis.get_pit(db)
     result = gis.set_schema_layout(
-        db, pit.id, [item.model_dump() for item in payload.items], admin
+        db,
+        pit.id,
+        [item.model_dump() for item in payload.items],
+        admin,
+        ports=[item.model_dump() for item in payload.ports],
     )
     return SchemaLayoutOut(**result)
 
