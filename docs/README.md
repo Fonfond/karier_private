@@ -15,6 +15,13 @@
 | [`08-sprint-4-report.md`](08-sprint-4-report.md) | Спринт 4: фото с водяным знаком, обходы, дефекты, QR, офлайн-очередь | все |
 | [`09-sprint-5-report.md`](09-sprint-5-report.md) | Спринт 5: журнал изменений, push/pull, конфликты, перемещения, Service Worker | все |
 | [`10-sprint-6-7-report.md`](10-sprint-6-7-report.md) | Спринты 6–7: дашборд, Excel/PDF-отчёты, PWA, безопасность, деплой | все |
+| [`11-sprint-8-report.md`](11-sprint-8-report.md) | Спринт 8: иерархия типов, CRUD реестра и людей, ручной редактор схемы | все |
+| [`12-sprint-9-report.md`](12-sprint-9-report.md) | Спринт 9: drag&drop на карте, правка карточки, порты на схеме, удаление людей | все |
+| [`13-final-report.md`](13-final-report.md) | Финал: фикс схемы, удаление дефектов, тур, режим презентации, очистка демо | все |
+| [`14-mcp-report.md`](14-mcp-report.md) | Спринт 11: MCP-сервер для ИИ, сетка 20 px, экспорт DXF | все |
+| [`15-sprint-12-report.md`](15-sprint-12-report.md) | Спринт 12: фикс React Flow, загрузка подложек, CRUD связей | все |
+| [`16-sprint-13-mobile-report.md`](16-sprint-13-mobile-report.md) | Спринт 13: мобильная навигация, шторка, карточки, safe-area | все |
+| [`17-sprint-14-audit-report.md`](17-sprint-14-audit-report.md) | Спринт 14: аудит всех экранов — 0 пересечений с навигацией | все |
 
 ---
 
