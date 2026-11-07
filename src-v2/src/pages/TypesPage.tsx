@@ -159,8 +159,8 @@ function Editor({
   const parents = types.filter((type) => type.id !== form.id && type.is_active)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
-      <div className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-t-2xl border border-line bg-surface1 p-4 sm:rounded-2xl">
+    <div className="modal-safe fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-0 sm:items-center sm:p-4">
+      <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-3xl overflow-y-auto md:max-h-[92vh] rounded-t-2xl border border-line bg-surface1 p-4 sm:rounded-2xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-[16px] font-semibold">{form.id ? 'Изменить тип' : 'Новый тип'}</h2>
           <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={onClose}>

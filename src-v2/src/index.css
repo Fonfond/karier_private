@@ -235,3 +235,28 @@ body,
   --warm-strong: #ffb020;
   --ground-strong: #b58bff;
 }
+/* --- единый отступ под нижнюю навигацию (Спринт 14) --- */
+:root {
+  --bottom-nav: 0px;
+}
+@media (max-width: 767px) {
+  :root {
+    --bottom-nav: calc(64px + env(safe-area-inset-bottom));
+  }
+}
+.pb-nav {
+  padding-bottom: calc(var(--bottom-nav) + 16px);
+}
+.nav-safe-bottom {
+  bottom: var(--bottom-nav);
+}
+.nav-safe-above {
+  bottom: calc(var(--bottom-nav) + 12px);
+}
+.modal-safe {
+  padding-bottom: calc(var(--bottom-nav) + 12px);
+}
+@media (min-width: 768px) {
+  .pb-nav { padding-bottom: 0; }
+  .modal-safe { padding-bottom: 0; }
+}

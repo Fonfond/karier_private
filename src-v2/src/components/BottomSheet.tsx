@@ -72,13 +72,13 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
       ) : null}
 
       <section
-        className={`fixed inset-x-0 bottom-0 z-[1200] flex flex-col rounded-t-2xl border-t border-line bg-surface1 shadow-sheet transition-[height,transform] duration-200 md:max-w-xl md:left-1/2 md:-translate-x-1/2 ${
-          open ? 'translate-y-0' : 'translate-y-full'
+        className={`fixed inset-x-0 z-[1350] flex flex-col rounded-t-2xl border-t border-line bg-surface1 shadow-sheet transition-[height,transform] duration-200 md:bottom-0 md:left-1/2 md:max-w-xl md:-translate-x-1/2 ${
+          open ? 'translate-y-0' : 'translate-y-[calc(100%+var(--bottom-nav))]'
         }`}
         style={{
           height: HEIGHTS[snap],
+          bottom: 'var(--bottom-nav)',
           transform: dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined,
-          paddingBottom: 'env(safe-area-inset-bottom)',
         }}
         role="dialog"
         aria-modal="true"

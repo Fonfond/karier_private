@@ -379,8 +379,8 @@ export function EmployeesPage() {
       </div>
 
       {editing ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
-          <div className="w-full max-w-lg rounded-t-2xl border border-line bg-surface1 p-4 sm:rounded-2xl">
+        <div className="modal-safe fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-line bg-surface1 p-4 md:max-h-none sm:rounded-2xl">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-[16px] font-semibold">Карточка {editing.tab_no}</h2>
               <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={() => setEditing(null)}>

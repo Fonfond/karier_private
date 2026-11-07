@@ -572,7 +572,11 @@ function Flow({
         className="bg-[#070C10]"
       >
         <Background color="#1B2733" gap={GRID} size={1} />
-        <Controls showInteractive={false} position="bottom-right" />
+        <Controls
+          showInteractive={false}
+          position="bottom-right"
+          style={{ bottom: 'calc(var(--bottom-nav) + 12px)', right: 12 }}
+        />
       </ReactFlow>
 
       {pending ? (

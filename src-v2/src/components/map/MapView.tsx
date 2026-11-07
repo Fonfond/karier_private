@@ -164,7 +164,7 @@ function MobileMapControls({ bounds }: { bounds: L.LatLngBounds }) {
   const button = 'grid h-12 w-12 place-items-center rounded-xl border border-line bg-surface1/95 text-[22px] text-ink shadow-lg backdrop-blur active:bg-surface2'
 
   return (
-    <div className="pointer-events-none absolute bottom-[calc(72px+env(safe-area-inset-bottom))] right-3 z-[1001] flex flex-col gap-2 md:bottom-20">
+    <div className="pointer-events-none absolute bottom-3 right-3 z-[1001] flex flex-col gap-2 md:bottom-20">
       <button
         type="button"
         className={`pointer-events-auto ${button}`}

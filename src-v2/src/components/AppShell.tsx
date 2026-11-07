@@ -129,10 +129,11 @@ export function AppShell() {
       </header>
 
       <main
+        style={isMap ? { paddingBottom: 'var(--bottom-nav)' } : undefined}
         className={
           isMap
-            ? 'relative min-h-0 flex-1 pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0'
-            : 'mx-auto w-full max-w-6xl flex-1 px-3 py-4 pb-[calc(72px+env(safe-area-inset-bottom))] sm:px-4 sm:py-6 md:pb-6'
+            ? 'relative min-h-0 flex-1'
+            : 'mx-auto w-full max-w-6xl flex-1 px-3 py-4 pb-nav sm:px-4 sm:py-6'
         }
       >
         <Outlet />
