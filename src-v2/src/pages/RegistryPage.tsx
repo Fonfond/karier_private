@@ -244,7 +244,62 @@ export function RegistryPage() {
         <span className="ml-auto text-[12px] text-ink3">Показано {rows.length} из {items.length}</span>
       </div>
 
-      <div className="card overflow-x-auto p-0">
+      <div className="space-y-2 md:hidden">
+        {rows.map((item) => (
+          <div key={item.id} className="card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-mono text-[12px] text-ink3">{item.code}</div>
+                <div className="truncate text-[15px] font-medium">{item.name}</div>
+                <div className="mt-0.5 text-[12px] text-ink2">
+                  {item.type.icon} {item.type.name}
+                  {item.is_mobile ? ' · мобильный' : ''}
+                </div>
+              </div>
+              <span
+                className="shrink-0 rounded-full px-2 py-1 text-[12px]"
+                style={{ background: `${STATUS_COLOR[item.status]}22`, color: STATUS_COLOR[item.status] }}
+              >
+                {STATUS_LABEL[item.status] ?? item.status}
+              </span>
+            </div>
+            <div className="mt-2 text-[12px] text-ink3">
+              X {item.x ?? '—'} · Y {item.y ?? '—'}
+              {item.grounded ? ' · заземлён' : ''}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-ghost h-11 flex-1 px-3 text-[13px]"
+                onClick={() => navigate('/map', { state: { openAssetId: item.id } })}
+              >
+                Открыть
+              </button>
+              {can('asset.create') ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-ghost h-11 flex-1 px-3 text-[13px]"
+                    onClick={() => navigate('/map', { state: { placeAssetId: item.id } })}
+                  >
+                    {item.x === null ? 'Разместить' : 'Переместить'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost admin-only h-11 px-3 text-[13px] text-warm"
+                    onClick={() => void removeAsset(item)}
+                  >
+                    🗑
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 ? <div className="card text-[13px] text-ink3">Ничего не найдено</div> : null}
+      </div>
+
+      <div className="card hidden overflow-x-auto p-0 md:block">
         <table className="w-full min-w-[900px] text-left text-[13px]">
           <thead className="bg-surface2/60 text-[12px] uppercase tracking-wide text-ink3">
             <tr>

@@ -113,7 +113,7 @@ export function DefectsPage() {
 
       <div className="space-y-2">
         {items.map((defect) => (
-          <div key={defect.id} className="card flex flex-wrap gap-4 p-4">
+          <div key={defect.id} className="card flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap sm:gap-4">
             {defect.photo_before ? (
               <a
                 href={defect.photo_before.content_url}

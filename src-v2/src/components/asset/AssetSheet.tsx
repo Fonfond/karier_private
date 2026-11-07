@@ -171,13 +171,13 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
         </button>
       </div>
 
-      <div className="flex gap-1 rounded-xl border border-line bg-surface2/50 p-1">
+      <div className="-mx-1 flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface2/50 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {TABS.map((item) => (
           <button
             key={item.key}
             type="button"
             onClick={() => setTab(item.key)}
-            className={`flex-1 rounded-lg px-1 py-2 text-[12px] ${
+            className={`min-h-[44px] shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] ${
               tab === item.key ? 'bg-surface1 text-ink' : 'text-ink2'
             }`}
           >

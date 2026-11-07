@@ -167,7 +167,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
               // в режиме портов handle не соединяет, но должен ловить перетаскивание
               pointerEvents: portDrag ? 'auto' : undefined,
             }}
-            className={`!h-3 !w-3 !border-2 ${
+            className={`!h-5 !w-5 !border-2 md:!h-3 md:!w-3 ${
               portDrag
                 ? '!border-warm !bg-warm/40 cursor-grab'
                 : editable

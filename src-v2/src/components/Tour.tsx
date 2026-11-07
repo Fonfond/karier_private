@@ -82,7 +82,7 @@ export function Tour() {
         />
       ) : null}
 
-      <div className="pointer-events-auto absolute inset-x-3 bottom-4 mx-auto max-w-md rounded-2xl border border-accent/50 bg-surface1 p-4 shadow-2xl sm:inset-x-auto sm:right-6 sm:bottom-6">
+      <div className="pointer-events-auto absolute inset-x-3 bottom-[calc(84px+env(safe-area-inset-bottom))] mx-auto max-h-[60dvh] max-w-md overflow-y-auto rounded-2xl border border-accent/50 bg-surface1 p-4 shadow-2xl sm:inset-x-auto sm:bottom-6 sm:right-6">
         <div className="mb-1 text-[11px] uppercase tracking-wide text-ink3">
           Знакомство · {step + 1} из {STEPS.length}
         </div>

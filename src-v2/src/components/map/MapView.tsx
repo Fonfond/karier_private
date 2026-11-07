@@ -152,6 +152,60 @@ export function MapView({
       ) : null}
 
       {draft ? <Marker position={[draft.y, draft.x]} icon={draftIcon} interactive={false} /> : null}
+      <MobileMapControls bounds={bounds} />
     </MapContainer>
+  )
+}
+
+/** Крупные кнопки зума и центрирования для телефона (48×48, в зоне большого пальца). */
+function MobileMapControls({ bounds }: { bounds: L.LatLngBounds }) {
+  const map = useMap()
+
+  const button = 'grid h-12 w-12 place-items-center rounded-xl border border-line bg-surface1/95 text-[22px] text-ink shadow-lg backdrop-blur active:bg-surface2'
+
+  return (
+    <div className="pointer-events-none absolute bottom-[calc(72px+env(safe-area-inset-bottom))] right-3 z-[1001] flex flex-col gap-2 md:bottom-20">
+      <button
+        type="button"
+        className={`pointer-events-auto ${button}`}
+        aria-label="Приблизить"
+        onClick={() => map.zoomIn()}
+      >
+        +
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button}`}
+        aria-label="Отдалить"
+        onClick={() => map.zoomOut()}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button} text-[18px]`}
+        aria-label="Центрировать карту"
+        onClick={() => map.fitBounds(bounds, { animate: true })}
+        title="Центр карьера"
+      >
+        ⌖
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button} text-[18px]`}
+        aria-label="Моё положение"
+        title="Моё положение"
+        onClick={() => {
+          if (!navigator.geolocation) return
+          navigator.geolocation.getCurrentPosition(
+            () => map.fitBounds(bounds, { animate: true }),
+            () => map.fitBounds(bounds, { animate: true }),
+            { timeout: 4000 },
+          )
+        }}
+      >
+        ◎
+      </button>
+    </div>
   )
 }

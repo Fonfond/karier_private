@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { AssetSheet } from '../components/asset/AssetSheet'
 import { BottomSheet } from '../components/BottomSheet'
@@ -39,7 +39,8 @@ export function MapPage() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [view, setView] = useState<View>('map')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [view, setView] = useState<View>(() => (searchParams.get('view') === 'schema' ? 'schema' : 'map'))
   const [layer, setLayer] = useState<MapLayer | null>(null)
   const [mapOpen, setMapOpen] = useState(false)
   const [mapFile, setMapFile] = useState<File | null>(null)
@@ -455,7 +456,7 @@ export function MapPage() {
           <div className="flex rounded-full border border-line bg-bg/85 p-1 backdrop-blur">
             <button
               type="button"
-              onClick={() => setView('map')}
+              onClick={() => { setView('map'); setSearchParams({}, { replace: true }) }}
               className={`rounded-full px-3 py-1.5 text-[12px] ${view === 'map' ? 'bg-accent text-[#08131F]' : 'text-ink2'}`}
             >
               Карта
@@ -463,7 +464,7 @@ export function MapPage() {
             <button
               type="button"
               data-tour="schema"
-              onClick={() => setView('schema')}
+              onClick={() => { setView('schema'); setSearchParams({ view: 'schema' }, { replace: true }) }}
               className={`rounded-full px-3 py-1.5 text-[12px] ${view === 'schema' ? 'bg-accent text-[#08131F]' : 'text-ink2'}`}
             >
               Схема
@@ -471,7 +472,7 @@ export function MapPage() {
             {can('settings.edit') ? (
               <button
                 type="button"
-                className="admin-only whitespace-nowrap rounded-full border border-line bg-bg/85 px-3 py-1.5 text-[12px] text-ink2 backdrop-blur hover:text-ink"
+                className="admin-only hidden whitespace-nowrap rounded-full border border-line bg-bg/85 px-3 py-1.5 text-[12px] text-ink2 backdrop-blur hover:text-ink md:inline-flex"
                 onClick={() => setMapOpen(true)}
               >
                 🖼 Загрузить карту
@@ -546,7 +547,7 @@ export function MapPage() {
         {adding ? (
           <div className="pointer-events-auto mt-2 flex items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-[13px] text-accent backdrop-blur">
             <span>
-              {draft ? `Точка: X ${draft.x} м, Y ${draft.y} м` : 'Кликните по карте, чтобы поставить объект'}
+              {draft ? `Точка: X ${draft.x} м, Y ${draft.y} м` : 'Тапните по карте, чтобы поставить объект'}
             </span>
             <button type="button" className="text-[12px] underline" onClick={cancelAdding}>
               Отмена
@@ -949,6 +950,18 @@ export function MapPage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {can('asset.create') && view === 'map' ? (
+        <button
+          type="button"
+          className="absolute right-3 z-[1002] grid h-14 w-14 place-items-center rounded-2xl bg-accent text-[28px] font-semibold text-[#06111f] shadow-xl active:scale-95 md:hidden"
+          style={{ bottom: 'calc(72px + 236px + env(safe-area-inset-bottom))' }}
+          aria-label={adding ? 'Отменить добавление' : 'Добавить объект'}
+          onClick={() => (adding ? cancelAdding() : setAdding(true))}
+        >
+          {adding ? '×' : '+'}
+        </button>
       ) : null}
 
       {connecting && connectStep === 'to' ? (
