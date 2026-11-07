@@ -17,6 +17,7 @@ import {
 import dagre from 'dagre'
 import '@xyflow/react/dist/style.css'
 import type { AssetPort, GraphNode, TopologyGraph } from '../../lib/gis'
+import { downloadDxf } from '../../lib/dxf'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
 import { ApiError } from '../../lib/api'
 
@@ -307,7 +308,7 @@ function Flow({
   const movePort = useCallback((portId: string, x: number, y: number) => {
     setPortOverrides((prev) => ({
       ...prev,
-      [portId]: { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 },
+      [portId]: { x: Math.round(x * 20) / 20, y: Math.round(y * 20) / 20 },
     }))
     setDirty(true)
   }, [])
@@ -430,6 +431,14 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
+              <button
+                type="button"
+                className="btn-ghost h-8 px-3"
+                title="Скачать раскладку в DXF для nanoCAD/AutoCAD"
+                onClick={() => downloadDxf(graph, positions, portPositions)}
+              >
+                ⬇ DXF
+              </button>
               <label className="flex items-center gap-1.5">
                 <input type="checkbox" checked={portDrag} onChange={(e) => setPortDrag(e.target.checked)} />
                 Двигать порты
@@ -475,6 +484,8 @@ function Flow({
         }}
         nodesDraggable={editMode && canEdit}
         nodesConnectable={editMode && canEdit && !portDrag}
+        snapToGrid
+        snapGrid={[20, 20]}
         elementsSelectable
         fitView
         minZoom={0.15}
