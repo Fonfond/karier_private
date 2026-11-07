@@ -134,6 +134,11 @@ export interface GraphEdge {
   link_type: string
   state: string
   feed_role: string
+  cable_mark: string | null
+  length_m: number | null
+  cross_section_mm2: number | null
+  cores: number | null
+  version: number
 }
 
 export interface TopologyGraph {
@@ -223,6 +228,19 @@ export const gisApi = {
   powerPath: (id: string) => apiRequest<PowerPath>(`/api/assets/${id}/power-path`),
 
   layer: () => apiRequest<MapLayer>('/api/map/layers/active'),
+
+  uploadMap: (
+    file: File,
+    params: { name: string; meters_per_pixel: number; origin_x: number; origin_y: number },
+  ) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', params.name)
+    form.append('meters_per_pixel', String(params.meters_per_pixel))
+    form.append('origin_x', String(params.origin_x))
+    form.append('origin_y', String(params.origin_y))
+    return apiRequest<MapLayer>('/api/map/layers', { method: 'POST', body: form })
+  },
 
   create: (payload: {
     name: string

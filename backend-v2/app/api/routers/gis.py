@@ -494,6 +494,13 @@ def topology_graph(
             link_type=item["link"].link_type,
             state=item["link"].state,
             feed_role=item["link"].feed_role,
+            cable_mark=item["link"].cable_mark,
+            length_m=float(item["link"].length_m) if item["link"].length_m else None,
+            cross_section_mm2=(
+                float(item["link"].cross_section_mm2) if item["link"].cross_section_mm2 else None
+            ),
+            cores=item["link"].cores,
+            version=item["link"].version,
         )
         for item in data["edges"]
     ]

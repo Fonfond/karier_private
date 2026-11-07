@@ -84,6 +84,14 @@
 | Удаление людей | `DELETE /employees/{id}/permanent` с защитой истории (`employee.has_history`) |
 | Тесты | 68 pytest |
 
+### Спринт 12: подложки и связи
+
+| Блок | Детали |
+|---|---|
+| Карты | POST /api/map/layers (multipart, admin), GET /api/map/layers, GET /api/map/layers/{id}/image |
+| Связи | граф отдаёт марку, длину, сечение и версию связи для редактора |
+| Тесты | 84 pytest |
+
 ### Спринты 6–7: дашборд, отчёты, деплой
 
 | Блок | Детали |

@@ -41,6 +41,11 @@ export function MapPage() {
 
   const [view, setView] = useState<View>('map')
   const [layer, setLayer] = useState<MapLayer | null>(null)
+  const [mapOpen, setMapOpen] = useState(false)
+  const [mapFile, setMapFile] = useState<File | null>(null)
+  const [mapSaving, setMapSaving] = useState(false)
+  const [mapError, setMapError] = useState<string | null>(null)
+  const [mapForm, setMapForm] = useState({ name: 'Новая карта', mpp: '0.5', ox: '0', oy: '0' })
   const [assets, setAssets] = useState<AssetBrief[]>([])
   const [types, setTypes] = useState<AssetType[]>([])
   const [graph, setGraph] = useState<TopologyGraph | null>(null)
@@ -319,6 +324,31 @@ export function MapPage() {
     }
   }
 
+  const uploadMap = async () => {
+    if (!mapFile) {
+      setMapError('Выберите файл изображения')
+      return
+    }
+    setMapSaving(true)
+    setMapError(null)
+    try {
+      const created = await gisApi.uploadMap(mapFile, {
+        name: mapForm.name.trim() || 'Новая карта',
+        meters_per_pixel: Number(mapForm.mpp.replace(',', '.')) || 0.5,
+        origin_x: Number(mapForm.ox.replace(',', '.')) || 0,
+        origin_y: Number(mapForm.oy.replace(',', '.')) || 0,
+      })
+      setLayer(created)
+      setMapOpen(false)
+      setMapFile(null)
+      await refresh()
+    } catch (err) {
+      setMapError(err instanceof ApiError ? err.message : 'Не удалось загрузить карту')
+    } finally {
+      setMapSaving(false)
+    }
+  }
+
   const submitMove = async () => {
     if (!movingAsset || !moveDraft) return
     setMoveSaving(true)
@@ -438,6 +468,15 @@ export function MapPage() {
             >
               Схема
             </button>
+            {can('settings.edit') ? (
+              <button
+                type="button"
+                className="admin-only whitespace-nowrap rounded-full border border-line bg-bg/85 px-3 py-1.5 text-[12px] text-ink2 backdrop-blur hover:text-ink"
+                onClick={() => setMapOpen(true)}
+              >
+                🖼 Загрузить карту
+              </button>
+            ) : null}
           </div>
 
           {view === 'map' ? (
@@ -830,6 +869,87 @@ export function MapPage() {
           </div>
         </div>
       </BottomSheet>
+
+      {mapOpen ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="w-full max-w-lg rounded-t-2xl border border-line bg-surface1 p-4 sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[16px] font-semibold">Новая подложка карты</h2>
+              <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={() => setMapOpen(false)}>
+                Закрыть
+              </button>
+            </div>
+
+            {mapError ? <Alert kind="error">{mapError}</Alert> : null}
+
+            <div className="space-y-3">
+              <label className="block">
+                <span className="label">Изображение (PNG, JPEG, WebP)</span>
+                <input
+                  className="input h-10 py-1.5"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => setMapFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="label">Название</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.name}
+                    onChange={(e) => setMapForm({ ...mapForm, name: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Масштаб, м/пиксель</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.mpp}
+                    onChange={(e) => setMapForm({ ...mapForm, mpp: e.target.value })}
+                    placeholder="0.5"
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Начало X, м</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.ox}
+                    onChange={(e) => setMapForm({ ...mapForm, ox: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Начало Y, м</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.oy}
+                    onChange={(e) => setMapForm({ ...mapForm, oy: e.target.value })}
+                  />
+                </label>
+              </div>
+              <p className="text-[11px] text-ink3">
+                Координаты объектов заданы в метрах и не меняются: новая подложка просто
+                накладывается на ту же систему координат. Масштаб 0.5 м/px соответствует
+                прежней карте.
+              </p>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary px-5"
+                disabled={mapSaving || !mapFile}
+                onClick={() => void uploadMap()}
+              >
+                {mapSaving ? 'Загружаем…' : 'Загрузить карту'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setMapOpen(false)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {connecting && connectStep === 'to' ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 z-[1000] flex justify-center">

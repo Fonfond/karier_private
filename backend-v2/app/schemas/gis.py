@@ -373,6 +373,11 @@ class GraphEdgeOut(BaseModel):
     link_type: str
     state: str
     feed_role: str
+    cable_mark: str | None = None
+    length_m: float | None = None
+    cross_section_mm2: float | None = None
+    cores: int | None = None
+    version: int = 1
 
 
 class TopologyGraphOut(BaseModel):

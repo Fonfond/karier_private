@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import ApiError, conflict, not_found
@@ -61,6 +61,8 @@ def layer_size(layer: MapLayer) -> tuple[float, float]:
 
 def layer_out(layer: MapLayer) -> MapLayerOut:
     width_m, height_m = layer_size(layer)
+    origin_x = float(layer.origin_x or 0)
+    origin_y = float(layer.origin_y or 0)
     return MapLayerOut(
         id=layer.id,
         name=layer.name,
@@ -70,12 +72,77 @@ def layer_out(layer: MapLayer) -> MapLayerOut:
         meters_per_pixel=float(layer.meters_per_pixel),
         width_m=width_m,
         height_m=height_m,
-        # Leaflet CRS.Simple: [[0,0],[height, width]] в метрах
-        bounds=[[0.0, 0.0], [height_m, width_m]],
+        # Leaflet CRS.Simple: [[y0, x0], [y1, x1]] в метрах с учётом начала координат
+        bounds=[[origin_y, origin_x], [origin_y + height_m, origin_x + width_m]],
         min_zoom=layer.min_zoom,
         max_zoom=layer.max_zoom,
         version=layer.version,
     )
+
+
+def create_map_layer(
+    db: Session,
+    pit_id: uuid.UUID,
+    *,
+    name: str,
+    data: bytes,
+    width_px: int,
+    height_px: int,
+    meters_per_pixel: float,
+    origin_x: float,
+    origin_y: float,
+    actor: AssetType | None = None,
+    actor_id: uuid.UUID | None = None,
+) -> MapLayer:
+    """Загрузить новую подложку: прежние слои деактивируются, координаты объектов не меняются."""
+    from app.services.storage import storage
+
+    if not (0.01 <= meters_per_pixel <= 20):
+        raise ApiError(422, "map.bad_scale", "Масштаб должен быть от 0.01 до 20 м/пиксель")
+    if width_px < 200 or height_px < 200:
+        raise ApiError(422, "map.too_small", "Карта слишком маленькая (минимум 200×200 px)")
+
+    layer_id = uuid.uuid4()
+    key = f"maps/{layer_id}.png"
+    storage.save(data, key=key)
+
+    db.execute(
+        update(MapLayer).where(MapLayer.pit_id == pit_id).values(is_active=False)
+    )
+
+    version = (
+        db.scalar(select(func.max(MapLayer.version)).where(MapLayer.pit_id == pit_id)) or 0
+    ) + 1
+
+    layer = MapLayer(
+        id=layer_id,
+        pit_id=pit_id,
+        name=name,
+        kind="raster",
+        image_url=f"/api/map/layers/{layer_id}/image",
+        width_px=width_px,
+        height_px=height_px,
+        meters_per_pixel=meters_per_pixel,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        version=version,
+        is_active=True,
+        uploaded_by=actor_id,
+    )
+    db.add(layer)
+    db.commit()
+    db.refresh(layer)
+
+    from app.services import audit
+
+    audit.add(
+        "map.layer_uploaded",
+        entity="map_layer",
+        entity_id=layer.id,
+        detail=f"Загружена карта «{name}»: {width_px}×{height_px} px, {meters_per_pixel} м/px",
+        payload={"version": version, "width_px": width_px, "height_px": height_px},
+    )
+    return layer
 
 
 # --- сериализация ----------------------------------------------------------
