@@ -21,7 +21,7 @@ import '@xyflow/react/dist/style.css'
 import type { AssetPort, GraphNode, TopologyGraph } from '../../lib/gis'
 import { downloadDxf } from '../../lib/dxf'
 import { GostSymbol, SchemaFrameOverlay } from './GostSymbols'
-import type { SchemaFrame } from '../../lib/gis'
+import type { SchemaBlock, SchemaFrame, GraphBlock } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
 import { ApiError } from '../../lib/api'
 
@@ -35,6 +35,9 @@ type AssetNodeData = {
   portDrag: boolean
   portPositions: Record<string, XYPosition>
   onPortMove: (portId: string, x: number, y: number) => void
+  block?: GraphBlock
+  onSelectChild?: (id: string) => void
+  onAddCell?: (assetId: string) => void
 }
 
 function portLabel(port: AssetPort): string {
@@ -98,6 +101,69 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   const { node, editable, portDrag, portPositions, onPortMove } = data
   const statusColor = STATUS_COLOR[node.status] ?? '#6B7A8A'
   const dim = !node.energized
+
+  if (data.block) {
+    const busbars = data.block.children.filter((child) => child.role === 'busbar')
+    const cells = data.block.children.filter((child) => child.role !== 'busbar')
+    return (
+      <div
+        className={`relative w-[300px] rounded-xl border-2 bg-surface1/95 p-2 text-left ${
+          selected ? 'ring-2 ring-accent' : ''
+        } border-accent/40`}
+      >
+        <div className="flex items-center justify-between gap-2 border-b border-line pb-1">
+          <div className="min-w-0">
+            <div className="truncate text-[12px] font-semibold text-ink">{data.block.name}</div>
+            <div className="text-[10px] text-ink3">
+              {data.block.code} · {cells.length} ячеек · {busbars.length} секции
+            </div>
+          </div>
+          {data.editable && data.onAddCell ? (
+            <button
+              type="button"
+              className="btn-ghost h-6 px-2 text-[11px]"
+              onClick={(event) => {
+                event.stopPropagation()
+                data.onAddCell?.(data.block!.asset_id)
+              }}
+            >
+              ＋ ячейка
+            </button>
+          ) : null}
+        </div>
+
+        <div className="mt-1 space-y-1">
+          {busbars.map((bus) => (
+            <div key={bus.id} className="flex items-center gap-2">
+              <span className="w-20 truncate text-[9px] text-ink3">{bus.name}</span>
+              <span className="h-[3px] flex-1 rounded bg-accent/70" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-1 grid grid-cols-2 gap-0.5">
+          {cells.slice(0, 10).map((cell) => (
+            <button
+              key={cell.id}
+              type="button"
+              title={`${cell.name} · ${cell.type_name ?? ''}`}
+              className="truncate rounded px-1 py-0.5 text-left text-[9px] text-ink2 hover:bg-surface2"
+              onClick={(event) => {
+                event.stopPropagation()
+                data.onSelectChild?.(cell.id)
+              }}
+            >
+              ▭ {cell.name}
+            </button>
+          ))}
+        </div>
+
+        <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-accent" />
+        <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-accent" />
+      </div>
+    )
+  }
+
   const box = useRef<HTMLDivElement | null>(null)
   const dragging = useRef<string | null>(null)
 
@@ -318,6 +384,42 @@ function Flow({
     setDirty(true)
   }, [setNodes])
 
+  const [blocks, setBlocks] = useState<SchemaBlock[]>([])
+
+  useEffect(() => {
+    gisApi
+      .schemaBlocks()
+      .then(setBlocks)
+      .catch(() => setBlocks([]))
+  }, [])
+
+  const handleAddCell = useCallback(
+    async (assetId: string) => {
+      const label = `ф.${10 + Math.floor(Math.random() * 80)}-6`
+      try {
+        await gisApi.addBlockCell(assetId, label)
+        setStatus(`Добавлена ячейка ${label}`)
+        onGraphChanged()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось добавить ячейку')
+      }
+    },
+    [onGraphChanged],
+  )
+
+  const placeBlock = useCallback(
+    async (code: string) => {
+      try {
+        await gisApi.instantiateBlock(code, 120, 140)
+        setStatus('Блок установлен на схему')
+        onGraphChanged()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось поставить блок')
+      }
+    },
+    [onGraphChanged],
+  )
+
   // Полная сборка схемы только при смене графа: позиции из БД приоритетнее dagre
   useEffect(() => {
     const positions = nodePositions(graph)
@@ -334,6 +436,9 @@ function Flow({
           portDrag: false,
           portPositions: portsForNode(node),
           onPortMove: (portId, x, y) => onPortMove(node.id, portId, x, y),
+          block: graph.blocks.find((item) => item.asset_id === node.id),
+          onSelectChild: onSelect,
+          onAddCell: handleAddCell,
         },
       })),
     )
@@ -344,7 +449,7 @@ function Flow({
     setEdgeDraft(null)
     setPending(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, setNodes, setEdges])
+  }, [graph, setNodes, setEdges, handleAddCell, onSelect])
 
   // Переключатели режимов меняют только флаги, не трогая позиции
   useEffect(() => {
@@ -533,6 +638,27 @@ function Flow({
 
   return (
     <div className="relative h-full w-full">
+      {canEdit && blocks.length > 0 ? (
+        <div className="absolute left-2 top-16 z-10 max-h-[55%] w-[196px] overflow-y-auto rounded-xl border border-line bg-surface1/95 p-2 text-[12px] backdrop-blur">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-ink3">Библиотека блоков</div>
+          <div className="space-y-1">
+            {blocks.map((block) => (
+              <button
+                key={block.id}
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-ink2 hover:bg-surface2 hover:text-ink"
+                title={`${block.nodes_count} элементов · ${block.external_ports} внешних портов`}
+                onClick={() => void placeBlock(block.code)}
+              >
+                <span>{block.icon ?? '▣'}</span>
+                <span className="min-w-0 flex-1 truncate">{block.name}</span>
+                <span className="text-[10px] text-ink3">{block.nodes_count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {canEdit ? (
         <div className="pointer-events-auto absolute bottom-3 left-1/2 z-10 flex max-w-[calc(100%-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl border border-line bg-surface1/95 px-2 py-1.5 text-[12px] backdrop-blur">
           <label className="flex items-center gap-1.5">

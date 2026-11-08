@@ -14,6 +14,7 @@ from app.api.routers import (
     media,
     moves,
     reports,
+    schema_blocks,
     sync,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "media",
     "moves",
     "reports",
+    "schema_blocks",
     "sync",
 ]

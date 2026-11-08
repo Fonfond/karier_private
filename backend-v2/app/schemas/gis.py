@@ -404,9 +404,31 @@ class GraphEdgeOut(BaseModel):
     version: int = 1
 
 
+class GraphBlockChildOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    role: str | None = None
+    local_x: float | None = None
+    local_y: float | None = None
+    type_name: str | None = None
+    params: dict[str, Any] = {}
+
+
+class GraphBlockOut(BaseModel):
+    asset_id: uuid.UUID
+    code: str
+    name: str
+    block_code: str | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
+    children: list[GraphBlockChildOut] = []
+
+
 class TopologyGraphOut(BaseModel):
     nodes: list[GraphNodeOut]
     edges: list[GraphEdgeOut]
+    blocks: list[GraphBlockOut] = []
 
 
 class TopologyIssueOut(BaseModel):
@@ -429,3 +451,40 @@ class ChildAssetOut(BaseModel):
     energized: bool
     ports: list[PortRefOut] = []
 
+class SchemaBlockOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    block_type: str
+    icon: str | None = None
+    asset_type_code: str | None = None
+    nodes_count: int = 0
+    external_ports: int = 0
+    roles: list[str] = []
+
+
+class BlockInstantiateIn(BaseModel):
+    x: float
+    y: float
+    name: str | None = Field(default=None, max_length=255)
+
+
+class BlockInstantiateOut(BaseModel):
+    asset_id: uuid.UUID
+    code: str
+    children: int
+    block_code: str
+
+
+class BlockCellIn(BaseModel):
+    label: str = Field(min_length=1, max_length=128)
+    role: Literal["cell", "incoming", "outgoing"] = "cell"
+    type_code: str = Field(default="cell", max_length=48)
+    params: dict[str, Any] = {}
+
+
+class BlockCellOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    role: str | None = None

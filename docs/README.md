@@ -26,6 +26,7 @@
 | [`19-singleline-plan.md`](19-singleline-plan.md) | План: однолинейная схема в стиле ГОСТ-чертежа (на согласование) | все |
 | [`20-gost-schema-report.md`](20-gost-schema-report.md) | Схема по ГОСТ: символы, шаблон, рамка со штампом, PDF A3 | все |
 | [`21-dxf-analysis.md`](21-dxf-analysis.md) | Разбор DXF «Однолинейная УЭЭК»: состав, подписи, различия, план | все |
+| [`22-block-library-report.md`](22-block-library-report.md) | Спринт 17: библиотека блоков (ПС, БКРУ, КТП), API и UI | все |
 
 ---
 

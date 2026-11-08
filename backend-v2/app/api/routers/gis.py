@@ -23,6 +23,8 @@ from app.schemas.gis import (
     AssetTypeUpdate,
     AssetUpdate,
     ChildAssetOut,
+    GraphBlockChildOut,
+    GraphBlockOut,
     GraphEdgeOut,
     GraphNodeOut,
     LineCreate,
@@ -457,6 +459,27 @@ def topology_graph(
     pit = gis.get_pit(db)
     data = topology.graph_payload(db, pit.id)
 
+    blocks_map: dict = {}
+    for item in data["nodes"]:
+        asset = item["asset"]
+        if asset.schema_block_id is not None:
+            block = blocks_map.setdefault(
+                asset.schema_block_id,
+                {"parent": None, "children": []},
+            )
+            block["children"].append(
+                GraphBlockChildOut(
+                    id=asset.id,
+                    code=asset.code,
+                    name=asset.name,
+                    role=asset.schema_role,
+                    local_x=float(asset.schema_local_x) if asset.schema_local_x is not None else None,
+                    local_y=float(asset.schema_local_y) if asset.schema_local_y is not None else None,
+                    type_name=asset.asset_type.name if asset.asset_type else None,
+                    params=asset.attrs or {},
+                )
+            )
+
     nodes = [
         GraphNodeOut(
             id=item["asset"].id,
@@ -489,6 +512,7 @@ def topology_graph(
             ],
         )
         for item in data["nodes"]
+        if item["asset"].schema_block_id is None
     ]
     edges = [
         GraphEdgeOut(
@@ -509,7 +533,27 @@ def topology_graph(
         )
         for item in data["edges"]
     ]
-    return TopologyGraphOut(nodes=nodes, edges=edges)
+
+    blocks = []
+    for block_id, bucket in blocks_map.items():
+        parent_asset = next(
+            (item["asset"] for item in data["nodes"] if item["asset"].id == block_id), None
+        )
+        if parent_asset is None:
+            continue
+        blocks.append(
+            GraphBlockOut(
+                asset_id=parent_asset.id,
+                code=parent_asset.code,
+                name=parent_asset.name,
+                block_code=(parent_asset.attrs or {}).get("block_code"),
+                schema_x=float(parent_asset.schema_x) if parent_asset.schema_x is not None else None,
+                schema_y=float(parent_asset.schema_y) if parent_asset.schema_y is not None else None,
+                children=bucket["children"],
+            )
+        )
+
+    return TopologyGraphOut(nodes=nodes, edges=edges, blocks=blocks)
 
 
 @router.put(

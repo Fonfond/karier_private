@@ -129,6 +129,39 @@ export interface GraphNode {
   ports: AssetPort[]
 }
 
+export interface GraphBlockChild {
+  id: string
+  code: string
+  name: string
+  role: string | null
+  local_x: number | null
+  local_y: number | null
+  type_name: string | null
+  params: Record<string, unknown>
+}
+
+export interface SchemaBlock {
+  id: string
+  code: string
+  name: string
+  block_type: string
+  icon: string | null
+  asset_type_code: string | null
+  nodes_count: number
+  external_ports: number
+  roles: string[]
+}
+
+export interface GraphBlock {
+  asset_id: string
+  code: string
+  name: string
+  block_code: string | null
+  schema_x: number | null
+  schema_y: number | null
+  children: GraphBlockChild[]
+}
+
 export interface GraphEdge {
   id: string
   from_asset_id: string
@@ -147,6 +180,7 @@ export interface GraphEdge {
 export interface TopologyGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  blocks: GraphBlock[]
 }
 
 export interface TopologyIssue {
@@ -343,6 +377,20 @@ export const gisApi = {
     }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
+schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),
+
+  instantiateBlock: (code: string, x: number, y: number, name?: string) =>
+    apiRequest<{ asset_id: string; code: string; children: number; block_code: string }>(
+      `/api/schema/blocks/${code}/instantiate`,
+      { method: 'POST', body: JSON.stringify({ x, y, name }) },
+    ),
+
+  addBlockCell: (assetId: string, label: string, role = 'outgoing') =>
+    apiRequest<{ id: string; code: string; name: string; role: string }>(
+      `/api/schema/assets/${assetId}/cells`,
+      { method: 'POST', body: JSON.stringify({ label, role }) },
+    ),
+
 }
 
 export interface SchemaFrame {
