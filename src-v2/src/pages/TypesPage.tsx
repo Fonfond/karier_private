@@ -24,11 +24,23 @@ const ATTR_OPTIONS: Array<{ key: string; label: string; type: string }> = [
   { key: 'bucket_m3', label: 'Ковш, м³', type: 'number' },
 ]
 
+const SCHEMA_SYMBOLS = [
+  { value: 'breaker', label: 'Выключатель / ячейка' },
+  { value: 'disconnector', label: 'Разъединитель' },
+  { value: 'busbar', label: 'Секция шин' },
+  { value: 'load', label: 'Электроприёмник' },
+  { value: 'generator', label: 'Генератор' },
+  { value: 'source', label: 'Питание / ПС' },
+  { value: 'line', label: 'Опора ВЛ' },
+  { value: 'ct', label: 'Трансформатор тока' },
+  { value: 'arrester', label: 'ОПН' },
+]
 interface Draft {
   id: string | null
   code: string
   name: string
   category: string
+  schema_symbol: string
   icon: string
   color: string
   parent_id: string
@@ -46,6 +58,7 @@ const EMPTY: Draft = {
   code: '',
   name: '',
   category: 'equipment',
+  schema_symbol: 'load',
   icon: '🔧',
   color: '#4C9AFF',
   parent_id: '',
@@ -66,6 +79,7 @@ function draftFrom(type: AssetType): Draft {
     code: type.code,
     name: type.name,
     category: type.category,
+    schema_symbol: type.schema_symbol ?? 'load',
     icon: type.icon ?? '🔧',
     color: type.color ?? '#4C9AFF',
     parent_id: type.parent_id ?? '',
@@ -122,6 +136,7 @@ function Editor({
       const payload: Record<string, unknown> = {
         name: form.name.trim(),
         category: form.category,
+        schema_symbol: form.schema_symbol,
         icon: form.icon || '●',
         color: form.color,
         description: form.description.trim() || null,
@@ -188,6 +203,19 @@ function Editor({
           <Field label="Категория">
             <select className="input" value={form.category} onChange={(e) => set('category', e.target.value)}>
               {CATEGORIES.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Символ на схеме">
+            <select
+              className="input"
+              value={form.schema_symbol}
+              onChange={(e) => set('schema_symbol', e.target.value)}
+            >
+              {SCHEMA_SYMBOLS.map((item) => (
                 <option key={item.value} value={item.value}>
                   {item.label}
                 </option>

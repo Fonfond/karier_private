@@ -6,6 +6,7 @@ export interface TypeRef {
   code: string
   name: string
   category: string
+  schema_symbol?: string
   icon: string | null
   color: string | null
 }
@@ -26,6 +27,7 @@ export interface AssetType {
   code: string
   name: string
   category: string
+  schema_symbol: string
   icon: string | null
   color: string | null
   port_template: { ports?: Array<{ code: string; name: string; kind: string; voltage_kv?: number }> }
@@ -116,6 +118,7 @@ export interface GraphNode {
   type_icon: string | null
   type_color: string | null
   category: string
+  schema_symbol: string
   status: string
   grounded: boolean
   energized: boolean
@@ -315,6 +318,12 @@ export const gisApi = {
   deleteDocument: (id: string) =>
     apiRequest<{ message: string }>(`/api/documents/${id}`, { method: 'DELETE' }),
 
+  getSchemaFrame: () =>
+    apiRequest<SchemaFrame>('/api/topology/frame'),
+
+  saveSchemaFrame: (payload: Record<string, unknown>) =>
+    apiRequest<SchemaFrame>('/api/topology/frame', { method: 'PUT', body: JSON.stringify(payload) }),
+
   createType: (payload: Record<string, unknown>) =>
     apiRequest<AssetType>('/api/asset-types', { method: 'POST', body: JSON.stringify(payload) }),
 
@@ -334,6 +343,20 @@ export const gisApi = {
     }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
+}
+
+export interface SchemaFrame {
+  sheet_format: string
+  organization: string
+  department: string
+  object_name: string
+  sheet: string
+  scale: string
+  developed_by: string
+  checked_by: string
+  approved_by: string
+  date: string
+  show_on_screen: boolean
 }
 
 export const STATUS_LABEL: Record<string, string> = {

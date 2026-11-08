@@ -292,6 +292,7 @@ def type_out(db: Session, asset_type: AssetType) -> dict[str, Any]:
         "code": asset_type.code,
         "name": asset_type.name,
         "category": asset_type.category,
+        "schema_symbol": asset_type.schema_symbol,
         "icon": asset_type.icon,
         "color": asset_type.color,
         "port_template": asset_type.port_template or {},
@@ -572,6 +573,7 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
         code=payload.code,
         name=payload.name,
         category=payload.category,
+        schema_symbol=payload.schema_symbol or "load",
         icon=payload.icon or "●",
         color=payload.color or "#4C9AFF",
         port_template=payload.port_template or {"ports": []},
@@ -624,6 +626,7 @@ def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
     for field in (
         "name",
         "category",
+        "schema_symbol",
         "icon",
         "color",
         "port_template",
@@ -719,3 +722,20 @@ def set_schema_layout(
 
 def request_meta(request: Request) -> dict[str, str]:
     return {"ip": request.client.host if request.client else "unknown"}
+
+# --- рамка и штамп схемы ---------------------------------------------------
+
+def get_schema_frame(db: Session, pit: Pit) -> dict:
+    from app.schemas.gis import SchemaFrameOut
+
+    frame = SchemaFrameOut(**(pit.schema_frame or {}))
+    return frame.model_dump()
+
+
+def save_schema_frame(db: Session, pit: Pit, data: dict) -> dict:
+    from app.schemas.gis import SchemaFrameOut
+
+    frame = SchemaFrameOut(**data)
+    pit.schema_frame = frame.model_dump()
+    db.commit()
+    return frame.model_dump()

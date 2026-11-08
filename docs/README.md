@@ -24,6 +24,7 @@
 | [`17-sprint-14-audit-report.md`](17-sprint-14-audit-report.md) | Спринт 14: аудит всех экранов — 0 пересечений с навигацией | все |
 | [`18-break-glass-report.md`](18-break-glass-report.md) | Аварийный доступ (break glass): выпуск, аудит, защита | админы |
 | [`19-singleline-plan.md`](19-singleline-plan.md) | План: однолинейная схема в стиле ГОСТ-чертежа (на согласование) | все |
+| [`20-gost-schema-report.md`](20-gost-schema-report.md) | Схема по ГОСТ: символы, шаблон, рамка со штампом, PDF A3 | все |
 
 ---
 

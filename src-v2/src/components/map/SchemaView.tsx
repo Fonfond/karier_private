@@ -20,6 +20,8 @@ import dagre from 'dagre'
 import '@xyflow/react/dist/style.css'
 import type { AssetPort, GraphNode, TopologyGraph } from '../../lib/gis'
 import { downloadDxf } from '../../lib/dxf'
+import { GostSymbol, SchemaFrameOverlay } from './GostSymbols'
+import type { SchemaFrame } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
 import { ApiError } from '../../lib/api'
 
@@ -133,10 +135,10 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
     >
       <div className="flex items-center gap-2">
         <span
-          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-sm"
-          style={{ background: `${node.type_color ?? '#4C9AFF'}22` }}
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
+          style={{ background: `${node.type_color ?? '#4C9AFF'}18` }}
         >
-          {node.type_icon ?? '●'}
+          <GostSymbol symbol={node.schema_symbol ?? 'load'} />
         </span>
         <div className="min-w-0">
           <div className="truncate text-[12px] font-semibold text-ink">{node.code}</div>
@@ -293,6 +295,8 @@ function Flow({
   const [cableMark, setCableMark] = useState('')
   const [linkType, setLinkType] = useState('cable')
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft | null>(null)
+  const [frame, setFrame] = useState<SchemaFrame | null>(null)
+  const [showFrame, setShowFrame] = useState(() => localStorage.getItem('karier-schema-frame') !== '0')
 
   /** Перетаскивание порта обновляет только свой узел — остальные не перерисовываются. */
   const onPortMove = useCallback((nodeId: string, portId: string, x: number, y: number) => {
@@ -361,6 +365,17 @@ function Flow({
   }, [editMode, canEdit, portDrag, selectedId, onPortMove, setNodes])
 
   useEffect(() => {
+    gisApi
+      .getSchemaFrame()
+      .then(setFrame)
+      .catch(() => setFrame(null))
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('karier-schema-frame', showFrame ? '1' : '0')
+  }, [showFrame])
+
+  useEffect(() => {
     const timer = setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 60)
     return () => clearTimeout(timer)
   }, [graph, fitView])
@@ -393,6 +408,31 @@ function Flow({
     } finally {
       setSaving(false)
     }
+  }
+
+  const applyTemplate = () => {
+    const layout: Record<string, { x: number; y: number }> = {}
+    const top = nodes.filter((node) => ['source', 'generator'].includes(node.data.node.schema_symbol ?? 'load'))
+    const buses = nodes.filter((node) => node.data.node.schema_symbol === 'busbar')
+    const rest = nodes.filter((node) => !top.includes(node) && !buses.includes(node))
+
+    top.forEach((node, index) => {
+      layout[node.id] = { x: 80 + index * 280, y: 0 }
+    })
+    buses.forEach((node, index) => {
+      layout[node.id] = { x: 40, y: 200 + index * 140 }
+    })
+    rest.forEach((node, index) => {
+      const perRow = 6
+      layout[node.id] = {
+        x: 60 + (index % perRow) * 240,
+        y: 420 + Math.floor(index / perRow) * 160,
+      }
+    })
+
+    setNodes((current) => current.map((node) => ({ ...node, position: layout[node.id] ?? node.position })))
+    setDirty(true)
+    setStatus('Шаблон ГОСТ применён — проверьте и сохраните раскладку')
   }
 
   const applyAuto = () => {
@@ -510,6 +550,18 @@ function Flow({
               <button
                 type="button"
                 className="btn-ghost h-8 px-3"
+                title="Разложить по ГОСТ-шаблону: источники сверху, шины в середине, потребители снизу"
+                onClick={applyTemplate}
+              >
+                Шаблон
+              </button>
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={showFrame} onChange={(e) => setShowFrame(e.target.checked)} />
+                Рамка
+              </label>
+              <button
+                type="button"
+                className="btn-ghost h-8 px-3"
                 title="Скачать раскладку в DXF для nanoCAD/AutoCAD"
                 onClick={() =>
                   downloadDxf(graph, positionsForDxf, portPositionsForDxf, NODE_W, NODE_H)
@@ -578,6 +630,8 @@ function Flow({
           style={{ bottom: 'calc(var(--bottom-nav) + 12px)', right: 12 }}
         />
       </ReactFlow>
+
+      {frame && showFrame ? <SchemaFrameOverlay frame={frame} compact={false} /> : null}
 
       {pending ? (
         <div className="absolute inset-x-2 bottom-16 z-20 rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-lg sm:left-auto sm:right-2 sm:w-[340px]">

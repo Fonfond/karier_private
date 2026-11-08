@@ -6,6 +6,7 @@ import uuid as uuidlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,8 @@ from app.schemas.gis import (
     PortRefOut,
     PowerPathNode,
     PowerPathOut,
+    SchemaFrameIn,
+    SchemaFrameOut,
     SchemaLayoutIn,
     SchemaLayoutOut,
     StateChangeIn,
@@ -43,6 +46,7 @@ from app.schemas.gis import (
 )
 from app.services import audit, documents as documents_service, gis, links as links_service
 from app.services import state as state_service
+from app.services import schema_pdf as schema_pdf_service
 from app.services import topology
 
 router = APIRouter(tags=["gis"])
@@ -463,6 +467,7 @@ def topology_graph(
             type_icon=item["asset"].asset_type.icon,
             type_color=item["asset"].asset_type.color,
             category=item["asset"].asset_type.category,
+            schema_symbol=item["asset"].asset_type.schema_symbol,
             status=item["asset"].status,
             grounded=item["asset"].grounded,
             energized=item["energized"],
@@ -526,6 +531,46 @@ def save_schema_layout(
         ports=[item.model_dump() for item in payload.ports],
     )
     return SchemaLayoutOut(**result)
+
+
+@router.get("/topology/frame", response_model=SchemaFrameOut, summary="Рамка и штамп схемы")
+def get_schema_frame(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> SchemaFrameOut:
+    pit = gis.get_pit(db)
+    return SchemaFrameOut(**gis.get_schema_frame(db, pit))
+
+
+@router.put("/topology/frame", response_model=SchemaFrameOut, summary="Изменить штамп (админ)")
+def save_schema_frame(
+    payload: SchemaFrameIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SchemaFrameOut:
+    pit = gis.get_pit(db)
+    data = gis.save_schema_frame(db, pit, payload.model_dump())
+    audit.add(
+        "schema.frame_saved",
+        entity="pit",
+        entity_id=pit.id,
+        detail=f"Обновлён штамп схемы: {data.get('object_name', '')[:60]}",
+    )
+    return SchemaFrameOut(**data)
+
+
+@router.get("/topology/schema.pdf", summary="Печать схемы в PDF (A3, рамка и штамп)")
+def schema_pdf(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    pit = gis.get_pit(db)
+    data = schema_pdf_service.schema_pdf(db, pit)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="karier-schema.pdf"'},
+    )
 
 
 @router.get("/topology/issues", response_model=list[TopologyIssueOut], summary="Проверки схемы")

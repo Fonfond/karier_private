@@ -127,6 +127,7 @@ class AssetTypeOut(BaseModel):
     code: str
     name: str
     category: str
+    schema_symbol: str = "load"
     icon: str | None = None
     color: str | None = None
     port_template: dict[str, Any] = {}
@@ -151,6 +152,7 @@ class AssetTypeCreate(BaseModel):
     attr_schema: dict[str, Any] = {}
     required_attrs: list[str] = []
     is_mobile_default: bool = False
+    schema_symbol: str = Field(default="load", max_length=24)
     sort_order: int = 100
     description: str | None = None
     parent_id: uuid.UUID | None = None
@@ -165,6 +167,7 @@ class AssetTypeUpdate(BaseModel):
     attr_schema: dict[str, Any] | None = None
     required_attrs: list[str] | None = None
     is_mobile_default: bool | None = None
+    schema_symbol: str | None = Field(default=None, max_length=24)
     sort_order: int | None = None
     description: str | None = None
     parent_id: uuid.UUID | None = None
@@ -193,6 +196,26 @@ class SchemaLayoutOut(BaseModel):
     updated: int
     updated_ports: int = 0
     skipped: list[uuid.UUID] = []
+
+
+class SchemaFrameIn(BaseModel):
+    """Штамп и рамка листа: строки можно менять без релиза."""
+
+    sheet_format: Literal["A4", "A3", "A1"] = "A3"
+    organization: str = Field(default="ООО «Удоканская медь»", max_length=128)
+    department: str = Field(default="Служба главного энергетика", max_length=128)
+    object_name: str = Field(default="Однолинейная схема электроснабжения карьера", max_length=255)
+    sheet: str = Field(default="Лист 1", max_length=32)
+    scale: str = Field(default="б/м", max_length=16)
+    developed_by: str = Field(default="", max_length=128)
+    checked_by: str = Field(default="", max_length=128)
+    approved_by: str = Field(default="", max_length=128)
+    date: str = Field(default="", max_length=32)
+    show_on_screen: bool = True
+
+
+class SchemaFrameOut(SchemaFrameIn):
+    pass
 
 
 class MapLayerOut(BaseModel):
@@ -354,6 +377,7 @@ class GraphNodeOut(BaseModel):
     type_icon: str | None = None
     type_color: str | None = None
     category: str
+    schema_symbol: str = "load"
     status: str
     grounded: bool
     energized: bool

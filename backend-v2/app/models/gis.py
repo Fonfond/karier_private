@@ -39,6 +39,8 @@ class Pit(Base, TimestampMixin):
     timezone = Column(String(64), nullable=False, default="Asia/Irkutsk")
     crs_name = Column(String(64), nullable=False, default="Локальная СК карьера, м")
     is_active = Column(Boolean, nullable=False, default=True)
+    # настройки рамки и штампа однолинейной схемы
+    schema_frame = Column(JSONB, nullable=False, default=dict)
 
 
 class MapLayer(Base, TimestampMixin):
@@ -100,6 +102,8 @@ class AssetType(Base, TimestampMixin):
     required_attrs = Column(ARRAY(String), nullable=False, default=list)
 
     is_mobile_default = Column(Boolean, nullable=False, default=False)
+    # символ на однолинейной схеме: breaker, disconnector, busbar, load, generator, source, line, ct, arrester
+    schema_symbol = Column(String(24), nullable=False, default="load")
     sort_order = Column(Integer, nullable=False, default=100)
     is_active = Column(Boolean, nullable=False, default=True)
     description = Column(Text)
