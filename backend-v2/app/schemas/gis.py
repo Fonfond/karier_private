@@ -415,6 +415,13 @@ class GraphBlockChildOut(BaseModel):
     params: dict[str, Any] = {}
 
 
+class GraphJumperOut(BaseModel):
+    id: uuid.UUID
+    from_cell_id: uuid.UUID
+    to_cell_id: uuid.UUID
+    label: str | None = None
+
+
 class GraphBlockOut(BaseModel):
     asset_id: uuid.UUID
     code: str
@@ -423,6 +430,7 @@ class GraphBlockOut(BaseModel):
     schema_x: float | None = None
     schema_y: float | None = None
     collapsed: bool = False
+    jumpers: list[GraphJumperOut] = []
     children: list[GraphBlockChildOut] = []
 
 

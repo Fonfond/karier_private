@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Controls,
@@ -104,13 +104,67 @@ export function portsForNode(node: GraphNode): Record<string, XYPosition> {
 
 function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   const { node, editable, portDrag, portPositions, onPortMove } = data
+  const blockBox = useRef<HTMLDivElement | null>(null)
+  const cellRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [jumperLines, setJumperLines] = useState<
+    { id: string; x1: number; y1: number; x2: number; y2: number; label: string | null }[]
+  >([])
   const statusColor = STATUS_COLOR[node.status] ?? '#6B7A8A'
   const dim = !node.energized
+
+  useLayoutEffect(() => {
+    if (!data.block || data.block.collapsed) {
+      setJumperLines([])
+      return
+    }
+    const blockNow = data.block
+    let frame = 0
+    const measure = () => {
+      const box = blockBox.current
+      if (!box) return
+      const boxRect = box.getBoundingClientRect()
+      if (!boxRect.width) {
+        frame = requestAnimationFrame(measure)
+        return
+      }
+      const lines: { id: string; x1: number; y1: number; x2: number; y2: number; label: string | null }[] = []
+      for (const jumper of blockNow.jumpers ?? []) {
+        const a = cellRefs.current[jumper.from_cell_id]
+        const b = cellRefs.current[jumper.to_cell_id]
+        if (!a || !b) continue
+        const ra = a.getBoundingClientRect()
+        const rb = b.getBoundingClientRect()
+        if (!ra.width || !rb.width) continue
+        lines.push({
+          id: jumper.id,
+          x1: ra.right - boxRect.left,
+          y1: ra.top + ra.height / 2 - boxRect.top,
+          x2: rb.left - boxRect.left,
+          y2: rb.top + rb.height / 2 - boxRect.top,
+          label: jumper.label,
+        })
+      }
+      setJumperLines(lines)
+    }
+    frame = requestAnimationFrame(() => requestAnimationFrame(measure))
+    const onResize = () => measure()
+    window.addEventListener('resize', onResize)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [data.block])
+
 
   if (data.block) {
     const block = data.block
     const busbars = block.children.filter((child) => child.role === 'busbar')
     const cells = block.children.filter((child) => child.role !== 'busbar')
+    const jumperCells = new Set<string>()
+    for (const jumper of block.jumpers ?? []) {
+      jumperCells.add(jumper.from_cell_id)
+      jumperCells.add(jumper.to_cell_id)
+    }
     const roleColor = (role: string | null) => {
       if (role === 'incoming') return 'border-warm/50 text-warm'
       if (role === 'outgoing') return 'border-accent/50 text-accent'
@@ -151,6 +205,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
 
     return (
       <div
+        ref={blockBox}
         className={`relative w-[320px] max-w-[calc(100vw-28px)] rounded-xl border-2 border-accent/45 bg-surface1/95 ${
           selected ? 'ring-2 ring-accent' : ''
         }`}
@@ -203,6 +258,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           {cells.map((cell) => (
             <div
               key={cell.id}
+              ref={(el) => { cellRefs.current[cell.id] = el }}
               className={`group flex items-center gap-1 rounded-md border bg-surface2/40 px-1.5 py-1 ${roleColor(
                 cell.role,
               )} ${data.jumperFirstId === cell.id ? 'ring-2 ring-accent' : ''}`}
@@ -224,6 +280,11 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
                 {typeof cell.params?.cable === 'string' ? (
                   <div className="truncate text-[8px] text-ink3">{cell.params.cable}</div>
                 ) : null}
+                {jumperCells.has(cell.id) ? (
+                  <div className="mt-0.5 inline-flex items-center gap-0.5 rounded bg-[#C4A1FF]/20 px-1 text-[8px] text-[#C4A1FF]">
+                    ⇄ перемычка
+                  </div>
+                ) : null}
               </button>
               {data.editable && data.onDeleteCell ? (
                 <button
@@ -241,6 +302,27 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
             </div>
           ))}
         </div>
+
+        {jumperLines.length > 0 ? (
+          <svg className="pointer-events-none absolute inset-0 z-[8] h-full w-full overflow-visible">
+            {jumperLines.map((line) => (
+              <g key={line.id}>
+                <line
+                  x1={line.x1}
+                  y1={line.y1}
+                  x2={line.x2}
+                  y2={line.y2}
+                  stroke="#C4A1FF"
+                  strokeWidth={1.6}
+                  strokeDasharray="4 3"
+                  style={{ pointerEvents: 'stroke' }}
+                >
+                  <title>{line.label ? `Перемычка: ${line.label}` : 'Перемычка'}</title>
+                </line>
+              </g>
+            ))}
+          </svg>
+        ) : null}
 
         <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-accent" />
         <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-accent" />

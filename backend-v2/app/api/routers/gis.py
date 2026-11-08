@@ -24,6 +24,7 @@ from app.schemas.gis import (
     AssetUpdate,
     ChildAssetOut,
     GraphBlockChildOut,
+    GraphJumperOut,
     GraphBlockOut,
     GraphEdgeOut,
     GraphNodeOut,
@@ -541,6 +542,30 @@ def topology_graph(
         )
         if parent_asset is None:
             continue
+        children_ids = {child.id for child in bucket["children"]}
+        port_owner: dict = {}
+        for item in data["nodes"]:
+            asset = item["asset"]
+            for port in asset.ports:
+                if asset.id in children_ids:
+                    port_owner[port.id] = asset.id
+        jumpers: list = []
+        for edge_item in data.get("edges", []):
+            link = edge_item["link"]
+            if getattr(link, "link_type", None) != "jumper":
+                continue
+            source = port_owner.get(link.from_port_id)
+            target = port_owner.get(link.to_port_id)
+            if source and target and source != target:
+                jumpers.append(
+                    GraphJumperOut(
+                        id=link.id,
+                        from_cell_id=source,
+                        to_cell_id=target,
+                        label=link.cable_mark,
+                    )
+                )
+
         blocks.append(
             GraphBlockOut(
                 asset_id=parent_asset.id,
@@ -550,6 +575,7 @@ def topology_graph(
                 schema_x=float(parent_asset.schema_x) if parent_asset.schema_x is not None else None,
                 schema_y=float(parent_asset.schema_y) if parent_asset.schema_y is not None else None,
                 collapsed=bool((parent_asset.attrs or {}).get("collapsed")),
+                jumpers=jumpers,
                 children=bucket["children"],
             )
         )

@@ -152,6 +152,13 @@ export interface SchemaBlock {
   roles: string[]
 }
 
+export interface GraphJumper {
+  id: string
+  from_cell_id: string
+  to_cell_id: string
+  label: string | null
+}
+
 export interface GraphBlock {
   asset_id: string
   code: string
@@ -160,6 +167,7 @@ export interface GraphBlock {
   schema_x: number | null
   schema_y: number | null
   collapsed?: boolean
+  jumpers?: GraphJumper[]
   children: GraphBlockChild[]
 }
 
