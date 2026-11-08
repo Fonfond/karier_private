@@ -282,3 +282,89 @@ def block_summary(db: Session, block: SchemaBlock) -> dict[str, Any]:
         "external_ports": len(template.get("external_ports") or []),
         "roles": sorted({str(node.get("role")) for node in nodes}),
     }
+
+SYMBOL_TITLES = {
+    "breaker": "Выключатель / ячейка",
+    "disconnector": "Разъединитель",
+    "busbar": "Секция шин",
+    "load": "Электроприёмник",
+    "generator": "Генератор",
+    "source": "Питание / ПС",
+    "line": "Опора ВЛ",
+    "ct": "Трансформатор тока",
+    "arrester": "ОПН",
+}
+
+
+def set_collapsed(db: Session, parent: Asset, collapsed: bool, actor: Employee) -> bool:
+    if parent.schema_role != "block":
+        raise ApiError(400, "block.not_block", "Объект не является блоком схемы")
+    parent.attrs = {**(parent.attrs or {}), "collapsed": bool(collapsed)}
+    db.commit()
+    audit.add(
+        "schema.block_collapsed" if collapsed else "schema.block_expanded",
+        entity="asset",
+        entity_id=parent.id,
+        detail=f"Блок {parent.code} {'свёрнут' if collapsed else 'развёрнут'}",
+    )
+    return bool(collapsed)
+
+
+def create_jumper(
+    db: Session,
+    parent: Asset,
+    from_cell_id: uuid.UUID,
+    to_cell_id: uuid.UUID,
+    actor: Employee,
+    *,
+    label: str | None = None,
+) -> dict:
+    if parent.schema_role != "block":
+        raise ApiError(400, "block.not_block", "Объект не является блоком схемы")
+    source = db.get(Asset, from_cell_id)
+    target = db.get(Asset, to_cell_id)
+    for asset in (source, target):
+        if asset is None or asset.deleted_at is not None:
+            raise not_found("Ячейка не найдена")
+        if asset.schema_block_id != parent.id:
+            raise conflict(
+                "Перемычка возможна только между ячейками одного блока",
+                "block.jumper_foreign",
+            )
+    if source.id == target.id:
+        raise conflict("Нельзя соединить ячейку саму с собой", "block.jumper_self")
+
+    link = links_service.create_link(
+        db,
+        parent.pit_id,
+        __import__("app.schemas.gis", fromlist=["LinkCreate"]).LinkCreate(
+            from_port_id=_port(source, "out"),
+            to_port_id=_port(target, "in"),
+            link_type="jumper",
+            cable_mark=label,
+        ),
+        actor=actor,
+    )
+    audit.add(
+        "schema.jumper_created",
+        entity="asset",
+        entity_id=parent.id,
+        detail=f"Перемычка {source.name} → {target.name}",
+    )
+    return {"id": str(link.id), "from": source.code, "to": target.code}
+
+
+def legend(db: Session) -> list[dict]:
+    rows = db.execute(
+        select(AssetType.schema_symbol, func.count(Asset.id))
+        .join(Asset, Asset.asset_type_id == AssetType.id)
+        .where(Asset.deleted_at.is_(None))
+        .group_by(AssetType.schema_symbol)
+    ).all()
+    seen: dict[str, int] = {}
+    for symbol, count in rows:
+        seen[symbol] = seen.get(symbol, 0) + int(count)
+    return [
+        {"symbol": symbol, "title": SYMBOL_TITLES.get(symbol, symbol), "count": count}
+        for symbol, count in sorted(seen.items(), key=lambda item: -item[1])
+    ]

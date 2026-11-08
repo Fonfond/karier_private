@@ -422,6 +422,7 @@ class GraphBlockOut(BaseModel):
     block_code: str | None = None
     schema_x: float | None = None
     schema_y: float | None = None
+    collapsed: bool = False
     children: list[GraphBlockChildOut] = []
 
 
@@ -488,3 +489,18 @@ class BlockCellOut(BaseModel):
     code: str
     name: str
     role: str | None = None
+
+class BlockCollapseIn(BaseModel):
+    collapsed: bool
+
+
+class BlockJumperIn(BaseModel):
+    from_cell_id: uuid.UUID
+    to_cell_id: uuid.UUID
+    label: str | None = Field(default=None, max_length=64)
+
+
+class LegendItemOut(BaseModel):
+    symbol: str
+    title: str
+    count: int

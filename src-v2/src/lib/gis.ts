@@ -159,6 +159,7 @@ export interface GraphBlock {
   block_code: string | null
   schema_x: number | null
   schema_y: number | null
+  collapsed?: boolean
   children: GraphBlockChild[]
 }
 
@@ -383,6 +384,27 @@ schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),
     apiRequest<{ asset_id: string; code: string; children: number; block_code: string }>(
       `/api/schema/blocks/${code}/instantiate`,
       { method: 'POST', body: JSON.stringify({ x, y, name }) },
+    ),
+
+schemaLegend: () =>
+    apiRequest<{ symbol: string; title: string; count: number }[]>('/api/schema/legend'),
+
+  collapseBlock: (assetId: string, collapsed: boolean) =>
+    apiRequest<{ asset_id: string; collapsed: boolean }>(
+      `/api/schema/assets/${assetId}/collapse`,
+      { method: 'POST', body: JSON.stringify({ collapsed }) },
+    ),
+
+  deleteBlockCell: (assetId: string, cellId: string) =>
+    apiRequest<{ message: string; id: string }>(
+      `/api/schema/assets/${assetId}/cells/${cellId}`,
+      { method: 'DELETE' },
+    ),
+
+  createJumper: (assetId: string, fromCellId: string, toCellId: string, label?: string) =>
+    apiRequest<{ id: string; from: string; to: string }>(
+      `/api/schema/assets/${assetId}/jumpers`,
+      { method: 'POST', body: JSON.stringify({ from_cell_id: fromCellId, to_cell_id: toCellId, label }) },
     ),
 
   addBlockCell: (assetId: string, label: string, role = 'outgoing') =>

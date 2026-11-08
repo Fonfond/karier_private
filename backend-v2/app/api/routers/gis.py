@@ -549,6 +549,7 @@ def topology_graph(
                 block_code=(parent_asset.attrs or {}).get("block_code"),
                 schema_x=float(parent_asset.schema_x) if parent_asset.schema_x is not None else None,
                 schema_y=float(parent_asset.schema_y) if parent_asset.schema_y is not None else None,
+                collapsed=bool((parent_asset.attrs or {}).get("collapsed")),
                 children=bucket["children"],
             )
         )

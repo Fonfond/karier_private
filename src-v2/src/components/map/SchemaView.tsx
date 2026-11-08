@@ -38,6 +38,8 @@ type AssetNodeData = {
   block?: GraphBlock
   onSelectChild?: (id: string) => void
   onAddCell?: (assetId: string) => void
+  onDeleteCell?: (assetId: string, cellId: string, name: string) => void
+  onToggleCollapse?: (assetId: string, collapsed: boolean) => void
 }
 
 function portLabel(port: AssetPort): string {
@@ -103,58 +105,133 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   const dim = !node.energized
 
   if (data.block) {
-    const busbars = data.block.children.filter((child) => child.role === 'busbar')
-    const cells = data.block.children.filter((child) => child.role !== 'busbar')
-    return (
-      <div
-        className={`relative w-[300px] rounded-xl border-2 bg-surface1/95 p-2 text-left ${
-          selected ? 'ring-2 ring-accent' : ''
-        } border-accent/40`}
-      >
-        <div className="flex items-center justify-between gap-2 border-b border-line pb-1">
-          <div className="min-w-0">
-            <div className="truncate text-[12px] font-semibold text-ink">{data.block.name}</div>
-            <div className="text-[10px] text-ink3">
-              {data.block.code} · {cells.length} ячеек · {busbars.length} секции
+    const block = data.block
+    const busbars = block.children.filter((child) => child.role === 'busbar')
+    const cells = block.children.filter((child) => child.role !== 'busbar')
+    const roleColor = (role: string | null) => {
+      if (role === 'incoming') return 'border-warm/50 text-warm'
+      if (role === 'outgoing') return 'border-accent/50 text-accent'
+      if (role === 'section') return 'border-[#C4A1FF]/50 text-[#C4A1FF]'
+      return 'border-line text-ink2'
+    }
+
+    if (block.collapsed) {
+      return (
+        <div
+          className={`relative w-[188px] rounded-xl border-2 border-accent/50 bg-surface1/95 p-2 ${
+            selected ? 'ring-2 ring-accent' : ''
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent/15 text-[13px]">▣</span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12px] font-semibold text-ink">{block.name}</div>
+              <div className="text-[10px] text-ink3">{cells.length + busbars.length} эл. · {block.code}</div>
             </div>
-          </div>
-          {data.editable && data.onAddCell ? (
             <button
               type="button"
-              className="btn-ghost h-6 px-2 text-[11px]"
+              className="btn-ghost h-6 px-1.5 text-[11px]"
+              title="Развернуть блок"
               onClick={(event) => {
                 event.stopPropagation()
-                data.onAddCell?.(data.block!.asset_id)
+                data.onToggleCollapse?.(block.asset_id, false)
               }}
             >
-              ＋ ячейка
+              ▸
             </button>
-          ) : null}
+          </div>
+          <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-accent" />
+          <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-accent" />
+        </div>
+      )
+    }
+
+    return (
+      <div
+        className={`relative w-[320px] max-w-[calc(100vw-28px)] rounded-xl border-2 border-accent/45 bg-surface1/95 ${
+          selected ? 'ring-2 ring-accent' : ''
+        }`}
+      >
+        <div className="flex items-start justify-between gap-2 border-b border-line px-2.5 py-2">
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold leading-tight text-ink">{block.name}</div>
+            <div className="mt-0.5 text-[10px] text-ink3">
+              {block.code} · {cells.length} ячеек · {busbars.length} секции
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {data.editable && data.onAddCell ? (
+              <button
+                type="button"
+                className="btn-ghost h-6 px-1.5 text-[11px]"
+                title="Добавить ячейку"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  data.onAddCell?.(block.asset_id)
+                }}
+              >
+                ＋
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="btn-ghost h-6 px-1.5 text-[11px]"
+              title="Свернуть блок"
+              onClick={(event) => {
+                event.stopPropagation()
+                data.onToggleCollapse?.(block.asset_id, true)
+              }}
+            >
+              ▾
+            </button>
+          </div>
         </div>
 
-        <div className="mt-1 space-y-1">
+        <div className="space-y-2 px-2.5 py-2">
           {busbars.map((bus) => (
-            <div key={bus.id} className="flex items-center gap-2">
-              <span className="w-20 truncate text-[9px] text-ink3">{bus.name}</span>
-              <span className="h-[3px] flex-1 rounded bg-accent/70" />
+            <div key={bus.id}>
+              <div className="text-[9px] uppercase tracking-wide text-ink3">{bus.name}</div>
+              <div className="mt-0.5 h-[3px] w-full rounded bg-accent/70" />
             </div>
           ))}
         </div>
 
-        <div className="mt-1 grid grid-cols-2 gap-0.5">
-          {cells.slice(0, 10).map((cell) => (
-            <button
+        <div className="grid grid-cols-2 gap-1 px-2.5 pb-2">
+          {cells.map((cell) => (
+            <div
               key={cell.id}
-              type="button"
-              title={`${cell.name} · ${cell.type_name ?? ''}`}
-              className="truncate rounded px-1 py-0.5 text-left text-[9px] text-ink2 hover:bg-surface2"
-              onClick={(event) => {
-                event.stopPropagation()
-                data.onSelectChild?.(cell.id)
-              }}
+              className={`group flex items-center gap-1 rounded-md border bg-surface2/40 px-1.5 py-1 ${roleColor(
+                cell.role,
+              )}`}
             >
-              ▭ {cell.name}
-            </button>
+              <button
+                type="button"
+                className="min-w-0 flex-1 text-left"
+                title={`${cell.name} · ${cell.type_name ?? ''}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  data.onSelectChild?.(cell.id)
+                }}
+              >
+                <div className="truncate text-[10px] leading-tight">{cell.name}</div>
+                {typeof cell.params?.cable === 'string' ? (
+                  <div className="truncate text-[8px] text-ink3">{cell.params.cable}</div>
+                ) : null}
+              </button>
+              {data.editable && data.onDeleteCell ? (
+                <button
+                  type="button"
+                  className="hidden h-5 w-5 shrink-0 place-items-center rounded text-[10px] text-bad hover:bg-bad/10 group-hover:grid"
+                  title="Удалить ячейку"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    data.onDeleteCell?.(block.asset_id, cell.id, cell.name)
+                  }}
+                >
+                  🗑
+                </button>
+              ) : null}
+            </div>
           ))}
         </div>
 
@@ -385,12 +462,17 @@ function Flow({
   }, [setNodes])
 
   const [blocks, setBlocks] = useState<SchemaBlock[]>([])
+  const [legend, setLegend] = useState<{ symbol: string; title: string; count: number }[]>([])
 
   useEffect(() => {
     gisApi
       .schemaBlocks()
       .then(setBlocks)
       .catch(() => setBlocks([]))
+    gisApi
+      .schemaLegend()
+      .then(setLegend)
+      .catch(() => setLegend([]))
   }, [])
 
   const handleAddCell = useCallback(
@@ -402,6 +484,32 @@ function Flow({
         onGraphChanged()
       } catch (err) {
         setError(err instanceof ApiError ? err.message : 'Не удалось добавить ячейку')
+      }
+    },
+    [onGraphChanged],
+  )
+
+  const handleDeleteCell = useCallback(
+    async (assetId: string, cellId: string, name: string) => {
+      if (!window.confirm(`Удалить ячейку «${name}»?`)) return
+      try {
+        await gisApi.deleteBlockCell(assetId, cellId)
+        setStatus(`Ячейка «${name}» удалена`)
+        onGraphChanged()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось удалить ячейку')
+      }
+    },
+    [onGraphChanged],
+  )
+
+  const handleToggleCollapse = useCallback(
+    async (assetId: string, collapsed: boolean) => {
+      try {
+        await gisApi.collapseBlock(assetId, collapsed)
+        onGraphChanged()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось свернуть блок')
       }
     },
     [onGraphChanged],
@@ -439,6 +547,8 @@ function Flow({
           block: graph.blocks.find((item) => item.asset_id === node.id),
           onSelectChild: onSelect,
           onAddCell: handleAddCell,
+          onDeleteCell: handleDeleteCell,
+          onToggleCollapse: handleToggleCollapse,
         },
       })),
     )
@@ -449,7 +559,7 @@ function Flow({
     setEdgeDraft(null)
     setPending(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, setNodes, setEdges, handleAddCell, onSelect])
+  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect])
 
   // Переключатели режимов меняют только флаги, не трогая позиции
   useEffect(() => {
@@ -756,6 +866,20 @@ function Flow({
           style={{ bottom: 'calc(var(--bottom-nav) + 12px)', right: 12 }}
         />
       </ReactFlow>
+
+      {legend.length > 0 ? (
+        <div className="pointer-events-none absolute bottom-16 right-3 z-[6] w-[190px] rounded-lg border border-ink2/40 bg-bg/85 p-2 text-[9px] text-ink2">
+          <div className="mb-1 text-[9px] uppercase tracking-wide text-ink3">Условные обозначения</div>
+          <div className="space-y-0.5">
+            {legend.slice(0, 7).map((item) => (
+              <div key={item.symbol} className="flex items-center justify-between gap-2">
+                <span className="truncate">{item.title}</span>
+                <span className="text-ink3">{item.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {frame && showFrame ? <SchemaFrameOverlay frame={frame} compact={false} /> : null}
 

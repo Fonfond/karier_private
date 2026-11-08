@@ -13,6 +13,9 @@ from app.models import Employee
 from app.schemas.gis import (
     BlockCellIn,
     BlockCellOut,
+    BlockCollapseIn,
+    BlockJumperIn,
+    LegendItemOut,
     BlockInstantiateIn,
     BlockInstantiateOut,
     SchemaBlockOut,
@@ -94,3 +97,40 @@ def delete_cell(
     cell = gis.get_asset(db, cell_id)
     blocks_service.remove_cell(db, parent, cell, admin)
     return {"message": "Ячейка удалена", "id": str(cell_id)}
+
+@router.post("/assets/{asset_id}/collapse", summary="Свернуть/развернуть блок")
+def collapse_block(
+    asset_id: uuid.UUID,
+    payload: BlockCollapseIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    parent = gis.get_asset(db, asset_id)
+    collapsed = blocks_service.set_collapsed(db, parent, payload.collapsed, admin)
+    return {"asset_id": str(asset_id), "collapsed": collapsed}
+
+
+@router.post("/assets/{asset_id}/jumpers", summary="Перемычка между ячейками одного блока")
+def create_jumper(
+    asset_id: uuid.UUID,
+    payload: BlockJumperIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    parent = gis.get_asset(db, asset_id)
+    return blocks_service.create_jumper(
+        db,
+        parent,
+        payload.from_cell_id,
+        payload.to_cell_id,
+        admin,
+        label=payload.label,
+    )
+
+
+@router.get("/legend", response_model=list[LegendItemOut], summary="Легенда символов схемы")
+def legend(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[LegendItemOut]:
+    return [LegendItemOut(**item) for item in blocks_service.legend(db)]
