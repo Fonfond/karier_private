@@ -62,6 +62,7 @@ export interface Employee {
   otp_channel: string
   role: string
   status: string
+  is_break_glass?: boolean
   access_until: string | null
   has_credentials: boolean
   mfa_enabled: boolean

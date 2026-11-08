@@ -284,7 +284,10 @@ export function EmployeesPage() {
                 <tr key={employee.id}>
                   <td className="px-2 py-3 font-mono">{employee.tab_no}</td>
                   <td className="px-2 py-3">
-                    <div>{employee.full_name}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span>{employee.full_name}</span>
+                      {employee.is_break_glass ? <Badge tone="warm">аварийный</Badge> : null}
+                    </div>
                     <div className="text-[12px] text-ink3">{employee.position ?? '—'}</div>
                   </td>
                   <td className="px-2 py-3">{employee.role}</td>
@@ -303,7 +306,14 @@ export function EmployeesPage() {
                   </td>
                   <td className="px-2 py-3">
                     <div className="flex flex-wrap gap-1.5">
-                      {employee.status === 'active' ? (
+                      {employee.is_break_glass ? (
+                        <span className="text-[11px] text-ink3">
+                          защищён: только SQL или reset_break_glass.py
+                        </span>
+                      ) : null}
+                      {!employee.is_break_glass ? (
+                        <>
+                          {employee.status === 'active' ? (
                         <button
                           type="button"
                           className="btn-danger h-8 px-2.5 text-[12px]"
@@ -361,6 +371,8 @@ export function EmployeesPage() {
                         >
                           Код
                         </button>
+                      ) : null}
+                        </>
                       ) : null}
                     </div>
                   </td>

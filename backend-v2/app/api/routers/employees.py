@@ -47,6 +47,7 @@ def _serialize(db: Session, employee: Employee) -> EmployeeOut:
         otp_channel=employee.otp_channel,
         role=employee.role.code if employee.role else "",
         status=employee.status,
+        is_break_glass=bool(employee.is_break_glass),
         access_until=employee.access_until,
         has_credentials=employee.credential is not None,
         mfa_enabled=mfa_factor(db, employee.id) is not None,
@@ -154,6 +155,12 @@ def update_employee(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     before = {
         "full_name": employee.full_name,
         "role": employee.role.code if employee.role else None,
@@ -191,6 +198,12 @@ def dismiss_employee(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     if employee.id == admin.id:
         raise ApiError(400, "employee.self_action", "Нельзя уволить самого себя")
 
@@ -230,6 +243,12 @@ def delete_employee_permanently(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     if employee.id == admin.id:
         raise ApiError(400, "employee.self_action", "Нельзя удалить самого себя")
 
@@ -296,6 +315,12 @@ def block_employee(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     if employee.id == admin.id:
         raise ApiError(400, "employee.self_action", "Нельзя заблокировать самого себя")
 

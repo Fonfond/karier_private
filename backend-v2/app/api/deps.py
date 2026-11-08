@@ -42,6 +42,7 @@ def current_user(
         actor_id=employee.id,
         tab_no=employee.tab_no,
         role=employee.role.code if employee.role else "",
+        break_glass=bool(getattr(employee, "is_break_glass", False)),
     )
     return employee
 

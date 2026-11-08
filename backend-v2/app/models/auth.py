@@ -100,6 +100,8 @@ class Employee(Base, TimestampMixin):
 
     role_id = Column(Uuid, ForeignKey(f"{SCHEMA}.roles.id", ondelete="RESTRICT"), nullable=False)
     status = Column(String(16), nullable=False, default="active")
+    # аварийная учётная запись: защищена от удаления через интерфейс
+    is_break_glass = Column(Boolean, nullable=False, default=False, server_default="false")
     access_until = Column(DateTime(timezone=True))
     dismissed_at = Column(DateTime(timezone=True))
 

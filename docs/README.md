@@ -22,6 +22,8 @@
 | [`15-sprint-12-report.md`](15-sprint-12-report.md) | Спринт 12: фикс React Flow, загрузка подложек, CRUD связей | все |
 | [`16-sprint-13-mobile-report.md`](16-sprint-13-mobile-report.md) | Спринт 13: мобильная навигация, шторка, карточки, safe-area | все |
 | [`17-sprint-14-audit-report.md`](17-sprint-14-audit-report.md) | Спринт 14: аудит всех экранов — 0 пересечений с навигацией | все |
+| [`18-break-glass-report.md`](18-break-glass-report.md) | Аварийный доступ (break glass): выпуск, аудит, защита | админы |
+| [`19-singleline-plan.md`](19-singleline-plan.md) | План: однолинейная схема в стиле ГОСТ-чертежа (на согласование) | все |
 
 ---
 
