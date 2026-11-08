@@ -40,6 +40,9 @@ type AssetNodeData = {
   onAddCell?: (assetId: string) => void
   onDeleteCell?: (assetId: string, cellId: string, name: string) => void
   onToggleCollapse?: (assetId: string, collapsed: boolean) => void
+  jumperMode?: boolean
+  jumperFirstId?: string | null
+  onCellPick?: (blockId: string, cellId: string, name: string) => void
 }
 
 function portLabel(port: AssetPort): string {
@@ -196,13 +199,13 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-1 px-2.5 pb-2">
+        <div className="grid grid-cols-1 gap-1 px-2.5 pb-2 min-[400px]:grid-cols-2">
           {cells.map((cell) => (
             <div
               key={cell.id}
               className={`group flex items-center gap-1 rounded-md border bg-surface2/40 px-1.5 py-1 ${roleColor(
                 cell.role,
-              )}`}
+              )} ${data.jumperFirstId === cell.id ? 'ring-2 ring-accent' : ''}`}
             >
               <button
                 type="button"
@@ -210,7 +213,11 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
                 title={`${cell.name} · ${cell.type_name ?? ''}`}
                 onClick={(event) => {
                   event.stopPropagation()
-                  data.onSelectChild?.(cell.id)
+                  if (data.jumperMode && data.onCellPick) {
+                    data.onCellPick(block.asset_id, cell.id, cell.name)
+                  } else {
+                    data.onSelectChild?.(cell.id)
+                  }
                 }}
               >
                 <div className="truncate text-[10px] leading-tight">{cell.name}</div>
@@ -463,6 +470,11 @@ function Flow({
 
   const [blocks, setBlocks] = useState<SchemaBlock[]>([])
   const [legend, setLegend] = useState<{ symbol: string; title: string; count: number }[]>([])
+  const [showLegend, setShowLegend] = useState(false)
+  const [jumperMode, setJumperMode] = useState(false)
+  const [jumperFirst, setJumperFirst] = useState<{ blockId: string; cellId: string; name: string } | null>(null)
+  const [jumperPair, setJumperPair] = useState<{ blockId: string; from: string; fromName: string; to: string; toName: string } | null>(null)
+  const [jumperLabel, setJumperLabel] = useState('')
 
   useEffect(() => {
     gisApi
@@ -474,6 +486,48 @@ function Flow({
       .then(setLegend)
       .catch(() => setLegend([]))
   }, [])
+
+  const handleCellPick = useCallback(
+    (blockId: string, cellId: string, name: string) => {
+      if (!jumperMode) return
+      if (!jumperFirst) {
+        setJumperFirst({ blockId, cellId, name })
+        setStatus(`Перемычка: выбрана «${name}», укажите вторую ячейку`)
+        return
+      }
+      if (jumperFirst.blockId !== blockId) {
+        setError('Перемычку можно сделать только внутри одного блока')
+        return
+      }
+      if (jumperFirst.cellId === cellId) {
+        setError('Выберите другую ячейку')
+        return
+      }
+      setJumperPair({
+        blockId,
+        from: jumperFirst.cellId,
+        fromName: jumperFirst.name,
+        to: cellId,
+        toName: name,
+      })
+      setJumperFirst(null)
+      setJumperLabel('')
+    },
+    [jumperMode, jumperFirst],
+  )
+
+  const createJumperLink = useCallback(async () => {
+    if (!jumperPair) return
+    try {
+      await gisApi.createJumper(jumperPair.blockId, jumperPair.from, jumperPair.to, jumperLabel || undefined)
+      setStatus(`Перемычка ${jumperPair.fromName} → ${jumperPair.toName} создана`)
+      setJumperPair(null)
+      setJumperMode(false)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать перемычку')
+    }
+  }, [jumperPair, jumperLabel, onGraphChanged])
 
   const handleAddCell = useCallback(
     async (assetId: string) => {
@@ -549,6 +603,9 @@ function Flow({
           onAddCell: handleAddCell,
           onDeleteCell: handleDeleteCell,
           onToggleCollapse: handleToggleCollapse,
+          jumperMode,
+          jumperFirstId: jumperFirst?.cellId ?? null,
+          onCellPick: handleCellPick,
         },
       })),
     )
@@ -559,7 +616,7 @@ function Flow({
     setEdgeDraft(null)
     setPending(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect])
+  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect, jumperMode, jumperFirst, handleCellPick])
 
   // Переключатели режимов меняют только флаги, не трогая позиции
   useEffect(() => {
@@ -797,6 +854,21 @@ function Flow({
               </label>
               <button
                 type="button"
+                className={`btn-ghost h-8 px-3 ${jumperMode ? 'ring-1 ring-accent' : ''}`}
+                title="Перемычка между ячейками одного блока"
+                onClick={() => {
+                  setJumperMode((value) => !value)
+                  setJumperFirst(null)
+                  setJumperPair(null)
+                }}
+              >
+                🔗 Перемычка
+              </button>
+              <button type="button" className="btn-ghost h-8 px-3" onClick={() => setShowLegend((v) => !v)}>
+                Легенда
+              </button>
+              <button
+                type="button"
                 className="btn-ghost h-8 px-3"
                 title="Скачать раскладку в DXF для nanoCAD/AutoCAD"
                 onClick={() =>
@@ -867,16 +939,45 @@ function Flow({
         />
       </ReactFlow>
 
-      {legend.length > 0 ? (
-        <div className="pointer-events-none absolute bottom-16 right-3 z-[6] w-[190px] rounded-lg border border-ink2/40 bg-bg/85 p-2 text-[9px] text-ink2">
-          <div className="mb-1 text-[9px] uppercase tracking-wide text-ink3">Условные обозначения</div>
-          <div className="space-y-0.5">
-            {legend.slice(0, 7).map((item) => (
+      {showLegend && legend.length > 0 ? (
+        <div className="absolute right-3 top-16 z-[12] max-h-[55%] w-[220px] overflow-y-auto rounded-xl border border-line bg-surface1/95 p-2 text-[11px] shadow-lg">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[10px] uppercase tracking-wide text-ink3">Условные обозначения</span>
+            <button type="button" className="text-[11px] text-ink3" onClick={() => setShowLegend(false)}>✕</button>
+          </div>
+          <div className="space-y-1">
+            {legend.map((item) => (
               <div key={item.symbol} className="flex items-center justify-between gap-2">
                 <span className="truncate">{item.title}</span>
                 <span className="text-ink3">{item.count}</span>
               </div>
             ))}
+          </div>
+        </div>
+      ) : null}
+
+
+      {jumperPair ? (
+        <div className="absolute inset-x-3 bottom-20 z-[13] rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-xl sm:left-auto sm:right-3 sm:w-[320px]">
+          <div className="mb-2 font-semibold text-ink">
+            Перемычка: {jumperPair.fromName} → {jumperPair.toName}
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Название (необязательно)
+            <input
+              className="input mt-1 h-8"
+              value={jumperLabel}
+              onChange={(event) => setJumperLabel(event.target.value)}
+              placeholder="например, перемычка секций"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button type="button" className="btn-primary h-8 flex-1" onClick={() => void createJumperLink()}>
+              Создать
+            </button>
+            <button type="button" className="btn-ghost h-8" onClick={() => setJumperPair(null)}>
+              Отмена
+            </button>
           </div>
         </div>
       ) : null}
