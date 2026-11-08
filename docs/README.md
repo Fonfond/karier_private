@@ -25,6 +25,7 @@
 | [`18-break-glass-report.md`](18-break-glass-report.md) | Аварийный доступ (break glass): выпуск, аудит, защита | админы |
 | [`19-singleline-plan.md`](19-singleline-plan.md) | План: однолинейная схема в стиле ГОСТ-чертежа (на согласование) | все |
 | [`20-gost-schema-report.md`](20-gost-schema-report.md) | Схема по ГОСТ: символы, шаблон, рамка со штампом, PDF A3 | все |
+| [`21-dxf-analysis.md`](21-dxf-analysis.md) | Разбор DXF «Однолинейная УЭЭК»: состав, подписи, различия, план | все |
 
 ---
 
