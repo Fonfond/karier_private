@@ -20,18 +20,18 @@ def node(key, role, label, type_code, x, y, **params):
 
 SUBSTATION = {
     "nodes": [
-        node("in1", "incoming", "ЯКНО-6 №1 (ввод 1)", "cell", 40, 40),
-        node("in2", "incoming", "ЯКНО-6 №2 (ввод 2)", "cell", 40, 170),
-        node("sv", "section", "ШР СВ-6", "cell", 150, 40),
-        node("sec1", "busbar", "I с.ш. 6.3 кВ", "bus_section", 150, 130),
-        node("sec2", "busbar", "II с.ш. 6.3 кВ", "bus_section", 150, 230),
+        node("in1", "incoming", "Ввод 1 · ЯКНО-6 №1 (яч. 1)", "cell", 40, 40),
+        node("in2", "incoming", "Ввод 2 · ЯКНО-6 №2 (яч. 16)", "cell", 40, 260),
+        node("sv", "section", "СВ · секционный выключатель (яч. 8/23)", "cell", 150, 150),
+        node("sec1", "busbar", "I секция шин 6.3 кВ (яч. 1–15)", "bus_section", 150, 110),
+        node("sec2", "busbar", "II секция шин 6.3 кВ (яч. 16–30)", "bus_section", 150, 300),
         node("tt1", "tt", "ТТ 6 кВ", "cell", 430, 40),
         node("opn1", "opn", "ОПН 6 кВ", "cell", 510, 40),
         node("znv1", "znv", "ЗНВ-6", "cell", 590, 40),
-        node("out1", "outgoing", "ф.7-6", "cell", 420, 300, cable="СБ-3×185", power_kw=320),
-        node("out2", "outgoing", "ф.16-6", "cell", 520, 300, cable="СБ-3×95", power_kw=150),
-        node("out3", "outgoing", "ф.21-6", "cell", 620, 300, cable="СБ-3×95", power_kw=200),
-        node("out4", "outgoing", "ф.5-6", "cell", 720, 300, cable="СБ-3×70", power_kw=110),
+        node("out1", "outgoing", "ф.7к", "cell", 420, 360, cable="СБ-3×185", power_kw=320),
+        node("out2", "outgoing", "ф.16к", "cell", 520, 360, cable="СБ-3×95", power_kw=150),
+        node("out3", "outgoing", "ф.21к", "cell", 620, 360, cable="СБ-3×95", power_kw=200),
+        node("out4", "outgoing", "ф.5к", "cell", 720, 360, cable="СБ-3×70", power_kw=110),
     ],
     "links": [
         ["in1", "sec1"],
@@ -49,12 +49,19 @@ SUBSTATION = {
     "external_ports": [
         {"code": "IN-1", "label": "Ввод 1", "kind": "in", "voltage_kv": 6},
         {"code": "IN-2", "label": "Ввод 2", "kind": "in", "voltage_kv": 6},
-        {"code": "OUT-1", "label": "ф.7-6", "kind": "out", "voltage_kv": 6},
-        {"code": "OUT-2", "label": "ф.16-6", "kind": "out", "voltage_kv": 6},
-        {"code": "OUT-3", "label": "ф.21-6", "kind": "out", "voltage_kv": 6},
-        {"code": "OUT-4", "label": "ф.5-6", "kind": "out", "voltage_kv": 6},
+        {"code": "OUT-1", "label": "ф.7к", "kind": "out", "voltage_kv": 6},
+        {"code": "OUT-2", "label": "ф.16к", "kind": "out", "voltage_kv": 6},
+        {"code": "OUT-3", "label": "ф.21к", "kind": "out", "voltage_kv": 6},
+        {"code": "OUT-4", "label": "ф.5к", "kind": "out", "voltage_kv": 6},
     ],
 }
+
+SIMPLE_BLOCKS = [
+    ("pole", "Опора ВЛ", "pole", "line", "Опора ВЛ", "🪵"),
+    ("recloser", "Реклоузер", "cell", "incoming", "Реклоузер", "🔁"),
+    ("yakno", "ЯКНО-6 (ячейка)", "cell", "outgoing", "ЯКНО-6", "▭"),
+    ("rlnd", "РЛНД", "cell", "section", "РЛНД", "⏚"),
+]
 
 BKRU = {
     "nodes": [
@@ -102,6 +109,19 @@ KTP = {
     ],
 }
 
+def simple_template(label: str) -> dict:
+    return {
+        "nodes": [
+            node("main", "load", label, "pole", 0, 0),
+        ],
+        "links": [],
+        "external_ports": [
+            {"code": "IN-1", "label": label, "kind": "in", "voltage_kv": 6},
+            {"code": "OUT-1", "label": label, "kind": "out", "voltage_kv": 6},
+        ],
+    }
+
+
 BLOCKS = [
     ("substation_35_6", "ПС 35/6 кВ «Карьер»", "substation", "🏭", 10, SUBSTATION),
     ("bkru_standard", "БКРУ-1 (6 ячеек)", "bkru", "🔌", 20, BKRU),
@@ -127,6 +147,30 @@ def main() -> int:
             block.asset_type_id = asset_type.id
             block.template_json = template
             block.sort_order = order
+            block.is_active = True
+
+        for code, name, type_code, role, label, icon in SIMPLE_BLOCKS:
+            asset_type = db.scalar(select(AssetType).where(AssetType.code == type_code))
+            if asset_type is None:
+                print(f"! тип {type_code} не найден для блока {code}")
+                continue
+            block = db.scalar(select(SchemaBlock).where(SchemaBlock.code == code))
+            if block is None:
+                block = SchemaBlock(id=__import__("uuid").uuid4(), code=code)
+                db.add(block)
+            block.name = name
+            block.icon = icon
+            block.block_type = "simple"
+            block.asset_type_id = asset_type.id
+            block.template_json = {
+                "nodes": [node("main", role, label, type_code, 0, 0)],
+                "links": [],
+                "external_ports": [
+                    {"code": "IN-1", "label": label, "kind": "in", "voltage_kv": 6},
+                    {"code": "OUT-1", "label": label, "kind": "out", "voltage_kv": 6},
+                ],
+            }
+            block.sort_order = 40
             block.is_active = True
         db.commit()
         total = db.query(SchemaBlock).count()

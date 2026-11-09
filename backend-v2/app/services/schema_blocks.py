@@ -111,6 +111,33 @@ def instantiate(
         actor=actor,
     )
 
+    if block.block_type == "simple":
+        parent.attrs = {
+            **(parent.attrs or {}),
+            "label": (name or block.name),
+            "pole_no": (name or block.name) if block.asset_type.code == "pole" else None,
+            "simple_block": block.code,
+        }
+        db.commit()
+        existing_ports = {port.code: port for port in parent.ports}
+        for spec in (template.get("external_ports") or []):
+            code = str(spec.get("code"))[:24]
+            if code in existing_ports:
+                port = existing_ports[code]
+                port.name = str(spec.get("label") or code)[:64]
+                port.nominal_voltage_kv = spec.get("voltage_kv") or port.nominal_voltage_kv
+                continue
+            db.add(__import__("app.models", fromlist=["AssetPort"]).AssetPort(
+                id=uuid.uuid4(), asset_id=parent.id, code=code,
+                name=str(spec.get("label") or code)[:64],
+                kind=spec.get("kind", "out"), nominal_voltage_kv=spec.get("voltage_kv"),
+            ))
+        parent.schema_role = "block"
+        db.commit()
+        audit.add("schema.block_instantiated", entity="asset", entity_id=parent.id,
+                  detail=f"Установлен простой блок «{block.name}»", payload={"block": block.code})
+        return {"asset_id": str(parent.id), "code": parent.code, "children": 0, "block_code": block.code}
+
     created: dict[str, Asset] = {}
     for node in nodes:
         key = str(node.get("key") or uuid.uuid4().hex[:6])

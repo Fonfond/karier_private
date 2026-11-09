@@ -470,6 +470,8 @@ function buildEdges(graph: TopologyGraph): Edge[] {
     const jumper = edge.link_type === 'jumper'
     return {
       id: edge.id,
+      type: 'smoothstep',
+      pathOptions: { borderRadius: 8 },
       source: edge.from_asset_id,
       target: edge.to_asset_id,
       label: edge.label,
