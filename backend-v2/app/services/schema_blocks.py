@@ -45,6 +45,13 @@ def _type_by_code(db: Session, code: str) -> AssetType | None:
     return db.scalar(select(AssetType).where(AssetType.code == code, AssetType.is_active.is_(True)))
 
 
+def _prune_ports(db: Session, asset: Asset, specs: list[dict]) -> None:
+    allowed = {str(spec.get("code"))[:24] for spec in specs}
+    for port in list(asset.ports):
+        if port.code not in allowed:
+            db.delete(port)
+
+
 def _create_child(
     db: Session,
     *,
@@ -66,6 +73,7 @@ def _create_child(
             code=code_suffix,
             status="on" if node.get("role") != "load" else "off",
             parent_id=parent.id,
+            attrs=dict(node.get("params") or {}),
         ),
         actor=actor,
     )
@@ -99,6 +107,14 @@ def instantiate(
     if not nodes:
         raise ApiError(400, "block.empty", "Шаблон блока пуст")
 
+    base_attrs: dict[str, Any] = {}
+    if block.block_type == "simple":
+        base_attrs = dict(nodes[0].get("params") or {})
+        for attr in block.asset_type.required_attrs or []:
+            schema = (block.asset_type.attr_schema or {}).get(attr) or {}
+            if attr not in base_attrs:
+                base_attrs[attr] = 0 if schema.get("type") == "number" else ""
+
     parent = gis.create_asset(
         db,
         AssetCreate(
@@ -107,6 +123,7 @@ def instantiate(
             x=x,
             y=y,
             status="on",
+            attrs=base_attrs,
         ),
         actor=actor,
     )
@@ -132,6 +149,8 @@ def instantiate(
                 name=str(spec.get("label") or code)[:64],
                 kind=spec.get("kind", "out"), nominal_voltage_kv=spec.get("voltage_kv"),
             ))
+        db.flush()
+        _prune_ports(db, parent, template.get("external_ports") or [])
         parent.schema_role = "block"
         db.commit()
         audit.add("schema.block_instantiated", entity="asset", entity_id=parent.id,
@@ -189,6 +208,7 @@ def instantiate(
             port.name = str(spec.get("label") or code)[:64]
             port.kind = spec.get("kind", port.kind)
             port.nominal_voltage_kv = spec.get("voltage_kv") or port.nominal_voltage_kv
+    _prune_ports(db, parent, template.get("external_ports") or [])
     parent.schema_role = "block"
     parent.attrs = {**(parent.attrs or {}), "block_code": block.code}
     db.commit()

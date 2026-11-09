@@ -36,7 +36,7 @@ def test_library_has_three_blocks(client, admin_headers):
     assert {"substation_35_6", "bkru_standard", "ktp_standard"} <= codes
     substation = next(block for block in blocks if block["code"] == "substation_35_6")
     assert substation["nodes_count"] >= 10
-    assert substation["external_ports"] == 6
+    assert substation["external_ports"] == 5
 
 
 def test_instantiate_substation_creates_structure(client, admin_headers):
@@ -48,13 +48,13 @@ def test_instantiate_substation_creates_structure(client, admin_headers):
         children = _children(db, data["asset_id"])
         roles = [item.schema_role for item in children]
         assert roles.count("busbar") == 2, "должно быть две секции шин"
-        assert roles.count("outgoing") == 4, "должно быть четыре фидера"
+        assert roles.count("outgoing") == 3, "должно быть три фидера (ф.7к, ф.16к, ф.21к)"
         assert roles.count("incoming") == 2, "должно быть два ввода"
 
         parent = db.get(Asset, uuid.UUID(data["asset_id"]))
         assert parent is not None
         port_codes = {port.code for port in parent.ports}
-        assert {"IN-1", "IN-2", "OUT-1"} <= port_codes
+        assert {"IN-1", "IN-2", "OUT-1", "OUT-2", "OUT-3"} <= port_codes
     finally:
         db.close()
 

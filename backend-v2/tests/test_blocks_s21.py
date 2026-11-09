@@ -33,8 +33,12 @@ def test_substation_template_matches_sketch(client, admin_headers):
         assert len(busbars) == 2
         assert any("I секция шин" in item.name for item in busbars)
         assert any("II секция шин" in item.name for item in busbars)
-        assert {"ф.7к", "ф.16к", "ф.21к", "ф.5к"} <= names
+        assert any(name.startswith("ф.7к") for name in names)
+        assert any(name.startswith("ф.16к") for name in names)
+        assert any(name.startswith("ф.21к") for name in names)
+        assert not any(name.startswith("ф.5к") for name in names)
         assert any("СВ" in item.name for item in children if item.schema_role == "section")
+        assert any("15/16" in item.name for item in children if item.schema_role == "section")
         assert any("Ввод 1" in item.name for item in children if item.schema_role == "incoming")
         assert any("Ввод 2" in item.name for item in children if item.schema_role == "incoming")
     finally:
