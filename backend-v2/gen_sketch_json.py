@@ -1,8 +1,9 @@
-"""Генерация JSON-описания демо-схемы (karier.sketch/v1, version 3.0)."""
+"""Генерация JSON-описания демо-схемы (karier.sketch/v1, version 4.0)."""
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +13,8 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models import Asset, Link
 
-DEMO = "sketch_v3"
-VERSION = "3.0"
+DEMO = "sketch_v4"
+VERSION = "4.0"
 
 LAYOUT = {
     "Т-1 35/6 кВ": (30, 30),
@@ -36,11 +37,60 @@ LAYOUT = {
     "Освещение · 50 кВт": (960, 310),
 }
 
-RESERVE_MARKERS = ("резерв", "отпайка")
+RESERVE_MARKERS = ("резерв",)
+
+# Длительно допустимые токи, А (ПУЭ гл. 1.3/2.3, ориентировочно)
+AMPACITY_04 = {
+    25: 80, 35: 95, 50: 120, 70: 145, 95: 175, 120: 200, 150: 225, 185: 255, 240: 300,
+}
+AMPACITY_6 = {70: 165, 95: 200, 120: 240, 185: 350, 240: 430}
+AMPACITY_SIP = {95: 250, 120: 300, 240: 400}
 
 
 def is_reserve(label: str) -> bool:
     return any(marker in (label or "").lower() for marker in RESERVE_MARKERS)
+
+
+def cable_ampacity(mark: str | None) -> float | None:
+    if not mark:
+        return None
+    text = mark.replace(" ", "")
+    multiplier = 1
+    lead = re.match(r"(\d+)×", text)
+    if lead and not re.match(r"\d+×\d+$", text):
+        multiplier = int(lead.group(1))
+        text = text[lead.end():]
+    match = re.search(r"(\d+)×?(\d+)", text)
+    if not match:
+        return None
+    section = int(match.group(2))
+    if "СИП" in mark:
+        base = AMPACITY_SIP.get(section)
+    elif "СБ" in mark:
+        base = AMPACITY_6.get(section)
+    else:
+        base = AMPACITY_04.get(section)
+    return float(base) * multiplier if base else None
+
+
+def qf_rating(value: str | None) -> float | None:
+    if not value:
+        return None
+    match = re.search(r"(\d+)", value)
+    return float(match.group(1)) if match else None
+
+
+def feeder_sort_key(name: str) -> tuple:
+    match = re.search(r"№\s*(\d+)", name)
+    if match:
+        return (0, int(match.group(1)))
+    match = re.search(r"ф\.(\d+)", name)
+    if match:
+        return (1, int(match.group(1)))
+    match = re.search(r"Л-(\d+)", name)
+    if match:
+        return (2, int(match.group(1)))
+    return (3, 0)
 
 
 def block_code(asset: Asset, children: list[Asset]) -> str | None:
@@ -72,7 +122,7 @@ def main() -> int:
         if (asset.attrs or {}).get("demo") == DEMO
     ]
     if not assets:
-        print("Нет демо-схемы sketch_v3 — выполните seed_demo_sketch.py")
+        print("Нет демо-схемы sketch_v4 — выполните seed_demo_sketch.py")
         return 1
 
     order = {name: index for index, name in enumerate(LAYOUT)}
@@ -93,25 +143,35 @@ def main() -> int:
         params: dict = {"label": asset.name}
         if (asset.attrs or {}).get("pole_no"):
             params["pole_no"] = asset.attrs["pole_no"]
+        if (asset.attrs or {}).get("power_kw"):
+            params["power_kw"] = float(asset.attrs["power_kw"])
 
         if children:
             params["sections"] = [c.name for c in children if c.schema_role == "busbar"]
             params["incoming"] = [
                 {"name": c.name, "params": c.attrs or {}}
                 for c in children
-                if c.schema_role == "incoming"
+                if c.schema_role == "incoming" and "0.4" not in c.name
             ]
             params["section_breaker"] = next(
                 (
                     {"name": c.name, "params": c.attrs or {}}
                     for c in children
-                    if c.schema_role == "section"
+                    if c.schema_role == "section" and "СВ" in c.name
+                ),
+                None,
+            )
+            params["lv_inlet"] = next(
+                (
+                    {"name": c.name, "params": c.attrs or {}}
+                    for c in children
+                    if "0.4 кВ" in c.name and c.schema_role in ("section", "incoming")
                 ),
                 None,
             )
             params["feeders"] = [
                 {"name": c.name, "params": c.attrs or {}}
-                for c in children
+                for c in sorted(children, key=lambda c: feeder_sort_key(c.name))
                 if c.schema_role == "outgoing"
             ]
             params["equipment"] = [
@@ -181,33 +241,53 @@ def main() -> int:
                 continue
             dangling.append(f"{block['title']}.{port['code']}")
 
-    # --- проверки сходимости ------------------------------------------------
+    # --- проверки ----------------------------------------------------------
+    cable_issues = []
+    qf_issues = []
     loads: list[tuple[str, float]] = []
+
     for block in blocks:
-        label = block["title"]
-        for feeder in block["params"].get("feeders", []):
-            pw = feeder["params"].get("power_kw")
-            if pw:
-                loads.append((f"{label} / {feeder['name'].split(' ·')[0]}", float(pw)))
+        title = block["title"]
+        if block["params"].get("power_kw"):
+            loads.append((title, block["params"]["power_kw"]))
         for equip in block["params"].get("equipment", []):
             if equip["role"] == "load" and equip["params"].get("power_kw"):
-                loads.append((f"{label} / {equip['name'].split(' ·')[0]}", float(equip["params"]["power_kw"])))
+                loads.append((f"{title} / {equip['name'].split(' ·')[0]}", float(equip["params"]["power_kw"])))
+        for feeder in block["params"].get("feeders", []) + block["params"].get("incoming", []):
+            payload = feeder["params"]
+            current = payload.get("current_a")
+            cable = payload.get("cable")
+            if current and cable:
+                amp = cable_ampacity(cable)
+                if amp is None:
+                    cable_issues.append({"where": f"{title} / {feeder['name']}", "error": f"нет данных по {cable}"})
+                elif amp < float(current) * 1.1:
+                    cable_issues.append({
+                        "where": f"{title} / {feeder['name']}",
+                        "cable": cable,
+                        "current_a": current,
+                        "ampacity_a": amp,
+                        "margin": round(amp / float(current), 2),
+                    })
+            setting = payload.get("qf_setting_a")
+            rating = qf_rating(payload.get("qf"))
+            if setting and current and rating:
+                if float(setting) < float(current):
+                    qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "уставка ниже тока"})
+                if float(setting) > rating:
+                    qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "уставка выше номинала QF"})
+            if rating and current and rating < float(current) * 1.1:
+                qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "номинал QF ниже тока"})
 
     duplicate_loads = sorted(
-        {name for name, _ in loads if sum(1 for other, _ in loads if other.split(" / ")[0] == name) > 1}
+        {name for name, _ in loads if sum(1 for other, _ in loads if other == name) > 1}
     )
-    # ЭКГ не должен встречаться в двух блоках
     ekg_blocks = sorted(
         {
             block["title"]
             for block in blocks
             for equip in block["params"].get("equipment", [])
             if equip["role"] == "load" and "ЭКГ" in equip["name"]
-        }
-        | {
-            block["title"]
-            for block in blocks
-            if "ЭКГ" in block["title"] or "ЭКГ" in json.dumps(block["params"].get("feeders", []), ensure_ascii=False)
         }
     )
 
@@ -219,19 +299,21 @@ def main() -> int:
             None,
         )
         total_kva = sum(
-            float(f["params"].get("power_kva") or 0) for f in ktp["params"].get("feeders", [])
+            float(f["params"].get("power_kva") or (float(f["params"].get("power_kw") or 0) / 0.85))
+            for f in ktp["params"]["feeders"]
         )
         ktp_check = {
             "transformer_kva": tr,
             "feeders_kva": round(total_kva, 1),
-            "ok": bool(tr) and total_kva <= float(tr),
+            "lv_inlet": ktp["params"].get("lv_inlet") is not None,
+            "ok": bool(tr) and total_kva <= float(tr) and ktp["params"].get("lv_inlet") is not None,
         }
 
     bkru = next((b for b in blocks if b["block"] == "bkru_standard"), None)
     bkru_check = None
     if bkru:
-        feeders_kw = sum(float(f["params"].get("power_kw") or 0) for f in bkru["params"].get("feeders", []))
-        inputs = [float(i["params"].get("power_kw") or 0) for i in bkru["params"].get("incoming", [])]
+        feeders_kw = sum(float(f["params"].get("power_kw") or 0) for f in bkru["params"]["feeders"])
+        inputs = [float(i["params"].get("power_kw") or 0) for i in bkru["params"]["incoming"]]
         bkru_check = {
             "feeders_kw": feeders_kw,
             "inputs_kw": inputs,
@@ -241,13 +323,12 @@ def main() -> int:
     payload = {
         "format": "karier.sketch/v1",
         "version": VERSION,
-        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v3)",
+        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v4)",
         "description": (
-            "Фрагмент 6 кВ. Питание от Т-1/Т-2 35/6. ПС: I секция (яч. 1–15) — ф.7к (яч. 7); "
-            "II секция (яч. 16–30) — ф.16к (яч. 16) → ЯКНО-6 и ф.21к (яч. 21) → БКРУ-1. "
-            "СВ на границе яч. 15/16. БКРУ-1: I секция яч. 1–3, СВ яч. 4, II секция яч. 5–6; "
-            "ввод 1 от ф.21к, ввод 2 от ф.7к через ЯКНО-1/1к. QF+ТТ+ОПН+Wh на фидерах, "
-            "ТН/ОПН/ЗН на секциях. Нагрузки: КТП №4 400 кВА (0.4 кВ), ЯКНО-6 (ЭКГ), ПКТП-1/2/3."
+            "Фрагмент 6 кВ. Т-1/Т-2 35/6 → ПС: I секция (яч. 1–15), ф.7к (яч. 7); "
+            "II секция (яч. 16–30), ф.16к (яч. 16) → ЯКНО-6, ф.21к (яч. 21) → БКРУ-1; СВ 15/16. "
+            "БКРУ-1: I секция яч. 1–3, СВ яч. 4, II секция яч. 5–6. "
+            "QF/QS/ТТ/ОПН/Wh на присоединениях, 0.4 кВ вводные QF/ТТ в КТП и ПКТП."
         ),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "canvas": {"width": 1024, "height": 576, "units": "layout_px"},
@@ -258,22 +339,28 @@ def main() -> int:
         "validation": {
             "duplicate_loads": duplicate_loads,
             "ekg_blocks": ekg_blocks,
+            "loads_total_kw": round(sum(value for _, value in loads), 1),
+            "loads": [{"name": name, "power_kw": power} for name, power in loads],
+            "cable_issues": cable_issues,
+            "qf_issues": qf_issues,
             "ktp": ktp_check,
             "bkru_post_accident": bkru_check,
-            "loads_total_kw": round(sum(p for _, p in loads), 1),
+            "metering_boundary": "расчётный учёт — на фидерах ПС; технический учёт Wh на БКРУ, ПКТП, КТП и ЯКНО-6",
         },
     }
 
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     for path in (
-        Path(r"C:\karier\backend-v2\seed_data\sketch_v3.json"),
-        Path(r"C:\karier\docs\sketches\sketch-v3.json"),
+        Path(r"C:\karier\backend-v2\seed_data\sketch_v4.json"),
+        Path(r"C:\karier\docs\sketches\sketch-v4.json"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
     print("blocks:", len(blocks), "| links:", len(links), "| dangling:", dangling or "нет")
-    print("ЭКГ в блоках:", ekg_blocks, "| КТП:", ktp_check, "| БКРУ:", bkru_check)
+    print("loads_total_kw:", payload["validation"]["loads_total_kw"])
+    print("cable_issues:", len(cable_issues), "| qf_issues:", len(qf_issues))
+    print("ktp:", ktp_check, "| bkru:", bkru_check)
     for item in blocks:
         print(f"  {item['id']:3} {str(item['block']):16} {item['title']}")
     db.close()

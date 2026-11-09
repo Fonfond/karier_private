@@ -23,8 +23,8 @@ from app.schemas.gis import LinkCreate
 from app.services import gis, links as links_service
 from app.services import schema_blocks as blocks_service
 
-DEMO = "sketch_v3"
-OLD = {"sketch_v1", "sketch_v2", DEMO}
+DEMO = "sketch_v4"
+OLD = {"sketch_v1", "sketch_v2", "sketch_v3", DEMO}
 
 
 def _actor(db):
@@ -135,9 +135,9 @@ def main() -> int:
         _link(db, bkru1, "OUT-2", pktp1, "IN-1", mark="СБ-3×70", length=100)
         _link(db, bkru1, "OUT-3", pktp2, "IN-1", mark="СБ-3×70", length=150)
 
-        _link(db, ktp4, "OUT-1", load_burovaya, "IN-1", mark="АВБбШв 4×95", length=60)
-        _link(db, ktp4, "OUT-2", load_nasos, "IN-1", mark="АВБбШв 4×50", length=40)
-        _link(db, ktp4, "OUT-3", load_svet, "IN-1", mark="АВБбШв 4×25", length=30)
+        _link(db, ktp4, "OUT-1", load_burovaya, "IN-1", mark="АВБбШв 4×185", length=60)
+        _link(db, ktp4, "OUT-2", load_nasos, "IN-1", mark="АВБбШв 4×95", length=40)
+        _link(db, ktp4, "OUT-3", load_svet, "IN-1", mark="АВБбШв 4×35", length=30)
 
         print("Демо-схема v3 создана:")
         for label, asset in [
