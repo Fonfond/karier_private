@@ -23,8 +23,8 @@ from app.schemas.gis import LinkCreate
 from app.services import gis, links as links_service
 from app.services import schema_blocks as blocks_service
 
-DEMO = "sketch_v5"
-OLD = {"sketch_v1", "sketch_v2", "sketch_v3", "sketch_v4", DEMO}
+DEMO = "sketch_v6"
+OLD = {"sketch_v1", "sketch_v2", "sketch_v3", "sketch_v4", "sketch_v5", DEMO}
 
 
 def _actor(db):

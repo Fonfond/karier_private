@@ -51,8 +51,8 @@ SUBSTATION = {
         node("in2", "incoming", "Ввод 2 · Т-2 35/6 · QF 1000A + ТТ 800/5 (яч. 17)",
              "cell", 40, 300, qs="QS 1000A", qf="QF 1000A", qf_setting_a=700, ct="ТТ 800/5", opn="ОПН 6 кВ",
              cable="2×СБ-3×185", power_kw=5488, current_a=621),
-        node("sv", "section", "СВ · QF VD4 630A · граница яч. 15/16", "cell", 160, 170,
-             qf="VD4 630A", ct="ТТ 300/5"),
+        node("sv", "section", "СВ · QF 1000A (уст. 650А) · ТТ 600/5 · граница яч. 15/16", "cell", 160, 170,
+             qf="QF 1000A", qf_setting_a=650, ct="ТТ 600/5"),
         node("sec1", "busbar", "I секция шин 6.3 кВ (яч. 1–15)", "bus_section", 160, 110),
         node("sec2", "busbar", "II секция шин 6.3 кВ (яч. 16–30)", "bus_section", 160, 320),
         node("tn1", "tn", "ТН 6 кВ · I секция", "cell", 430, 40),
@@ -96,7 +96,8 @@ BKRU = {
         node("in2", "incoming", "Ввод 2 · QS+QF 630A (уст. 160А)+ТТ 300/5+ОПН (яч. 6) · от ф.7к / ЯКНО-1/1к",
              "cell", 40, 300, qs="QS 630A", qf="QF 630A", qf_setting_a=160, ct="ТТ 300/5", opn="ОПН 6 кВ",
              cable="СБ-3×95", power_kw=874, current_a=99),
-        node("sv", "section", "СВ · QF (яч. 4) · между секциями", "cell", 170, 170, qf="QF 630A"),
+        node("sv", "section", "СВ · QF 630A (уст. 160А) · ТТ 150/5 (яч. 4) · между секциями", "cell", 170, 170,
+             qf="QF 630A", qf_setting_a=160, ct="ТТ 150/5"),
         node("bus1", "busbar", "Секция I БКРУ-1 6 кВ (яч. 1–3)", "bus_section", 170, 110),
         node("bus2", "busbar", "Секция II БКРУ-1 6 кВ (яч. 4–6)", "bus_section", 170, 320),
         node("tn1", "tn", "ТН 6 кВ · секция I", "cell", 430, 40),
@@ -142,7 +143,7 @@ KTP = {
              qf="QF 630A", qf_setting_a=520, ct="ТТ 600/5", meter="Wh"),
         node("out1", "outgoing", "Л-1 0.4 кВ · 130 кВт · QF 250А · ТТ 300/5", "cell", 420, 220,
              qf="QF 250А", qf_setting_a=230, ct="ТТ 300/5", cable="АВБбШв 4×185",
-             power_kw=130, power_kva=180, current_a=221, meter="Wh"),
+             power_kw=130, power_kva=160, current_a=221, meter="Wh"),
         node("out2", "outgoing", "Л-2 0.4 кВ · 80 кВт · QF 160А · ТТ 200/5", "cell", 520, 220,
              qf="QF 160А", qf_setting_a=145, ct="ТТ 200/5", cable="АВБбШв 4×95",
              power_kw=80, power_kva=100, current_a=136, meter="Wh"),
@@ -253,15 +254,15 @@ PKTP_63 = pktp_template(
     power_kva=63, load1_kw=20, load2_kw=20,
     in_qf="QF 25A", in_setting=16, in_ct="ТТ 50/5",
     lv_qf="QF 100A", lv_setting=85, lv_ct="ТТ 100/5",
-    l1_qf="QF 40A", l1_setting=36, l1_ct="ТТ 50/5", l1_cable="АВБбШв 4×25", l1_current=34, l1_kva=30,
-    l2_qf="QF 40A", l2_setting=36, l2_ct="ТТ 50/5", l2_cable="АВБбШв 4×25", l2_current=34, l2_kva=30,
+    l1_qf="QF 50A", l1_setting=40, l1_ct="ТТ 50/5", l1_cable="АВБбШв 4×25", l1_current=34, l1_kva=30,
+    l2_qf="QF 50A", l2_setting=40, l2_ct="ТТ 50/5", l2_cable="АВБбШв 4×25", l2_current=34, l2_kva=30,
 )
 
 PKTP_400 = pktp_template(
     power_kva=400, load1_kw=130, load2_kw=80,
     in_qf="QF 100A", in_setting=80, in_ct="ТТ 100/5",
     lv_qf="QF 630A", lv_setting=400, lv_ct="ТТ 600/5",
-    l1_qf="QF 250А", l1_setting=230, l1_ct="ТТ 300/5", l1_cable="АВБбШв 4×185", l1_current=221, l1_kva=180,
+    l1_qf="QF 250А", l1_setting=230, l1_ct="ТТ 300/5", l1_cable="АВБбШв 4×185", l1_current=221, l1_kva=160,
     l2_qf="QF 160А", l2_setting=145, l2_ct="ТТ 200/5", l2_cable="АВБбШв 4×95", l2_current=136, l2_kva=100,
 )
 
@@ -328,8 +329,8 @@ def main() -> int:
             template_node = node("main", role, label, type_code, 0, 0)
             simple_params = {
                 "pole": {"grounding": "ЗУ"},
-                "recloser": {"qs": "QS", "qf": "QF 630A", "zn": "ЗН"},
-                "yakno1": {"qs": "QS", "qf": "QF 630A", "ct": "ТТ 300/5", "zn": "ЗН"},
+                "recloser": {"qs": "QS", "qf": "QF 630A", "qf_setting_a": 160, "ct": "ТТ 200/5", "zn": "ЗН"},
+                "yakno1": {"qs": "QS", "qf": "QF 630A", "qf_setting_a": 160, "ct": "ТТ 300/5", "zn": "ЗН"},
                 "rlnd": {"qs": "QS", "zn": "ЗН"},
                 "source_35": {"voltage_kv": 35},
             }

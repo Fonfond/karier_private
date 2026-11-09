@@ -13,8 +13,8 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models import Asset, Link
 
-DEMO = "sketch_v5"
-VERSION = "5.0"
+DEMO = "sketch_v6"
+VERSION = "6.0"
 
 LAYOUT = {
     "Т-1 35/6 кВ": (30, 30),
@@ -153,10 +153,14 @@ def main() -> int:
 
         if children:
             params["sections"] = [c.name for c in children if c.schema_role == "busbar"]
+            incoming_nodes = [
+                c for c in children
+                if c.schema_role == "incoming" and "0.4" not in c.name
+            ]
+            incoming_nodes.sort(key=lambda c: feeder_sort_key(c.name) if "Ввод" not in c.name else (0, int(re.search(r"Ввод\s*(\d+)", c.name).group(1)) if re.search(r"Ввод\s*(\d+)", c.name) else 0))
             params["incoming"] = [
                 {"name": c.name, "params": c.attrs or {}}
-                for c in children
-                if c.schema_role == "incoming" and "0.4" not in c.name
+                for c in incoming_nodes
             ]
             params["section_breaker"] = next(
                 (
@@ -179,10 +183,15 @@ def main() -> int:
                 for c in sorted(children, key=lambda c: feeder_sort_key(c.name))
                 if c.schema_role == "outgoing"
             ]
+            role_order = {"tn": 0, "tt": 1, "opn": 2, "znv": 3, "transformer": 4, "load": 5}
+            equipment_nodes = [
+                c for c in children
+                if c.schema_role in role_order
+            ]
+            equipment_nodes.sort(key=lambda c: (role_order.get(c.schema_role, 9), c.name))
             params["equipment"] = [
                 {"name": c.name, "role": c.schema_role, "params": c.attrs or {}}
-                for c in children
-                if c.schema_role in ("tn", "tt", "opn", "znv", "transformer", "load")
+                for c in equipment_nodes
             ]
 
         blocks.append(
@@ -279,10 +288,22 @@ def main() -> int:
             if setting and current and rating:
                 if float(setting) < float(current):
                     qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "уставка ниже тока"})
-                if float(setting) > rating:
-                    qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "уставка выше номинала QF"})
+                if float(setting) > rating * 0.95:
+                    qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "уставка выше 0.95 номинала QF"})
             if rating and current and rating < float(current) * 1.1:
                 qf_issues.append({"where": f"{title} / {feeder['name']}", "error": "номинал QF ниже тока"})
+
+    switch_issues = []
+    for block in blocks:
+        sv = block["params"].get("section_breaker")
+        if sv and sv["params"].get("qf") and not sv["params"].get("qf_setting_a"):
+            switch_issues.append({"where": f"{block['title']} / СВ", "error": "нет уставки QF"})
+        if block["params"].get("label") in ("Реклоузер", "ЯКНО-1/1к"):
+            params = block["params"]
+            if params.get("qf") and not params.get("qf_setting_a"):
+                switch_issues.append({"where": block["title"], "error": "нет уставки QF"})
+            if not params.get("ct"):
+                switch_issues.append({"where": block["title"], "error": "нет ТТ"})
 
     duplicate_loads = sorted(
         {name for name, _ in loads if sum(1 for other, _ in loads if other == name) > 1}
@@ -368,7 +389,7 @@ def main() -> int:
     payload = {
         "format": "karier.sketch/v1",
         "version": VERSION,
-        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v5)",
+        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v6)",
         "description": (
             "Фрагмент 6 кВ. Т-1/Т-2 35/6 → ПС: I секция (яч. 1–15), ф.7к (яч. 7); "
             "II секция (яч. 16–30), ф.16к (яч. 16) → ЯКНО-6, ф.21к (яч. 21) → БКРУ-1; СВ 15/16. "
@@ -386,6 +407,7 @@ def main() -> int:
             "ekg_blocks": ekg_blocks,
             "loads_total_kw": round(sum(value for _, value in loads), 1),
             "loads": [{"name": name, "power_kw": power} for name, power in loads],
+            "switch_issues": switch_issues,
             "cable_issues": cable_issues,
             "qf_issues": qf_issues,
             "lv_issues": lv_issues,
@@ -398,8 +420,8 @@ def main() -> int:
 
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     for path in (
-        Path(r"C:\karier\backend-v2\seed_data\sketch_v5.json"),
-        Path(r"C:\karier\docs\sketches\sketch-v5.json"),
+        Path(r"C:\karier\backend-v2\seed_data\sketch_v6.json"),
+        Path(r"C:\karier\docs\sketches\sketch-v6.json"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -407,7 +429,7 @@ def main() -> int:
     print("blocks:", len(blocks), "| links:", len(links), "| dangling:", dangling or "нет")
     print("loads_total_kw:", payload["validation"]["loads_total_kw"])
     print("cable_issues:", len(cable_issues), "| qf_issues:", len(qf_issues))
-    print("lv_issues:", len(lv_issues), "| mark_issues:", len(mark_issues))
+    print("lv_issues:", len(lv_issues), "| mark_issues:", len(mark_issues), "| switch_issues:", len(switch_issues))
     print("ktp:", ktp_check, "| bkru:", bkru_check)
     for item in blocks:
         print(f"  {item['id']:3} {str(item['block']):16} {item['title']}")
