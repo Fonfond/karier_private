@@ -102,6 +102,23 @@ export function portsForNode(node: GraphNode): Record<string, XYPosition> {
   return result
 }
 
+function NodeHandles({ color = 'accent' }: { color?: string }) {
+  const cls = `!h-1.5 !w-1.5 !border-0 !bg-${color}`
+  return (
+    <>
+      <Handle id="l-in" type="target" position={Position.Left} className={cls} />
+      <Handle id="r-in" type="target" position={Position.Right} className={cls} />
+      <Handle id="t-in" type="target" position={Position.Top} className={cls} />
+      <Handle id="b-in" type="target" position={Position.Bottom} className={cls} />
+      <Handle id="l-out" type="source" position={Position.Left} className={cls} />
+      <Handle id="r-out" type="source" position={Position.Right} className={cls} />
+      <Handle id="t-out" type="source" position={Position.Top} className={cls} />
+      <Handle id="b-out" type="source" position={Position.Bottom} className={cls} />
+    </>
+  )
+}
+
+
 function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   const { node, editable, portDrag, portPositions, onPortMove } = data
   const blockBox = useRef<HTMLDivElement | null>(null)
@@ -197,8 +214,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
               ▸
             </button>
           </div>
-          <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-accent" />
-          <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-accent" />
+          <NodeHandles />
         </div>
       )
     }
@@ -324,8 +340,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           </svg>
         ) : null}
 
-        <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-accent" />
-        <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-accent" />
+        <NodeHandles />
       </div>
     )
   }
@@ -415,12 +430,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
         )
       })}
 
-      {node.ports.length === 0 ? (
-        <>
-          <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-line" />
-          <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-line" />
-        </>
-      ) : null}
+      <NodeHandles color="line" />
     </div>
   )
 }
@@ -464,14 +474,36 @@ function nodePositions(graph: TopologyGraph): Record<string, XYPosition> {
   return result
 }
 
-function buildEdges(graph: TopologyGraph): Edge[] {
+function buildEdges(graph: TopologyGraph, positions: Record<string, XYPosition>): Edge[] {
   return graph.edges.map((edge) => {
+    const from = positions[edge.from_asset_id]
+    const to = positions[edge.to_asset_id]
+    let sourceHandle = 'r-out'
+    let targetHandle = 'l-in'
+    if (from && to) {
+      const dx = to.x - from.x
+      const dy = to.y - from.y
+      if (Math.abs(dy) >= Math.abs(dx) * 0.75) {
+        if (dy >= 0) {
+          sourceHandle = 'b-out'
+          targetHandle = 't-in'
+        } else {
+          sourceHandle = 't-out'
+          targetHandle = 'b-in'
+        }
+      } else if (dx < 0) {
+        sourceHandle = 'l-out'
+        targetHandle = 'r-in'
+      }
+    }
     const open = edge.state !== 'connected'
     const jumper = edge.link_type === 'jumper'
     return {
       id: edge.id,
       type: 'smoothstep',
       pathOptions: { borderRadius: 8 },
+      sourceHandle,
+      targetHandle,
       source: edge.from_asset_id,
       target: edge.to_asset_id,
       label: edge.label,
@@ -693,7 +725,7 @@ function Flow({
         },
       })),
     )
-    setEdges(buildEdges(graph))
+    setEdges(buildEdges(graph, positions))
     setDirty(false)
     setStatus(null)
     setError(null)

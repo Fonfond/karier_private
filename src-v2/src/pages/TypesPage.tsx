@@ -24,6 +24,11 @@ const ATTR_OPTIONS: Array<{ key: string; label: string; type: string }> = [
   { key: 'bucket_m3', label: 'Ковш, м³', type: 'number' },
 ]
 
+const TYPE_ICONS = [
+  '🏭', '🔌', '⚡', '🔧', '▭', '⏚', '🔁', '🏗', '⛏', '🚜',
+  '💡', '🔻', '🪵', '📟', '🧰', '🔋', '🚧', '⛽', '🛠', '📡',
+]
+
 const SCHEMA_SYMBOLS = [
   { value: 'breaker', label: 'Выключатель / ячейка' },
   { value: 'disconnector', label: 'Разъединитель' },
@@ -223,7 +228,27 @@ function Editor({
             </select>
           </Field>
           <Field label="Иконка">
-            <input className="input" value={form.icon} maxLength={4} onChange={(e) => set('icon', e.target.value)} />
+            <div className="grid max-h-24 grid-cols-8 gap-1 overflow-y-auto rounded-lg border border-line p-1.5">
+              {TYPE_ICONS.map((icon) => (
+                <button
+                  key={icon}
+                  type="button"
+                  className={`grid h-7 w-7 place-items-center rounded text-[15px] ${
+                    form.icon === icon ? 'bg-accent/20 ring-1 ring-accent' : 'hover:bg-surface2'
+                  }`}
+                  onClick={() => set('icon', icon)}
+                >
+                  {icon}
+                </button>
+              ))}
+            </div>
+            <input
+              className="input mt-1.5"
+              value={form.icon}
+              maxLength={4}
+              placeholder="или введите свой"
+              onChange={(e) => set('icon', e.target.value)}
+            />
           </Field>
           <Field label="Цвет">
             <input

@@ -75,6 +75,10 @@ export function MapPage() {
   const [linkMark, setLinkMark] = useState('')
   const [linkLength, setLinkLength] = useState('')
   const [linkType, setLinkType] = useState('cable')
+  const [linkMode, setLinkMode] = useState(false)
+  const [dragFrom, setDragFrom] = useState<string | null>(null)
+  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; length: string; state: string } | null>(null)
+  const [linkSaving, setLinkSaving] = useState(false)
 
   const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
   const [moveDraft, setMoveDraft] = useState<{ x: number; y: number } | null>(null)
@@ -129,12 +133,12 @@ export function MapPage() {
   }, [load])
 
   useEffect(() => {
-    if (view === 'schema' && !graph) void loadGraph()
+    if (!graph) void loadGraph()
   }, [view, graph, loadGraph])
 
   const refresh = useCallback(async () => {
     await load()
-    if (view === 'schema') await loadGraph()
+    await loadGraph()
   }, [load, loadGraph, view])
 
   const filtered = useMemo(() => {
@@ -144,6 +148,7 @@ export function MapPage() {
 
   const openAsset = (id: string) => {
     if (movingAsset) return
+    if (linkMode) return
     if (connecting) {
       void openConnectPicker(id)
       return
@@ -237,6 +242,78 @@ export function MapPage() {
       setError(err instanceof ApiError ? err.message : 'Не удалось создать связь')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const startLinkDrag = (id: string) => {
+    if (!linkMode) return
+    setDragFrom(id)
+  }
+
+  const dropLinkDrag = async (id: string) => {
+    if (!linkMode || !dragFrom || id === dragFrom) return
+    const sourceId = dragFrom
+    setDragFrom(null)
+    try {
+      const [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+      const fromPort = source.ports.find((port) => port.kind !== 'in')
+      const toPort = target.ports.find((port) => port.kind !== 'out')
+      if (!fromPort || !toPort) {
+        setError('У одного из объектов нет подходящих портов для связи')
+        return
+      }
+      setConnectFrom({ assetId: source.id, assetName: source.name, portId: fromPort.id, portCode: fromPort.code })
+      setConnectTo({ assetId: target.id, assetName: target.name, portId: toPort.id, portCode: toPort.code })
+      setConnecting(true)
+      setConnectStep('from')
+      setError(null)
+    } catch {
+      setError('Не удалось получить порты объектов')
+    }
+  }
+
+  const openLinkEditor = (id: string) => {
+    const edge = graph?.edges.find((item) => item.id === id)
+    if (!edge) return
+    setEditLink({
+      id,
+      type: edge.link_type,
+      mark: edge.cable_mark ?? '',
+      length: edge.length_m != null ? String(edge.length_m) : '',
+      state: edge.state,
+    })
+  }
+
+  const saveLinkEdit = async () => {
+    if (!editLink) return
+    setLinkSaving(true)
+    try {
+      await gisApi.updateLink(editLink.id, {
+        link_type: editLink.type,
+        cable_mark: editLink.mark || null,
+        length_m: editLink.length ? Number(editLink.length) : null,
+        state: editLink.state,
+      })
+      setEditLink(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить связь')
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
+  const removeLink = async () => {
+    if (!editLink) return
+    setLinkSaving(true)
+    try {
+      await gisApi.deleteLink(editLink.id)
+      setEditLink(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить связь')
+    } finally {
+      setLinkSaving(false)
     }
   }
 
@@ -430,6 +507,17 @@ export function MapPage() {
             history={moveHistory}
             draggable={can('asset.create') && !movingAsset && !placeAssetId}
             onDragEnd={(id, x, y) => void handleAssetDrop(id, x, y)}
+            links={graph?.edges ?? []}
+            positions={Object.fromEntries(
+              assets
+                .filter((asset) => asset.x !== null && asset.y !== null)
+                .map((asset) => [asset.id, [asset.y as number, asset.x as number] as [number, number]]),
+            )}
+            onLinkClick={openLinkEditor}
+            linkMode={linkMode}
+            dragFrom={dragFrom}
+            onConnectStart={startLinkDrag}
+            onConnectDrop={(id) => void dropLinkDrag(id)}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-ink2">
@@ -581,21 +669,63 @@ export function MapPage() {
         </div>
       )}
 
+      {editLink ? (
+        <div className="absolute inset-x-3 bottom-24 z-[1002] rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-xl sm:left-auto sm:right-4 sm:w-[320px]">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-semibold text-ink">Связь</span>
+            <button type="button" className="text-ink3" onClick={() => setEditLink(null)}>✕</button>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Тип соединения
+            <select className="input mt-1 h-8" value={editLink.type} onChange={(e) => setEditLink({ ...editLink, type: e.target.value })}>
+              <option value="cable">Кабель</option>
+              <option value="overhead">Воздушная линия</option>
+              <option value="busbar">Шина</option>
+              <option value="jumper">Перемычка</option>
+            </select>
+          </label>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="block text-[11px] text-ink3">
+              Марка
+              <input className="input mt-1 h-8" value={editLink.mark} onChange={(e) => setEditLink({ ...editLink, mark: e.target.value })} placeholder="СБ-3×95" />
+            </label>
+            <label className="block text-[11px] text-ink3">
+              Длина, м
+              <input className="input mt-1 h-8" value={editLink.length} inputMode="decimal" onChange={(e) => setEditLink({ ...editLink, length: e.target.value })} placeholder="120" />
+            </label>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Состояние
+            <select className="input mt-1 h-8" value={editLink.state} onChange={(e) => setEditLink({ ...editLink, state: e.target.value })}>
+              <option value="connected">Включена</option>
+              <option value="open">Разомкнута</option>
+              <option value="grounded">Заземлена</option>
+            </select>
+          </label>
+          <div className="flex gap-2">
+            <button type="button" className="btn-primary h-8 flex-1" disabled={linkSaving} onClick={() => void saveLinkEdit()}>Сохранить</button>
+            <button type="button" className="btn-ghost h-8 text-bad" disabled={linkSaving} onClick={() => void removeLink()}>🗑</button>
+          </div>
+        </div>
+      ) : null}
+
       {isAdmin && view === 'map' && !adding ? (
         <div className="absolute bottom-5 right-4 z-[1000] flex gap-2">
           <button
             type="button"
             onClick={() => {
-              setConnecting((prev) => !prev)
-              setConnectStep('from')
+              setLinkMode((prev) => !prev)
+              setDragFrom(null)
+              setConnecting(false)
               setConnectFrom(null)
+              setConnectTo(null)
               setError(null)
             }}
             className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold ${
-              connecting ? 'border-accent bg-accent text-[#08131F]' : 'border-line bg-bg/90 text-ink'
+              linkMode ? 'border-accent bg-accent text-[#08131F]' : 'border-line bg-bg/90 text-ink'
             }`}
           >
-            🔗 Соединить
+            🔗 Связать
           </button>
           <button
             type="button"

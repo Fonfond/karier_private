@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import L from 'leaflet'
+import { useState } from 'react'
 import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
+import type { GraphEdge } from '../../lib/gis'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
 import { STATUS_COLOR } from '../../lib/gis'
 
@@ -15,6 +17,13 @@ interface MapViewProps {
   history?: Array<{ x: number; y: number }>
   draggable?: boolean
   onDragEnd?: (id: string, x: number, y: number) => void
+  links?: GraphEdge[]
+  positions?: Record<string, [number, number]>
+  onLinkClick?: (id: string) => void
+  linkMode?: boolean
+  dragFrom?: string | null
+  onConnectStart?: (id: string) => void
+  onConnectDrop?: (id: string) => void
 }
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
@@ -92,6 +101,13 @@ export function MapView({
   history,
   draggable = false,
   onDragEnd,
+  links = [],
+  positions = {},
+  onLinkClick,
+  linkMode = false,
+  dragFrom = null,
+  onConnectStart,
+  onConnectDrop,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
     [layer.bounds[0][0], layer.bounds[0][1]],
@@ -123,9 +139,15 @@ export function MapView({
             key={asset.id}
             position={[asset.y, asset.x]}
             icon={markerIcon(asset, asset.id === selectedId)}
-            draggable={draggable}
+            draggable={draggable && !linkMode}
             eventHandlers={{
               click: () => onSelect(asset.id),
+              mousedown: () => {
+                if (linkMode) onConnectStart?.(asset.id)
+              },
+              mouseup: () => {
+                if (linkMode && dragFrom) onConnectDrop?.(asset.id)
+              },
               dragend: (event) => {
                 if (!onDragEnd) return
                 const { lat, lng } = (event.target as L.Marker).getLatLng()
@@ -136,6 +158,30 @@ export function MapView({
           />
         ),
       )}
+
+      {links.map((link) => {
+        const from = positions[link.from_asset_id]
+        const to = positions[link.to_asset_id]
+        if (!from || !to) return null
+        const color = link.link_type === 'jumper' ? '#A56BFF' : link.link_type === 'overhead' ? '#4C9AFF' : '#7BD88F'
+        return (
+          <Polyline
+            key={link.id}
+            positions={[from, to]}
+            pathOptions={{
+              color,
+              weight: 3,
+              opacity: 0.9,
+              dashArray: link.state === 'connected' ? undefined : '8 6',
+            }}
+            eventHandlers={{ click: () => onLinkClick?.(link.id) }}
+          />
+        )
+      })}
+
+      {linkMode && dragFrom && positions[dragFrom] ? (
+        <ConnectPreview from={positions[dragFrom]} />
+      ) : null}
 
       {historyPoints.length > 1 ? (
         <>
@@ -156,6 +202,18 @@ export function MapView({
     </MapContainer>
   )
 }
+
+function ConnectPreview({ from }: { from: [number, number] }) {
+  const [point, setPoint] = useState<[number, number] | null>(null)
+  useMapEvents({
+    mousemove(event) {
+      setPoint([event.latlng.lat, event.latlng.lng])
+    },
+  })
+  if (!point) return null
+  return <Polyline positions={[from, point]} pathOptions={{ color: '#4C9AFF', weight: 2, dashArray: '6 6' }} />
+}
+
 
 /** Крупные кнопки зума и центрирования для телефона (48×48, в зоне большого пальца). */
 function MobileMapControls({ bounds }: { bounds: L.LatLngBounds }) {
