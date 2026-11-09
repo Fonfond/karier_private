@@ -138,11 +138,11 @@ KTP = {
              qs="QS 100A", qf="QF 100A", qf_setting_a=80, ct="ТТ 100/5", opn="ОПН 6 кВ",
              power_kva=400, current_a=38),
         node("tr", "transformer", "ТР 6/0.4 кВ · 400 кВА", "cell", 170, 40, power_kva=400),
-        node("lv", "section", "Ввод 0.4 кВ · QF 630A (уст. 400А) + ТТ 600/5", "cell", 300, 120,
-             qf="QF 630A", qf_setting_a=400, ct="ТТ 600/5", meter="Wh"),
+        node("lv", "section", "Ввод 0.4 кВ · QF 630A (уст. 520А) + ТТ 600/5", "cell", 300, 120,
+             qf="QF 630A", qf_setting_a=520, ct="ТТ 600/5", meter="Wh"),
         node("out1", "outgoing", "Л-1 0.4 кВ · 130 кВт · QF 250А · ТТ 300/5", "cell", 420, 220,
              qf="QF 250А", qf_setting_a=230, ct="ТТ 300/5", cable="АВБбШв 4×185",
-             power_kw=130, power_kva=160, current_a=221, meter="Wh"),
+             power_kw=130, power_kva=180, current_a=221, meter="Wh"),
         node("out2", "outgoing", "Л-2 0.4 кВ · 80 кВт · QF 160А · ТТ 200/5", "cell", 520, 220,
              qf="QF 160А", qf_setting_a=145, ct="ТТ 200/5", cable="АВБбШв 4×95",
              power_kw=80, power_kva=100, current_a=136, meter="Wh"),
@@ -170,12 +170,13 @@ YAKNO6 = {
     "nodes": [
         node("in1", "incoming", "Ввод 6 кВ · QS+QF 630A (уст. 400А) + ТТ 600/5 + ОПН + ЗН", "cell", 40, 40,
              qs="QS 630A", qf="QF 630A", qf_setting_a=400, ct="ТТ 600/5", opn="ОПН 6 кВ", zn="ЗН"),
-        node("c1", "outgoing", "Ячейка №1 · QF 400A · ТТ 300/5 · ЗН", "cell", 300, 40,
+        node("c1", "outgoing", "Ячейка №1 · QF 400A · ТТ 150/5 · ЗН", "cell", 300, 40,
              qf="QF 400A", qf_setting_a=125, ct="ТТ 150/5", zn="ЗН", meter="Wh",
              cable="СБ-3×70", power_kw=960, current_a=109),
-        node("c2", "outgoing", "Ячейка №2 · QF 400A · ТТ 300/5 · ЗН", "cell", 300, 140,
-             qf="QF 400A", ct="ТТ 300/5", zn="ЗН", power_kw=960, current_a=109),
-        node("c3", "outgoing", "Ячейка №3 · QF 400A · ТТ 300/5 · ЗН", "cell", 300, 240,
+        node("c2", "outgoing", "Ячейка №2 · QF 400A · ТТ 150/5 · ЗН", "cell", 300, 140,
+             qf="QF 400A", qf_setting_a=125, ct="ТТ 150/5", zn="ЗН", meter="Wh",
+             cable="СБ-3×70", power_kw=960, current_a=109),
+        node("c3", "outgoing", "Ячейка №3 · QF 400A · ТТ 200/5 · ЗН", "cell", 300, 240,
              qf="QF 400A", qf_setting_a=180, ct="ТТ 200/5", zn="ЗН", meter="Wh",
              cable="СБ-3×95", power_kw=1500, current_a=170),
         node("c4", "outgoing", "Ячейка №4 · резерв", "cell", 300, 340, reserve=True),
@@ -209,11 +210,13 @@ def pktp_template(
     l1_ct: str,
     l1_cable: str,
     l1_current: int,
+    l1_kva: int,
     l2_qf: str,
     l2_setting: int,
     l2_ct: str,
     l2_cable: str,
     l2_current: int,
+    l2_kva: int,
 ) -> dict:
     return {
         "nodes": [
@@ -227,13 +230,13 @@ def pktp_template(
             node("out1", "outgoing",
                  f"Л-1 0.4 кВ · {load1_kw} кВт · {l1_qf} · {l1_ct}", "cell", 420, 220,
                  qf=l1_qf, qf_setting_a=l1_setting, ct=l1_ct, cable=l1_cable,
-                 power_kw=load1_kw, current_a=l1_current, meter="Wh"),
+                 power_kw=load1_kw, power_kva=l1_kva, current_a=l1_current, meter="Wh"),
             node("load1", "load", f"Буровая установка · {load1_kw} кВт", "dmp", 560, 220,
                  power_kw=load1_kw),
             node("out2", "outgoing",
                  f"Л-2 0.4 кВ · {load2_kw} кВт · {l2_qf} · {l2_ct}", "cell", 420, 340,
                  qf=l2_qf, qf_setting_a=l2_setting, ct=l2_ct, cable=l2_cable,
-                 power_kw=load2_kw, current_a=l2_current, meter="Wh"),
+                 power_kw=load2_kw, power_kva=l2_kva, current_a=l2_current, meter="Wh"),
             node("load2", "load", f"Насосная · {load2_kw} кВт", "dmp", 560, 340,
                  power_kw=load2_kw),
         ],
@@ -249,25 +252,25 @@ def pktp_template(
 PKTP_63 = pktp_template(
     power_kva=63, load1_kw=20, load2_kw=20,
     in_qf="QF 25A", in_setting=16, in_ct="ТТ 50/5",
-    lv_qf="QF 100A", lv_setting=63, lv_ct="ТТ 100/5",
-    l1_qf="QF 40A", l1_setting=36, l1_ct="ТТ 50/5", l1_cable="АВБбШв 4×25", l1_current=34,
-    l2_qf="QF 40A", l2_setting=36, l2_ct="ТТ 50/5", l2_cable="АВБбШв 4×25", l2_current=34,
+    lv_qf="QF 100A", lv_setting=85, lv_ct="ТТ 100/5",
+    l1_qf="QF 40A", l1_setting=36, l1_ct="ТТ 50/5", l1_cable="АВБбШв 4×25", l1_current=34, l1_kva=30,
+    l2_qf="QF 40A", l2_setting=36, l2_ct="ТТ 50/5", l2_cable="АВБбШв 4×25", l2_current=34, l2_kva=30,
 )
 
 PKTP_400 = pktp_template(
     power_kva=400, load1_kw=130, load2_kw=80,
     in_qf="QF 100A", in_setting=80, in_ct="ТТ 100/5",
     lv_qf="QF 630A", lv_setting=400, lv_ct="ТТ 600/5",
-    l1_qf="QF 250А", l1_setting=230, l1_ct="ТТ 300/5", l1_cable="АВБбШв 4×185", l1_current=221,
-    l2_qf="QF 160А", l2_setting=145, l2_ct="ТТ 200/5", l2_cable="АВБбШв 4×95", l2_current=136,
+    l1_qf="QF 250А", l1_setting=230, l1_ct="ТТ 300/5", l1_cable="АВБбШв 4×185", l1_current=221, l1_kva=180,
+    l2_qf="QF 160А", l2_setting=145, l2_ct="ТТ 200/5", l2_cable="АВБбШв 4×95", l2_current=136, l2_kva=100,
 )
 
 PKTP_630 = pktp_template(
     power_kva=630, load1_kw=200, load2_kw=150,
     in_qf="QF 100A", in_setting=80, in_ct="ТТ 100/5",
     lv_qf="QF 1000A", lv_setting=800, lv_ct="ТТ 1000/5",
-    l1_qf="QF 400A", l1_setting=350, l1_ct="ТТ 400/5", l1_cable="2×АВБбШв 4×185", l1_current=340,
-    l2_qf="QF 320A", l2_setting=270, l2_ct="ТТ 300/5", l2_cable="АВБбШв 4×240", l2_current=255,
+    l1_qf="QF 400A", l1_setting=350, l1_ct="ТТ 400/5", l1_cable="2×АВБбШв 4×185", l1_current=340, l1_kva=250,
+    l2_qf="QF 320A", l2_setting=270, l2_ct="ТТ 300/5", l2_cable="АВБбШв 4×240", l2_current=255, l2_kva=190,
 )
 
 # --- простые блоки ----------------------------------------------------------
@@ -323,6 +326,15 @@ def main() -> int:
 
         for code, name, type_code, role, label, icon, ports_spec in SIMPLE_BLOCKS:
             template_node = node("main", role, label, type_code, 0, 0)
+            simple_params = {
+                "pole": {"grounding": "ЗУ"},
+                "recloser": {"qs": "QS", "qf": "QF 630A", "zn": "ЗН"},
+                "yakno1": {"qs": "QS", "qf": "QF 630A", "ct": "ТТ 300/5", "zn": "ЗН"},
+                "rlnd": {"qs": "QS", "zn": "ЗН"},
+                "source_35": {"voltage_kv": 35},
+            }
+            if code in simple_params:
+                template_node["params"] = simple_params[code]
             if code == "load_04":
                 template_node["params"] = {"power_kw": 50}
             upsert(

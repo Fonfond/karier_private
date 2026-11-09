@@ -13,8 +13,8 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.models import Asset, Link
 
-DEMO = "sketch_v4"
-VERSION = "4.0"
+DEMO = "sketch_v5"
+VERSION = "5.0"
 
 LAYOUT = {
     "Т-1 35/6 кВ": (30, 30),
@@ -122,7 +122,7 @@ def main() -> int:
         if (asset.attrs or {}).get("demo") == DEMO
     ]
     if not assets:
-        print("Нет демо-схемы sketch_v4 — выполните seed_demo_sketch.py")
+        print("Нет демо-схемы sketch_v5 — выполните seed_demo_sketch.py")
         return 1
 
     order = {name: index for index, name in enumerate(LAYOUT)}
@@ -140,11 +140,16 @@ def main() -> int:
                 )
             ).all()
         )
-        params: dict = {"label": asset.name}
-        if (asset.attrs or {}).get("pole_no"):
-            params["pole_no"] = asset.attrs["pole_no"]
-        if (asset.attrs or {}).get("power_kw"):
-            params["power_kw"] = float(asset.attrs["power_kw"])
+        attrs = {
+            key: value
+            for key, value in (asset.attrs or {}).items()
+            if key not in ("demo", "simple_block", "block_code", "sketch_id", "params", "label")
+        }
+        params: dict = {**attrs, "label": asset.name}
+        if attrs.get("pole_no"):
+            params["pole_no"] = attrs["pole_no"]
+        if attrs.get("power_kw"):
+            params["power_kw"] = float(attrs["power_kw"])
 
         if children:
             params["sections"] = [c.name for c in children if c.schema_role == "busbar"]
@@ -291,6 +296,46 @@ def main() -> int:
         }
     )
 
+    lv_issues = []
+    for block in blocks:
+        lv = block["params"].get("lv_inlet")
+        if not lv:
+            continue
+        total_current = sum(
+            float(f["params"].get("current_a") or 0) for f in block["params"].get("feeders", [])
+        )
+        setting = float(lv["params"].get("qf_setting_a") or 0)
+        rating = qf_rating(lv["params"].get("qf")) or 0
+        if not setting:
+            lv_issues.append({"where": block["title"], "error": "нет уставки 0.4 кВ ввода"})
+            continue
+        if setting < total_current * 1.05:
+            lv_issues.append({
+                "where": block["title"],
+                "error": "уставка 0.4 кВ ввода ниже суммы фидеров",
+                "setting_a": setting,
+                "feeders_current_a": round(total_current, 1),
+            })
+        if rating and setting > rating:
+            lv_issues.append({"where": block["title"], "error": "уставка выше номинала вводного QF"})
+
+    mark_issues = []
+    ps_block = next((b for b in blocks if b["block"] == "substation_35_6"), None)
+    if ps_block:
+        cable_by_port = {}
+        feeders = ps_block["params"]["feeders"]
+        for index, feeder in enumerate(feeders, start=1):
+            cable_by_port[f"OUT-{index}"] = feeder["params"].get("cable")
+        for link in links:
+            if link["from"]["block"] == ps_block["id"]:
+                expected = cable_by_port.get(link["from"]["port"])
+                if expected and link["cable_mark"] != expected:
+                    mark_issues.append({
+                        "where": f"ПС {link['from']['port']} → {link['to']['block']}",
+                        "params": expected,
+                        "link": link["cable_mark"],
+                    })
+
     ktp = next((b for b in blocks if b["block"] == "ktp_standard"), None)
     ktp_check = None
     if ktp:
@@ -323,7 +368,7 @@ def main() -> int:
     payload = {
         "format": "karier.sketch/v1",
         "version": VERSION,
-        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v4)",
+        "name": "Схема по эскизу: ПС 35/6 — БКРУ-1 / КТП №4 / ЯКНО-6 (v5)",
         "description": (
             "Фрагмент 6 кВ. Т-1/Т-2 35/6 → ПС: I секция (яч. 1–15), ф.7к (яч. 7); "
             "II секция (яч. 16–30), ф.16к (яч. 16) → ЯКНО-6, ф.21к (яч. 21) → БКРУ-1; СВ 15/16. "
@@ -343,6 +388,8 @@ def main() -> int:
             "loads": [{"name": name, "power_kw": power} for name, power in loads],
             "cable_issues": cable_issues,
             "qf_issues": qf_issues,
+            "lv_issues": lv_issues,
+            "mark_issues": mark_issues,
             "ktp": ktp_check,
             "bkru_post_accident": bkru_check,
             "metering_boundary": "расчётный учёт — на фидерах ПС; технический учёт Wh на БКРУ, ПКТП, КТП и ЯКНО-6",
@@ -351,8 +398,8 @@ def main() -> int:
 
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     for path in (
-        Path(r"C:\karier\backend-v2\seed_data\sketch_v4.json"),
-        Path(r"C:\karier\docs\sketches\sketch-v4.json"),
+        Path(r"C:\karier\backend-v2\seed_data\sketch_v5.json"),
+        Path(r"C:\karier\docs\sketches\sketch-v5.json"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -360,6 +407,7 @@ def main() -> int:
     print("blocks:", len(blocks), "| links:", len(links), "| dangling:", dangling or "нет")
     print("loads_total_kw:", payload["validation"]["loads_total_kw"])
     print("cable_issues:", len(cable_issues), "| qf_issues:", len(qf_issues))
+    print("lv_issues:", len(lv_issues), "| mark_issues:", len(mark_issues))
     print("ktp:", ktp_check, "| bkru:", bkru_check)
     for item in blocks:
         print(f"  {item['id']:3} {str(item['block']):16} {item['title']}")

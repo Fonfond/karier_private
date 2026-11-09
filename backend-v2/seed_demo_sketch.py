@@ -23,8 +23,8 @@ from app.schemas.gis import LinkCreate
 from app.services import gis, links as links_service
 from app.services import schema_blocks as blocks_service
 
-DEMO = "sketch_v4"
-OLD = {"sketch_v1", "sketch_v2", "sketch_v3", DEMO}
+DEMO = "sketch_v5"
+OLD = {"sketch_v1", "sketch_v2", "sketch_v3", "sketch_v4", DEMO}
 
 
 def _actor(db):
@@ -116,8 +116,8 @@ def main() -> int:
         load_nasos = _place(db, "load_04", "Насосная · 80 кВт", 960, 240, {"power_kw": 80})
         load_svet = _place(db, "load_04", "Освещение · 50 кВт", 960, 310, {"power_kw": 50})
 
-        _link(db, t1, "OUT-1", ps, "IN-1", mark="6 кВ от Т-1", length=30)
-        _link(db, t2, "OUT-1", ps, "IN-2", mark="6 кВ от Т-2", length=30)
+        _link(db, t1, "OUT-1", ps, "IN-1", mark="2×СБ-3×185", length=30)
+        _link(db, t2, "OUT-1", ps, "IN-2", mark="2×СБ-3×185", length=30)
 
         _link(db, ps, "OUT-1", op1, "IN-1", mark="СИП-3 3×120", length=60, link_type="overhead")
         _link(db, op1, "OUT-1", op2, "IN-1", mark="СИП-3 3×120", length=70, link_type="overhead")
@@ -128,7 +128,7 @@ def main() -> int:
         _link(db, op4, "OUT-2", yakno1, "IN-1", mark="СБ-3×95", length=120)
         _link(db, yakno1, "OUT-1", bkru1, "IN-2", mark="СБ-3×95", length=40)
 
-        _link(db, ps, "OUT-2", yakno6, "IN-1", mark="СИП-3 3×240", length=140, link_type="overhead")
+        _link(db, ps, "OUT-2", yakno6, "IN-1", mark="2×СИП-3 3×240", length=140, link_type="overhead")
         _link(db, ps, "OUT-3", bkru1, "IN-1", mark="СИП-3 3×95", length=280, link_type="overhead")
 
         _link(db, bkru1, "OUT-1", pktp3, "IN-1", mark="СБ-3×70", length=80)

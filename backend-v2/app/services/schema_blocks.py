@@ -130,6 +130,7 @@ def instantiate(
 
     if block.block_type == "simple":
         parent.attrs = {
+            **base_attrs,
             **(parent.attrs or {}),
             "label": (name or block.name),
             "pole_no": (name or block.name) if block.asset_type.code == "pole" else None,
