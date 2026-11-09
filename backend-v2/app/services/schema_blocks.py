@@ -190,6 +190,7 @@ def instantiate(
             port.kind = spec.get("kind", port.kind)
             port.nominal_voltage_kv = spec.get("voltage_kv") or port.nominal_voltage_kv
     parent.schema_role = "block"
+    parent.attrs = {**(parent.attrs or {}), "block_code": block.code}
     db.commit()
 
     audit.add(
