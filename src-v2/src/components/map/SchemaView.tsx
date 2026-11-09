@@ -832,6 +832,34 @@ function Flow({
     setStatus('Авто-раскладка применена — нажмите «Сохранить раскладку»')
   }
 
+  const resolvePorts = (
+    connection: Connection,
+  ): { sourcePortId: string; targetPortId: string } | { error: string } => {
+    const sourceNode = graph.nodes.find((node) => node.id === connection.source)
+    const targetNode = graph.nodes.find((node) => node.id === connection.target)
+    if (!sourceNode || !targetNode) return { error: 'Не найден объект связи' }
+
+    const sourcePort =
+      sourceNode.ports.find((port) => port.id === connection.sourceHandle) ??
+      sourceNode.ports.find((port) => port.kind === 'out' || port.kind === 'io')
+    const targetPort =
+      targetNode.ports.find((port) => port.id === connection.targetHandle) ??
+      targetNode.ports.find((port) => port.kind === 'in' || port.kind === 'io')
+
+    if (!sourcePort) return { error: `У объекта «${sourceNode.code}» нет выходного порта` }
+    if (!targetPort) return { error: `У объекта «${targetNode.code}» нет входного порта` }
+    if (sourcePort.kind === 'in') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
+    if (targetPort.kind === 'out') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
+
+    const fromKv = sourcePort.nominal_voltage_kv
+    const toKv = targetPort.nominal_voltage_kv
+    if (fromKv != null && toKv != null && fromKv !== toKv) {
+      return { error: `Напряжения не совпадают: ${fromKv} кВ и ${toKv} кВ` }
+    }
+
+    return { sourcePortId: sourcePort.id, targetPortId: targetPort.id }
+  }
+
   const connect = async () => {
     if (!pending?.sourceHandle || !pending?.targetHandle) return
     setSaving(true)
@@ -1030,9 +1058,14 @@ function Flow({
         onNodeDragStop={() => setDirty(true)}
         onConnect={(connection) => {
           if (!editMode || portDrag) return
-          if (!connection.sourceHandle || !connection.targetHandle) return
           if (connection.source === connection.target) return
-          setPending(connection)
+          const resolved = resolvePorts(connection)
+          if ('error' in resolved) {
+            setError(resolved.error)
+            setPending(null)
+            return
+          }
+          setPending({ ...connection, sourceHandle: resolved.sourcePortId, targetHandle: resolved.targetPortId })
           setStatus(null)
           setError(null)
         }}

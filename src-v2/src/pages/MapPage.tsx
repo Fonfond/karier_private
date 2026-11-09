@@ -262,6 +262,16 @@ export function MapPage() {
         setError('У одного из объектов нет подходящих портов для связи')
         return
       }
+      if (fromPort.kind === 'in' || toPort.kind === 'out') {
+        setError('Соединять можно только выход со входом (OUT → IN)')
+        return
+      }
+      const fromKv = fromPort.nominal_voltage_kv
+      const toKv = toPort.nominal_voltage_kv
+      if (fromKv != null && toKv != null && fromKv !== toKv) {
+        setError(`Напряжения не совпадают: ${fromKv} кВ и ${toKv} кВ`)
+        return
+      }
       setConnectFrom({ assetId: source.id, assetName: source.name, portId: fromPort.id, portCode: fromPort.code })
       setConnectTo({ assetId: target.id, assetName: target.name, portId: toPort.id, portCode: toPort.code })
       setConnecting(true)
@@ -668,6 +678,13 @@ export function MapPage() {
           <div className="text-ink2">⏚ заземлено · фиолетовая: перемычка</div>
         </div>
       )}
+
+      {error && !connectFrom && !editLink ? (
+        <div className="pointer-events-auto fixed left-1/2 top-20 z-[1200] flex w-[min(92vw,420px)] -translate-x-1/2 items-start gap-2 rounded-xl border border-bad/50 bg-[#2A1114]/95 px-3 py-2 text-[12px] text-bad shadow-xl">
+          <span className="flex-1">{error}</span>
+          <button type="button" onClick={() => setError(null)}>✕</button>
+        </div>
+      ) : null}
 
       {editLink ? (
         <div className="absolute inset-x-3 bottom-24 z-[1002] rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-xl sm:left-auto sm:right-4 sm:w-[320px]">

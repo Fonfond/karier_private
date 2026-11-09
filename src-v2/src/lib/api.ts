@@ -37,6 +37,29 @@ export interface Problem {
   fields?: Record<string, string>
 }
 
+function normalizeProblem(raw: unknown, status: number): Problem {
+  const data = raw as { detail?: unknown; title?: string; code?: string; fields?: Record<string, string> }
+  if (Array.isArray(data?.detail)) {
+    const fields: Record<string, string> = {}
+    const parts = data.detail.map((item: unknown) => {
+      const entry = item as { loc?: Array<string | number>; msg?: string }
+      const field = Array.isArray(entry.loc) ? String(entry.loc[entry.loc.length - 1]) : 'поле'
+      fields[field] = entry.msg ?? 'неверное значение'
+      return `${field}: ${entry.msg ?? 'неверное значение'}`
+    })
+    return {
+      code: 'validation.failed',
+      detail: `Проверьте параметры связи — ${parts.join('; ')}`,
+      fields,
+    }
+  }
+  if (typeof data?.detail === 'string') {
+    return { code: data.code, detail: data.detail, title: data.title, fields: data.fields }
+  }
+  return { detail: `Ошибка ${status}` }
+}
+
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -119,7 +142,7 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
   if (!response.ok) {
     let problem: Problem = {}
     try {
-      problem = (await response.json()) as Problem
+      problem = normalizeProblem(await response.json(), response.status)
     } catch {
       problem = { detail: `Ошибка ${response.status}` }
     }
