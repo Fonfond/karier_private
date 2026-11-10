@@ -15,6 +15,7 @@ import {
   type Node,
   type NodeProps,
   type XYPosition,
+  ViewportPortal,
 } from '@xyflow/react'
 import dagre from 'dagre'
 import '@xyflow/react/dist/style.css'
@@ -42,11 +43,14 @@ type AssetNodeData = {
   onToggleCollapse?: (assetId: string, collapsed: boolean) => void
   jumperMode?: boolean
   jumperFirstId?: string | null
+  activeConnection?: { nodeId: string; portId: string; kind: string; voltage: number | null } | null
   onCellPick?: (blockId: string, cellId: string, name: string) => void
 }
 
 function portLabel(port: AssetPort): string {
-  return `${port.code}${port.nominal_voltage_kv ? ` · ${port.nominal_voltage_kv} кВ` : ''}`
+  const kind =
+    port.kind === 'in' ? 'Ввод' : port.kind === 'out' ? 'Отходящая' : 'Двунаправленный'
+  return `${kind} ${port.code}${port.nominal_voltage_kv ? ` · ${port.nominal_voltage_kv} кВ` : ''}`
 }
 
 /** Положение порта по умолчанию: вводы слева, отходящие справа, io — снизу. */
@@ -102,8 +106,8 @@ export function portsForNode(node: GraphNode): Record<string, XYPosition> {
   return result
 }
 
-function NodeHandles({ color = 'accent' }: { color?: string }) {
-  const cls = `!h-1.5 !w-1.5 !border-0 !bg-${color}`
+function NodeHandles({ color = 'accent', dimmed = false }: { color?: string; dimmed?: boolean }) {
+  const cls = `!h-1.5 !w-1.5 !border-0 !bg-${color} ${dimmed ? 'opacity-20' : ''}`
   return (
     <>
       <Handle id="l-in" type="target" position={Position.Left} className={cls} />
@@ -402,6 +406,17 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
       {node.ports.map((port) => {
         const position = portPositions[port.id] ?? { x: 0.5, y: 0.5 }
         const interactive = editable && !portDrag
+        const active = data.activeConnection
+        const otherNode = active != null && active.nodeId !== node.id
+        const compatible = Boolean(
+          active &&
+            otherNode &&
+            port.kind !== 'out' &&
+            (active.voltage == null ||
+              port.nominal_voltage_kv == null ||
+              active.voltage === port.nominal_voltage_kv),
+        )
+        const incompatible = Boolean(active && otherNode && !compatible)
         return (
           <Handle
             key={port.id}
@@ -416,7 +431,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
               // в режиме портов handle не соединяет, но должен ловить перетаскивание
               pointerEvents: portDrag ? 'auto' : undefined,
             }}
-            className={`!h-5 !w-5 !border-2 md:!h-3 md:!w-3 ${
+            className={`!h-5 !w-5 !border-2 md:!h-3 md:!w-3 transition-all ${compatible ? '!border-ok !bg-ok/40 !h-6 !w-6 animate-pulse' : ''} ${incompatible ? '!opacity-20' : ''} ${
               portDrag
                 ? '!border-warm !bg-warm/40 cursor-grab'
                 : editable
@@ -430,7 +445,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
         )
       })}
 
-      <NodeHandles color="line" />
+      <NodeHandles color="line" dimmed={Boolean(data.activeConnection)} />
     </div>
   )
 }
@@ -558,6 +573,18 @@ function Flow({
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<Connection | null>(null)
+  const [activeConnection, setActiveConnection] = useState<{
+    nodeId: string
+    portId: string
+    kind: string
+    voltage: number | null
+  } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; type: 'node' | 'edge' | 'pane'; id?: string } | null>(null)
+  const dragStartPositions = useRef<Record<string, XYPosition> | null>(null)
+  const historyRef = useRef<Array<{ before: Record<string, XYPosition>; after: Record<string, XYPosition> }>>([])
+  const historyIndex = useRef(0)
+  const [, setHistoryVersion] = useState(0)
+  const [guides, setGuides] = useState<{ x?: number; y?: number } | null>(null)
   const [cableMark, setCableMark] = useState('')
   const [linkType, setLinkType] = useState('cable')
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft | null>(null)
@@ -719,6 +746,7 @@ function Flow({
           onAddCell: handleAddCell,
           onDeleteCell: handleDeleteCell,
           onToggleCollapse: handleToggleCollapse,
+          activeConnection,
           jumperMode,
           jumperFirstId: jumperFirst?.cellId ?? null,
           onCellPick: handleCellPick,
@@ -732,7 +760,7 @@ function Flow({
     setEdgeDraft(null)
     setPending(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect, jumperMode, jumperFirst, handleCellPick])
+  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect, jumperMode, jumperFirst, handleCellPick, activeConnection])
 
   // Переключатели режимов меняют только флаги, не трогая позиции
   useEffect(() => {
@@ -860,6 +888,61 @@ function Flow({
     return { sourcePortId: sourcePort.id, targetPortId: targetPort.id }
   }
 
+  const snapshotPositions = (): Record<string, XYPosition> =>
+    Object.fromEntries(nodes.map((node) => [node.id, { ...node.position }]))
+
+  const applyPositions = (positions: Record<string, XYPosition>) => {
+    setNodes((current) =>
+      current.map((node) => (positions[node.id] ? { ...node, position: positions[node.id] } : node)),
+    )
+    setDirty(true)
+  }
+
+  const undo = () => {
+    if (historyIndex.current <= 0) return
+    historyIndex.current -= 1
+    applyPositions(historyRef.current[historyIndex.current].before)
+    setHistoryVersion((value) => value + 1)
+    setStatus('Действие отменено')
+  }
+
+  const redo = () => {
+    if (historyIndex.current >= historyRef.current.length) return
+    applyPositions(historyRef.current[historyIndex.current].after)
+    historyIndex.current += 1
+    setHistoryVersion((value) => value + 1)
+    setStatus('Действие повторено')
+  }
+
+  const deleteNode = async (id: string) => {
+    if (!window.confirm('Удалить объект со схемы? Карточка сохранится в реестре.')) return
+    try {
+      await gisApi.remove(id)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить объект')
+    }
+  }
+
+  const makeJumper = async (id: string) => {
+    try {
+      await gisApi.updateLink(id, { link_type: 'jumper' })
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось изменить связь')
+    }
+  }
+
+  const deleteEdge = async (id: string) => {
+    if (!window.confirm('Удалить связь?')) return
+    try {
+      await gisApi.deleteLink(id)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить связь')
+    }
+  }
+
   const connect = async () => {
     if (!pending?.sourceHandle || !pending?.targetHandle) return
     setSaving(true)
@@ -882,9 +965,9 @@ function Flow({
     }
   }
 
-  const openEdge = (_event: React.MouseEvent, edge: Edge) => {
+  const openEdgeById = (id: string) => {
     if (!canEdit) return
-    const source = graph.edges.find((item) => item.id === edge.id)
+    const source = graph.edges.find((item) => item.id === id)
     if (!source) return
     setEdgeDraft({
       id: source.id,
@@ -893,6 +976,11 @@ function Flow({
       length_m: source.length_m != null ? String(source.length_m) : '',
       state: source.state,
     })
+  }
+
+  const openEdge = (event: React.MouseEvent, edge: Edge) => {
+    event.stopPropagation()
+    openEdgeById(edge.id)
   }
 
   const saveEdge = async () => {
@@ -986,6 +1074,24 @@ function Flow({
               </button>
               <button
                 type="button"
+                className="btn-ghost h-8 px-2"
+                title="Отменить"
+                disabled={historyIndex.current === 0}
+                onClick={undo}
+              >
+                ↩
+              </button>
+              <button
+                type="button"
+                className="btn-ghost h-8 px-2"
+                title="Повторить"
+                disabled={historyIndex.current === historyRef.current.length}
+                onClick={redo}
+              >
+                ↪
+              </button>
+              <button
+                type="button"
                 className="btn-ghost h-8 px-3"
                 title="Разложить по ГОСТ-шаблону: источники сверху, шины в середине, потребители снизу"
                 onClick={applyTemplate}
@@ -1055,7 +1161,78 @@ function Flow({
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => onSelect(node.id)}
         onEdgeClick={openEdge}
-        onNodeDragStop={() => setDirty(true)}
+        onNodeDrag={(_, node) => {
+          const width = node.measured?.width ?? 210
+          const height = node.measured?.height ?? 84
+          const cx = node.position.x + width / 2
+          const cy = node.position.y + height / 2
+          let guideX: number | undefined
+          let guideY: number | undefined
+          for (const other of nodes) {
+            if (other.id === node.id) continue
+            const ow = other.measured?.width ?? 210
+            const oh = other.measured?.height ?? 84
+            const ox = other.position.x + ow / 2
+            const oy = other.position.y + oh / 2
+            if (Math.abs(cx - ox) < 8) guideX = ox
+            if (Math.abs(cy - oy) < 8) guideY = oy
+          }
+          setGuides(guideX != null || guideY != null ? { x: guideX, y: guideY } : null)
+        }}
+        onNodeDragStart={() => {
+          dragStartPositions.current = snapshotPositions()
+        }}
+        onNodeDragStop={() => {
+          const before = dragStartPositions.current
+          const after = snapshotPositions()
+          if (before) {
+            historyRef.current = historyRef.current.slice(0, historyIndex.current)
+            historyRef.current.push({ before, after })
+            historyIndex.current = historyRef.current.length
+            setHistoryVersion((value) => value + 1)
+          }
+          dragStartPositions.current = null
+          setGuides(null)
+          setDirty(true)
+        }}
+        onNodeContextMenu={(event, node) => {
+          event.preventDefault()
+          setMenu({ x: event.clientX, y: event.clientY, type: 'node', id: node.id })
+        }}
+        onEdgeContextMenu={(event, edge) => {
+          event.preventDefault()
+          setMenu({ x: event.clientX, y: event.clientY, type: 'edge', id: edge.id })
+        }}
+        onPaneContextMenu={(event) => {
+          event.preventDefault()
+          setMenu({ x: event.clientX, y: event.clientY, type: 'pane' })
+        }}
+        onPaneClick={() => setMenu(null)}
+        onConnectStart={(_, params) => {
+          if (!editMode || portDrag) return
+          const node = graph.nodes.find((item) => item.id === params.nodeId)
+          if (!node) return
+          const port = node.ports.find((item) => item.id === params.handleId)
+          const sideKind = params.handleId?.endsWith('-out')
+            ? 'out'
+            : params.handleId?.endsWith('-in')
+              ? 'in'
+              : null
+          setActiveConnection({
+            nodeId: params.nodeId ?? '',
+            portId: params.handleId ?? '',
+            kind: port?.kind ?? sideKind ?? 'out',
+            voltage: port?.nominal_voltage_kv ?? null,
+          })
+        }}
+        onConnectEnd={() => setActiveConnection(null)}
+        isValidConnection={(candidate) => {
+          const connection = candidate as Connection
+          if (!connection.source || !connection.target) return false
+          if (connection.source === connection.target) return false
+          const resolved = resolvePorts(connection)
+          return !('error' in resolved)
+        }}
         onConnect={(connection) => {
           if (!editMode || portDrag) return
           if (connection.source === connection.target) return
@@ -1081,12 +1258,94 @@ function Flow({
         className="bg-[#070C10]"
       >
         <Background color="#1B2733" gap={GRID} size={1} />
+        <ViewportPortal>
+          {guides?.x != null ? (
+            <div
+              style={{
+                position: 'absolute',
+                left: guides.x,
+                top: -4000,
+                height: 8000,
+                borderLeft: '1px dashed #4C9AFF',
+              }}
+            />
+          ) : null}
+          {guides?.y != null ? (
+            <div
+              style={{
+                position: 'absolute',
+                top: guides.y,
+                left: -4000,
+                width: 8000,
+                borderTop: '1px dashed #4C9AFF',
+              }}
+            />
+          ) : null}
+        </ViewportPortal>
         <Controls
           showInteractive={false}
           position="bottom-right"
           style={{ bottom: 'calc(var(--bottom-nav) + 12px)', right: 12 }}
         />
       </ReactFlow>
+
+      {menu ? (
+        <div
+          className="fixed z-[1300] min-w-[180px] rounded-lg border border-line bg-surface1 p-1 text-[12px] shadow-xl"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {menu.type === 'node' && menu.id ? (
+            <>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { onSelect(menu.id!); setMenu(null) }}>
+                Открыть карточку
+              </button>
+              {graph.blocks.some((block) => block.asset_id === menu.id) ? (
+                <button
+                  type="button"
+                  className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2"
+                  onClick={() => {
+                    const block = graph.blocks.find((item) => item.asset_id === menu.id)
+                    void handleToggleCollapse(menu.id!, !block?.collapsed)
+                    setMenu(null)
+                  }}
+                >
+                  Свернуть / развернуть
+                </button>
+              ) : null}
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-bad hover:bg-surface2" onClick={() => { void deleteNode(menu.id!); setMenu(null) }}>
+                Удалить
+              </button>
+            </>
+          ) : null}
+          {menu.type === 'edge' && menu.id ? (
+            <>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { openEdgeById(menu.id!); setMenu(null) }}>
+                Редактировать связь
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { void makeJumper(menu.id!); setMenu(null) }}>
+                Сделать перемычкой
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left text-bad hover:bg-surface2" onClick={() => { void deleteEdge(menu.id!); setMenu(null) }}>
+                Удалить
+              </button>
+            </>
+          ) : null}
+          {menu.type === 'pane' ? (
+            <>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { applyAuto(); setMenu(null) }}>
+                Авто-раскладка
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { undo(); setMenu(null) }}>
+                Отменить
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { redo(); setMenu(null) }}>
+                Повторить
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {showLegend && legend.length > 0 ? (
         <div className="absolute right-3 top-16 z-[12] max-h-[55%] w-[220px] overflow-y-auto rounded-xl border border-line bg-surface1/95 p-2 text-[11px] shadow-lg">
