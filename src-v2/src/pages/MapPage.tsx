@@ -250,7 +250,12 @@ export function MapPage() {
 
   const startLinkDrag = (id: string) => {
     if (!linkMode) return
-    setDragFrom(id)
+    if (!dragFrom) {
+      setDragFrom(id)
+      return
+    }
+    // второй клик по другому объекту — соединяем (без обязательного перетаскивания)
+    if (dragFrom !== id) void dropLinkDrag(id)
   }
 
   const dropLinkDrag = async (id: string) => {
@@ -258,9 +263,16 @@ export function MapPage() {
     const sourceId = dragFrom
     setDragFrom(null)
     try {
-      const [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
-      const fromPort = source.ports.find((port) => port.kind !== 'in')
-      const toPort = target.ports.find((port) => port.kind !== 'out')
+      let [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+      let fromPort = source.ports.find((port) => port.kind !== 'in')
+      let toPort = target.ports.find((port) => port.kind !== 'out')
+      if (!fromPort || !toPort) {
+        // у объектов, созданных без шаблона портов, создаём вход/выход автоматически
+        await Promise.all([gisApi.ensurePorts(sourceId), gisApi.ensurePorts(id)])
+        ;[source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+        fromPort = source.ports.find((port) => port.kind !== 'in')
+        toPort = target.ports.find((port) => port.kind !== 'out')
+      }
       if (!fromPort || !toPort) {
         setError('У одного из объектов нет подходящих портов для связи')
         return

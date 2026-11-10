@@ -419,6 +419,18 @@ maintenanceList: (assetId: string) =>
   maintenanceDelete: (entryId: string) =>
     apiRequest<{ message: string }>(`/api/maintenance/${entryId}`, { method: 'DELETE' }),
 
+ensurePorts: (assetId: string) =>
+    apiRequest<{ created: number; ports: Array<{ id: string; code: string }> }>(
+      `/api/assets/${assetId}/ports/ensure`,
+      { method: 'POST' },
+    ),
+
+  passportUrl: (assetId: string) =>
+    apiRequest<{ url: string; kind: string }>('/api/reports/token', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'passport', asset_id: assetId }),
+    }),
+
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
 schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),
 

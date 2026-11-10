@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import current_user, require_admin, require_permission
 from app.core.errors import not_found
 from app.db.session import get_db
-from app.models import Asset, AssetType, Employee, Line, Link
+from app.models import Asset, AssetPort, AssetType, Employee, Line, Link
 from app.schemas.gis import (
     AssetCreate,
     AssetGroupIn,
@@ -772,3 +772,28 @@ def maintenance_delete(
 ) -> dict:
     maintenance_service.delete_entry(db, entry_id, admin)
     return {"message": "Запись удалена", "id": str(entry_id)}
+
+@router.post("/assets/{asset_id}/ports/ensure", summary="Создать вход/выход, если их нет")
+def ensure_ports(
+    asset_id: uuidlib.UUID,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    asset = gis.get_asset(db, asset_id)
+    created = 0
+    for code, name, kind in (("IN-1", "Ввод", "in"), ("OUT-1", "Выход", "out")):
+        if not any(port.code == code for port in asset.ports):
+            db.add(
+                AssetPort(
+                    id=uuidlib.uuid4(),
+                    asset_id=asset.id,
+                    code=code,
+                    name=name,
+                    kind=kind,
+                    sort_order=0,
+                )
+            )
+            created += 1
+    db.commit()
+    db.refresh(asset)
+    return {"created": created, "ports": [{"id": str(p.id), "code": p.code} for p in asset.ports]}

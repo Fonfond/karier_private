@@ -914,6 +914,15 @@ function Flow({
     setStatus('Действие повторено')
   }
 
+  const downloadPassport = async (id: string) => {
+    try {
+      const result = await gisApi.passportUrl(id)
+      window.open(result.url, '_blank')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сформировать паспорт')
+    }
+  }
+
   const deleteNode = async (id: string) => {
     if (!window.confirm('Удалить объект со схемы? Карточка сохранится в реестре.')) return
     try {
@@ -1299,6 +1308,9 @@ function Flow({
             <>
               <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { onSelect(menu.id!); setMenu(null) }}>
                 Открыть карточку
+              </button>
+              <button type="button" className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface2" onClick={() => { void downloadPassport(menu.id!); setMenu(null) }}>
+                ⬇ Скачать паспорт (PDF)
               </button>
               {graph.blocks.some((block) => block.asset_id === menu.id) ? (
                 <button
