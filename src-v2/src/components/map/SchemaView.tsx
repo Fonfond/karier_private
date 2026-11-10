@@ -204,7 +204,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent/15 text-[13px]">▣</span>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[12px] font-semibold text-ink">{block.name}</div>
-              <div className="text-[10px] text-ink3">{cells.length + busbars.length} эл. · {block.code}</div>
+              <div className="text-[10px] text-ink3">{cells.length + busbars.length} элементов</div>
             </div>
             <button
               type="button"
@@ -234,7 +234,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold leading-tight text-ink">{block.name}</div>
             <div className="mt-0.5 text-[10px] text-ink3">
-              {block.code} · {cells.length} ячеек · {busbars.length} секции
+              {cells.length} ячеек · {busbars.length} секции
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -392,7 +392,7 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           <GostSymbol symbol={node.schema_symbol ?? 'load'} />
         </span>
         <div className="min-w-0">
-          <div className="truncate text-[12px] font-semibold text-ink">{node.code}</div>
+          <div className="truncate text-[12px] font-semibold text-ink">{node.name}</div>
           <div className="truncate text-[10px] text-ink3">{node.type_name}</div>
         </div>
       </div>
@@ -874,8 +874,8 @@ function Flow({
       targetNode.ports.find((port) => port.id === connection.targetHandle) ??
       targetNode.ports.find((port) => port.kind === 'in' || port.kind === 'io')
 
-    if (!sourcePort) return { error: `У объекта «${sourceNode.code}» нет выходного порта` }
-    if (!targetPort) return { error: `У объекта «${targetNode.code}» нет входного порта` }
+    if (!sourcePort) return { error: `У объекта «${sourceNode.name}» нет выходного порта` }
+    if (!targetPort) return { error: `У объекта «${targetNode.name}» нет входного порта` }
     if (sourcePort.kind === 'in') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
     if (targetPort.kind === 'out') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
 
