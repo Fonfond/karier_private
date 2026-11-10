@@ -77,7 +77,7 @@ export function MapPage() {
   const [linkType, setLinkType] = useState('cable')
   const [linkMode, setLinkMode] = useState(false)
   const [dragFrom, setDragFrom] = useState<string | null>(null)
-  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; length: string; state: string } | null>(null)
+  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; no: string; status: string; installed: string; length: string; state: string } | null>(null)
   const [linkSaving, setLinkSaving] = useState(false)
 
   const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
@@ -290,6 +290,9 @@ export function MapPage() {
       id,
       type: edge.link_type,
       mark: edge.cable_mark ?? '',
+      no: edge.cable_no ?? '',
+      status: edge.cable_status ?? 'in_work',
+      installed: edge.installed_on ?? '',
       length: edge.length_m != null ? String(edge.length_m) : '',
       state: edge.state,
     })
@@ -302,6 +305,9 @@ export function MapPage() {
       await gisApi.updateLink(editLink.id, {
         link_type: editLink.type,
         cable_mark: editLink.mark || null,
+        cable_no: editLink.no || null,
+        cable_status: editLink.status,
+        installed_on: editLink.installed || null,
         length_m: editLink.length ? Number(editLink.length) : null,
         state: editLink.state,
       })
@@ -712,6 +718,25 @@ export function MapPage() {
               <input className="input mt-1 h-8" value={editLink.length} inputMode="decimal" onChange={(e) => setEditLink({ ...editLink, length: e.target.value })} placeholder="120" />
             </label>
           </div>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="block text-[11px] text-ink3">
+              № кабеля
+              <input className="input mt-1 h-8" value={editLink.no} onChange={(e) => setEditLink({ ...editLink, no: e.target.value })} placeholder="КЛ-17" />
+            </label>
+            <label className="block text-[11px] text-ink3">
+              Статус
+              <select className="input mt-1 h-8" value={editLink.status} onChange={(e) => setEditLink({ ...editLink, status: e.target.value })}>
+                <option value="in_work">в работе</option>
+                <option value="reserve">резерв</option>
+                <option value="repair">ремонт</option>
+                <option value="dismounted">демонтирован</option>
+              </select>
+            </label>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Установлен на
+            <input className="input mt-1 h-8" value={editLink.installed} onChange={(e) => setEditLink({ ...editLink, installed: e.target.value })} placeholder="оп.4" />
+          </label>
           <label className="mb-2 block text-[11px] text-ink3">
             Состояние
             <select className="input mt-1 h-8" value={editLink.state} onChange={(e) => setEditLink({ ...editLink, state: e.target.value })}>

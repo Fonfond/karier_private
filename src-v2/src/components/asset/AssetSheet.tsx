@@ -7,6 +7,7 @@ import { StateControls } from './StateControls'
 import { DocumentsTab } from './DocumentsTab'
 import { PhotosTab } from './PhotosTab'
 import { HistoryTab } from './HistoryTab'
+import { MaintenanceTab } from './MaintenanceTab'
 import { ChildrenModal } from './ChildrenModal'
 import { QrModal } from '../QrModal'
 import { openExport } from '../../lib/dashboard'
@@ -20,7 +21,7 @@ interface Props {
   onMove?: (asset: AssetOut) => void
 }
 
-type Tab = 'passport' | 'photos' | 'docs' | 'history'
+type Tab = 'passport' | 'photos' | 'docs' | 'history' | 'maintenance'
 
 const ATTR_LABELS: Record<string, string> = {
   power_kw: 'Мощность, кВт',
@@ -172,7 +173,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
       </div>
 
       <div className="-mx-1 flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface2/50 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {TABS.map((item) => (
+        {(asset?.type.has_maintenance ? [...TABS, { key: 'maintenance' as Tab, label: 'ТО' }] : TABS).map((item) => (
           <button
             key={item.key}
             type="button"
@@ -320,6 +321,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
       {tab === 'photos' ? <PhotosTab assetId={asset.id} assetCode={asset.code} /> : null}
       {tab === 'docs' ? <DocumentsTab assetId={asset.id} canManage={canManageDocs} /> : null}
       {tab === 'history' ? <HistoryTab assetId={asset.id} /> : null}
+      {tab === 'maintenance' ? <MaintenanceTab assetId={asset.id} /> : null}
 
       {showChildren ? (
         <ChildrenModal

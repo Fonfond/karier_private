@@ -7,6 +7,7 @@ export interface TypeRef {
   name: string
   category: string
   schema_symbol?: string
+  has_maintenance?: boolean
   icon: string | null
   color: string | null
 }
@@ -28,6 +29,7 @@ export interface AssetType {
   name: string
   category: string
   schema_symbol: string
+  has_maintenance?: boolean
   icon: string | null
   color: string | null
   port_template: { ports?: Array<{ code: string; name: string; kind: string; voltage_kv?: number }> }
@@ -181,6 +183,10 @@ export interface GraphEdge {
   state: string
   feed_role: string
   cable_mark: string | null
+  cable_no?: string | null
+  cable_status?: string
+  installed_on?: string | null
+  route_note?: string | null
   length_m: number | null
   cross_section_mm2: number | null
   cores: number | null
@@ -211,6 +217,10 @@ export interface LinkOut {
   feed_role: string
   state: string
   cable_mark: string | null
+  cable_no?: string | null
+  cable_status?: string
+  installed_on?: string | null
+  route_note?: string | null
   length_m: number | null
   cross_section_mm2: number | null
   cores: number | null
@@ -394,6 +404,20 @@ groupAssets: (payload: { parent_type_code: string; name: string; child_ids: stri
 
   ungroupAsset: (id: string) =>
     apiRequest<{ parent_id: string; children: number }>(`/api/asset-groups/${id}/ungroup`, { method: 'POST' }),
+
+maintenanceList: (assetId: string) =>
+    apiRequest<Array<{ id: string; at: string; kind: string; motor_hours: number | null; fuel_liters: number | null; fuel_level_pct: number | null; cost: number | null; note: string | null; author_name: string | null }>>(
+      `/api/assets/${assetId}/maintenance`,
+    ),
+
+  maintenanceAdd: (assetId: string, payload: Record<string, unknown>) =>
+    apiRequest<{ id: string }>(`/api/assets/${assetId}/maintenance`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  maintenanceDelete: (entryId: string) =>
+    apiRequest<{ message: string }>(`/api/maintenance/${entryId}`, { method: 'DELETE' }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
 schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),

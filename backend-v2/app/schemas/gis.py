@@ -129,7 +129,9 @@ class AssetTypeOut(BaseModel):
     code: str
     name: str
     category: str
+    has_maintenance: bool = False
     schema_symbol: str = "load"
+    has_maintenance: bool = False
     icon: str | None = None
     color: str | None = None
     port_template: dict[str, Any] = {}
@@ -169,6 +171,7 @@ class AssetTypeUpdate(BaseModel):
     attr_schema: dict[str, Any] | None = None
     required_attrs: list[str] | None = None
     is_mobile_default: bool | None = None
+    has_maintenance: bool | None = None
     schema_symbol: str | None = Field(default=None, max_length=24)
     sort_order: int | None = None
     description: str | None = None
@@ -309,6 +312,10 @@ class LinkCreate(BaseModel):
     state: Literal["connected", "open", "grounded"] = "connected"
     line_id: uuid.UUID | None = None
     cable_mark: str | None = Field(default=None, max_length=64)
+    cable_no: str | None = Field(default=None, max_length=32)
+    cable_status: Literal["in_work", "reserve", "repair", "dismounted"] = "in_work"
+    installed_on: str | None = Field(default=None, max_length=255)
+    route_note: str | None = None
     length_m: float | None = Field(default=None, ge=0)
     cross_section_mm2: float | None = Field(default=None, ge=0)
     cores: int | None = Field(default=None, ge=1, le=64)
@@ -322,6 +329,10 @@ class LinkUpdate(BaseModel):
     state: Literal["connected", "open", "grounded"] | None = None
     line_id: uuid.UUID | None = None
     cable_mark: str | None = Field(default=None, max_length=64)
+    cable_no: str | None = Field(default=None, max_length=32)
+    cable_status: Literal["in_work", "reserve", "repair", "dismounted"] | None = None
+    installed_on: str | None = Field(default=None, max_length=255)
+    route_note: str | None = None
     length_m: float | None = Field(default=None, ge=0)
     cross_section_mm2: float | None = Field(default=None, ge=0)
     cores: int | None = Field(default=None, ge=1, le=64)
@@ -339,6 +350,10 @@ class LinkOut(BaseModel):
     feed_role: str
     state: str
     cable_mark: str | None = None
+    cable_no: str | None = None
+    cable_status: str = "in_work"
+    installed_on: str | None = None
+    route_note: str | None = None
     length_m: float | None = None
     cross_section_mm2: float | None = None
     cores: int | None = None
@@ -526,3 +541,25 @@ class AssetGroupIn(BaseModel):
 class AssetGroupOut(BaseModel):
     parent_id: uuid.UUID
     children: int
+
+class MaintenanceIn(BaseModel):
+    at: datetime | None = None
+    kind: Literal["to", "fuel", "repair", "other"] = "to"
+    motor_hours: float | None = Field(default=None, ge=0)
+    fuel_liters: float | None = Field(default=None, ge=0)
+    fuel_level_pct: float | None = Field(default=None, ge=0, le=100)
+    cost: float | None = Field(default=None, ge=0)
+    note: str | None = None
+
+
+class MaintenanceOut(BaseModel):
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    at: datetime
+    kind: str
+    motor_hours: float | None = None
+    fuel_liters: float | None = None
+    fuel_level_pct: float | None = None
+    cost: float | None = None
+    note: str | None = None
+    author_name: str | None = None

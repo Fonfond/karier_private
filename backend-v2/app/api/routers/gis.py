@@ -18,6 +18,8 @@ from app.schemas.gis import (
     AssetCreate,
     AssetGroupIn,
     AssetGroupOut,
+    MaintenanceIn,
+    MaintenanceOut,
     AssetListOut,
     AssetOut,
     AssetTypeCreate,
@@ -51,6 +53,7 @@ from app.schemas.gis import (
 )
 from app.services import audit, documents as documents_service, gis
 from app.services import groups as groups_service
+from app.services import maintenance as maintenance_service
 from app.services import links as links_service
 from app.services import state as state_service
 from app.services import schema_pdf as schema_pdf_service
@@ -734,3 +737,38 @@ def ungroup_assets(
     parent = gis.get_asset(db, asset_id)
     count = groups_service.ungroup(db, parent, admin)
     return AssetGroupOut(parent_id=asset_id, children=count)
+
+@router.get("/assets/{asset_id}/maintenance", response_model=list[MaintenanceOut], summary="Журнал ТО объекта")
+def maintenance_list(
+    asset_id: uuidlib.UUID,
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[MaintenanceOut]:
+    asset = gis.get_asset(db, asset_id)
+    return [MaintenanceOut(**row) for row in maintenance_service.list_entries(db, asset)]
+
+
+@router.post(
+    "/assets/{asset_id}/maintenance",
+    response_model=MaintenanceOut,
+    status_code=201,
+    summary="Добавить запись журнала ТО",
+)
+def maintenance_add(
+    asset_id: uuidlib.UUID,
+    payload: MaintenanceIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> MaintenanceOut:
+    asset = gis.get_asset(db, asset_id)
+    return MaintenanceOut(**maintenance_service.add_entry(db, asset, admin, payload))
+
+
+@router.delete("/maintenance/{entry_id}", summary="Удалить запись журнала ТО")
+def maintenance_delete(
+    entry_id: uuidlib.UUID,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    maintenance_service.delete_entry(db, entry_id, admin)
+    return {"message": "Запись удалена", "id": str(entry_id)}

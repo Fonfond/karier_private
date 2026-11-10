@@ -50,6 +50,9 @@ export function AppShell() {
             <NavLink to="/map" className={link} data-tour="map">
               Карта
             </NavLink>
+            <NavLink to="/cables" className={link}>
+              Кабели
+            </NavLink>
             <NavLink to="/registry" className={link}>
               Реестр
             </NavLink>

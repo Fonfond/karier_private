@@ -102,6 +102,8 @@ class AssetType(Base, TimestampMixin):
     required_attrs = Column(ARRAY(String), nullable=False, default=list)
 
     is_mobile_default = Column(Boolean, nullable=False, default=False)
+    # ведёт журнал ТО (моточасы, топливо)
+    has_maintenance = Column(Boolean, nullable=False, default=False, server_default="false")
     # символ на однолинейной схеме: breaker, disconnector, busbar, load, generator, source, line, ct, arrester
     schema_symbol = Column(String(24), nullable=False, default="load")
     sort_order = Column(Integer, nullable=False, default=100)

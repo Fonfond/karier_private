@@ -46,6 +46,7 @@ interface Draft {
   name: string
   category: string
   schema_symbol: string
+  has_maintenance: boolean
   icon: string
   color: string
   parent_id: string
@@ -64,6 +65,7 @@ const EMPTY: Draft = {
   name: '',
   category: 'equipment',
   schema_symbol: 'load',
+  has_maintenance: false,
   icon: '🔧',
   color: '#4C9AFF',
   parent_id: '',
@@ -85,6 +87,7 @@ function draftFrom(type: AssetType): Draft {
     name: type.name,
     category: type.category,
     schema_symbol: type.schema_symbol ?? 'load',
+    has_maintenance: type.has_maintenance ?? false,
     icon: type.icon ?? '🔧',
     color: type.color ?? '#4C9AFF',
     parent_id: type.parent_id ?? '',
@@ -142,6 +145,7 @@ function Editor({
         name: form.name.trim(),
         category: form.category,
         schema_symbol: form.schema_symbol,
+        has_maintenance: form.has_maintenance,
         icon: form.icon || '●',
         color: form.color,
         description: form.description.trim() || null,
@@ -226,6 +230,16 @@ function Editor({
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Журнал ТО">
+            <label className="flex items-center gap-2 text-[12px] text-ink2">
+              <input
+                type="checkbox"
+                checked={form.has_maintenance}
+                onChange={(e) => set('has_maintenance', e.target.checked)}
+              />
+              вести моточасы, топливо и ТО
+            </label>
           </Field>
           <Field label="Иконка">
             <div className="grid max-h-24 grid-cols-8 gap-1 overflow-y-auto rounded-lg border border-line p-1.5">

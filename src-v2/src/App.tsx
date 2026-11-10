@@ -14,6 +14,7 @@ import { MapPage } from './pages/MapPage'
 import { MfaPage } from './pages/MfaPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { RegisterPage } from './pages/RegisterPage'
+import { CablesPage } from './pages/CablesPage'
 import { RegistryPage } from './pages/RegistryPage'
 import { SyncPage } from './pages/SyncPage'
 import { TypesPage } from './pages/TypesPage'
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="/map" element={<MapPage />} />
         <Route path="/asset/:id" element={<AssetDeepLink />} />
         <Route path="/registry" element={<RegistryPage />} />
+        <Route path="/cables" element={<CablesPage />} />
         <Route path="/inspections" element={<InspectionPage />} />
         <Route path="/defects" element={<DefectsPage />} />
         <Route path="/sync" element={<SyncPage />} />
