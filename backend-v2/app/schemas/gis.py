@@ -156,6 +156,7 @@ class AssetTypeCreate(BaseModel):
     attr_schema: dict[str, Any] = {}
     required_attrs: list[str] = []
     is_mobile_default: bool = False
+    has_maintenance: bool = False
     schema_symbol: str = Field(default="load", max_length=24)
     sort_order: int = 100
     description: str | None = None
