@@ -170,6 +170,7 @@ def asset_brief(asset: Asset) -> AssetBriefOut:
         y=float(asset.y) if asset.y is not None else None,
         location_text=asset.location_text,
         parent_id=asset.parent_asset_id,
+        grouped=asset.schema_block_id is not None,
         version=asset.version,
         updated_at=asset.updated_at,
     )

@@ -61,6 +61,8 @@ class AssetBriefOut(BaseModel):
     code: str
     name: str
     type: TypeRefOut
+    parent_id: uuid.UUID | None = None
+    grouped: bool = False
     status: str
     is_mobile: bool
     grounded: bool
@@ -512,3 +514,15 @@ class LegendItemOut(BaseModel):
     symbol: str
     title: str
     count: int
+
+class AssetGroupIn(BaseModel):
+    parent_type_code: str = Field(min_length=1, max_length=48)
+    name: str = Field(min_length=1, max_length=255)
+    child_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    x: float | None = None
+    y: float | None = None
+
+
+class AssetGroupOut(BaseModel):
+    parent_id: uuid.UUID
+    children: int

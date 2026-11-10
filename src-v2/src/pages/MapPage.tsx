@@ -142,8 +142,9 @@ export function MapPage() {
   }, [load, loadGraph, view])
 
   const filtered = useMemo(() => {
-    if (!category) return assets
-    return assets.filter((asset) => asset.type.category === category)
+    const visible = assets.filter((asset) => !asset.grouped)
+    if (!category) return visible
+    return visible.filter((asset) => asset.type.category === category)
   }, [assets, category])
 
   const openAsset = (id: string) => {

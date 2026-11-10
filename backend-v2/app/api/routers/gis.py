@@ -16,6 +16,8 @@ from app.db.session import get_db
 from app.models import Asset, AssetType, Employee, Line, Link
 from app.schemas.gis import (
     AssetCreate,
+    AssetGroupIn,
+    AssetGroupOut,
     AssetListOut,
     AssetOut,
     AssetTypeCreate,
@@ -47,7 +49,9 @@ from app.schemas.gis import (
     TopologyGraphOut,
     TopologyIssueOut,
 )
-from app.services import audit, documents as documents_service, gis, links as links_service
+from app.services import audit, documents as documents_service, gis
+from app.services import groups as groups_service
+from app.services import links as links_service
 from app.services import state as state_service
 from app.services import schema_pdf as schema_pdf_service
 from app.services import topology
@@ -710,3 +714,23 @@ def active_layer(
     if layer is None:
         raise not_found("Подложка карты не настроена")
     return gis.layer_out(layer)
+
+@router.post("/asset-groups", response_model=AssetGroupOut, status_code=201, summary="Собрать объекты в группу")
+def group_assets(
+    payload: AssetGroupIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> AssetGroupOut:
+    parent = groups_service.create_group(db, admin, payload)
+    return AssetGroupOut(parent_id=parent.id, children=len(payload.child_ids))
+
+
+@router.post("/asset-groups/{asset_id}/ungroup", response_model=AssetGroupOut, summary="Разъединить группу")
+def ungroup_assets(
+    asset_id: uuidlib.UUID,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> AssetGroupOut:
+    parent = gis.get_asset(db, asset_id)
+    count = groups_service.ungroup(db, parent, admin)
+    return AssetGroupOut(parent_id=asset_id, children=count)

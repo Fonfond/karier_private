@@ -54,6 +54,7 @@ export interface AssetBrief {
   y: number | null
   location_text: string | null
   parent_id: string | null
+  grouped?: boolean
   version: number
   updated_at: string
 }
@@ -384,6 +385,15 @@ export const gisApi = {
       method: 'PUT',
       body: JSON.stringify({ items, ports }),
     }),
+
+groupAssets: (payload: { parent_type_code: string; name: string; child_ids: string[]; x?: number; y?: number }) =>
+    apiRequest<{ parent_id: string; children: number }>('/api/asset-groups', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  ungroupAsset: (id: string) =>
+    apiRequest<{ parent_id: string; children: number }>(`/api/asset-groups/${id}/ungroup`, { method: 'POST' }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
 schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),

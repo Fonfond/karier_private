@@ -23,6 +23,12 @@ export function RegistryPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [showGrouped, setShowGrouped] = useState(false)
+  const [groupOpen, setGroupOpen] = useState(false)
+  const [groupType, setGroupType] = useState('')
+  const [groupName, setGroupName] = useState('')
   const [form, setForm] = useState({
     name: '',
     type_code: '',
@@ -67,6 +73,7 @@ export function RegistryPage() {
     if (typeFilter) result = result.filter((item) => item.type.code === typeFilter)
     if (statusFilter) result = result.filter((item) => item.status === statusFilter)
     if (parentFilter) result = result.filter((item) => item.parent_id === parentFilter)
+    if (!showGrouped) result = result.filter((item) => !item.grouped)
 
     const value = (item: AssetBrief, key: SortKey): string | number => {
       if (key === 'type') return item.type.name
@@ -84,7 +91,30 @@ export function RegistryPage() {
       return String(left).localeCompare(String(right), 'ru') * sort.dir
     })
     return result
-  }, [items, search, typeFilter, statusFilter, parentFilter, sort])
+  }, [items, search, typeFilter, statusFilter, parentFilter, sort, showGrouped])
+
+  const createGroup = async () => {
+    if (selected.size === 0) return
+    setBusy(true)
+    setError(null)
+    try {
+      await gisApi.groupAssets({
+        parent_type_code: groupType || types[0]?.code || '',
+        name: groupName.trim() || 'Группа',
+        child_ids: Array.from(selected),
+      })
+      setNotice(`Собрана группа «${groupName || 'Группа'}»: ${selected.size} объектов`)
+      setSelected(new Set())
+      setSelectMode(false)
+      setGroupOpen(false)
+      setGroupName('')
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось собрать группу')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const toggleSort = (key: SortKey) => {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: 1 }))
@@ -232,6 +262,34 @@ export function RegistryPage() {
         {can('asset.create') ? (
           <button
             type="button"
+            className={`h-10 px-3 text-[12px] ${selectMode ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => {
+              setSelectMode((prev) => !prev)
+              setSelected(new Set())
+            }}
+          >
+            {selectMode ? 'Выбор: ' + selected.size : 'Выбрать'}
+          </button>
+        ) : null}
+        {can('asset.create') && selectMode && selected.size > 0 ? (
+          <button
+            type="button"
+            className="btn-primary h-10 px-3 text-[12px]"
+            onClick={() => {
+              setGroupType(types[0]?.code ?? '')
+              setGroupOpen(true)
+            }}
+          >
+            Собрать в группу
+          </button>
+        ) : null}
+        <label className="flex items-center gap-1.5 text-[12px] text-ink3">
+          <input type="checkbox" checked={showGrouped} onChange={(e) => setShowGrouped(e.target.checked)} />
+          вложенные
+        </label>
+        {can('asset.create') ? (
+          <button
+            type="button"
             className="btn-primary admin-only h-10 px-3 text-[12px]"
             onClick={() => {
               setForm((prev) => ({ ...prev, type_code: prev.type_code || types[0]?.code || '' }))
@@ -248,6 +306,21 @@ export function RegistryPage() {
         {rows.map((item) => (
           <div key={item.id} className="card p-4">
             <div className="flex items-start justify-between gap-2">
+              {selectMode ? (
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={selected.has(item.id)}
+                  onChange={() =>
+                    setSelected((prev) => {
+                      const next = new Set(prev)
+                      if (next.has(item.id)) next.delete(item.id)
+                      else next.add(item.id)
+                      return next
+                    })
+                  }
+                />
+              ) : null}
               <div className="min-w-0">
                 <div className="font-mono text-[12px] text-ink3">{item.code}</div>
                 <div className="truncate text-[15px] font-medium">{item.name}</div>
@@ -315,6 +388,23 @@ export function RegistryPage() {
           <tbody className="divide-y divide-line">
             {rows.map((item) => (
               <tr key={item.id} className="align-middle">
+                {selectMode ? (
+                  <td className="px-2 py-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={selected.has(item.id)}
+                      onChange={() =>
+                        setSelected((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(item.id)) next.delete(item.id)
+                          else next.add(item.id)
+                          return next
+                        })
+                      }
+                    />
+                  </td>
+                ) : null}
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px]">{item.code}</td>
                 <td className="px-3 py-2">
                   <div className="flex items-center gap-2">
@@ -479,6 +569,37 @@ export function RegistryPage() {
           </div>
         </div>
       ) : null}
+
+      {groupOpen ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4">
+            <div className="mb-3 text-[15px] font-semibold">Собрать в группу</div>
+            <p className="mb-3 text-[12px] text-ink3">
+              Выбрано объектов: {selected.size}. Будет создан родительский объект, выбранные объекты
+              станут его составом: на карте — одна иконка, на схеме — рамка с подписью.
+            </p>
+            <label className="mb-2 block text-[12px]">
+              <span className="label">Тип родительского объекта</span>
+              <select className="input h-9" value={groupType} onChange={(e) => setGroupType(e.target.value)}>
+                {types.map((type) => (
+                  <option key={type.code} value={type.code}>{type.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="mb-3 block text-[12px]">
+              <span className="label">Название</span>
+              <input className="input h-9" value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="ПС 35/6 кВ «Карьер»" />
+            </label>
+            <div className="flex gap-2">
+              <button type="button" className="btn-primary h-9 flex-1" disabled={busy} onClick={() => void createGroup()}>
+                Собрать
+              </button>
+              <button type="button" className="btn-ghost h-9" onClick={() => setGroupOpen(false)}>Отмена</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   )
 }
