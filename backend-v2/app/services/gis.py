@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -563,16 +565,51 @@ def power_path(db: Session, asset: Asset) -> PowerPathOut:
 
 # --- типы объектов (админка) ----------------------------------------------
 
+TRANSLIT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ъ": "",
+    "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def slug_from_name(name: str) -> str:
+    """Транслит названия в код типа: «ПС 35/6 кВ» → ps_35_6_kv."""
+    lower = name.strip().lower()
+    transliterated = "".join(TRANSLIT.get(char, char) for char in lower)
+    cleaned = re.sub(r"[^a-z0-9]+", "_", transliterated).strip("_")
+    if not cleaned:
+        cleaned = "type"
+    if not cleaned[0].isalpha():
+        cleaned = f"t_{cleaned}"
+    return cleaned[:48]
+
+
+def unique_type_code(db: Session, base: str) -> str:
+    candidate = base
+    index = 2
+    while db.scalar(select(AssetType).where(AssetType.code == candidate)) is not None:
+        suffix = f"_{index}"
+        candidate = f"{base[: 48 - len(suffix)]}{suffix}"
+        index += 1
+    return candidate
+
+
 def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
-    if db.scalar(select(AssetType).where(AssetType.code == payload.code)) is not None:
-        raise conflict(f"Тип {payload.code} уже существует", "asset_type.duplicate_code")
+    code = (payload.code or "").strip().lower()
+    if code:
+        if db.scalar(select(AssetType).where(AssetType.code == code)) is not None:
+            raise conflict(f"Тип {code} уже существует", "asset_type.duplicate_code")
+    else:
+        code = unique_type_code(db, slug_from_name(payload.name))
     if payload.parent_id is not None:
         parent = db.get(AssetType, payload.parent_id)
         if parent is None:
             raise ApiError(400, "asset_type.parent_not_found", "Родительский тип не найден")
     asset_type = AssetType(
         id=uuid.uuid4(),
-        code=payload.code,
+        code=code,
         name=payload.name,
         category=payload.category,
         schema_symbol=payload.schema_symbol or "load",

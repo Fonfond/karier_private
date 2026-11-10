@@ -147,7 +147,7 @@ class AssetTypeOut(BaseModel):
 
 
 class AssetTypeCreate(BaseModel):
-    code: str = Field(min_length=2, max_length=48, pattern=r"^[a-z][a-z0-9_]*$")
+    code: str | None = Field(default=None, max_length=48)
     name: str = Field(min_length=2, max_length=128)
     category: Literal["source", "line", "equipment", "mobile", "lighting", "aux", "pole"] = "equipment"
     icon: str | None = Field(default=None, max_length=16)

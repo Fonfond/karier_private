@@ -167,10 +167,7 @@ function Editor({
         await gisApi.updateType(form.id, payload)
         onSaved(`Тип «${form.name}» обновлён`)
       } else {
-        await gisApi.createType({
-          ...payload,
-          code: form.code.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-        })
+        await gisApi.createType({ ...payload })
         onSaved(`Тип «${form.name}» добавлен`)
       }
     } catch (err) {
@@ -195,14 +192,10 @@ function Editor({
         {error ? <Alert kind="error">{error}</Alert> : null}
 
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Код (латиницей)">
-            <input
-              className="input"
-              value={form.code}
-              disabled={Boolean(form.id)}
-              onChange={(e) => set('code', e.target.value)}
-              placeholder="dgu_100"
-            />
+          <Field label="Код типа">
+            <div className="rounded-lg border border-line bg-surface2/40 px-3 py-2 text-[12px] text-ink3">
+              {form.id ? form.code : 'создаётся автоматически из названия'}
+            </div>
           </Field>
           <div className="sm:col-span-2">
             <Field label="Название">
@@ -363,7 +356,7 @@ function Editor({
           <button
             type="button"
             className="btn-primary px-5"
-            disabled={busy || form.name.trim().length < 2 || (!form.id && form.code.trim().length < 2)}
+            disabled={busy || form.name.trim().length < 2}
             onClick={() => void save()}
           >
             {busy ? 'Сохраняем…' : form.id ? 'Сохранить' : 'Добавить тип'}
