@@ -65,6 +65,8 @@ export function MapPage() {
   const [formPower, setFormPower] = useState('')
   const [formLocation, setFormLocation] = useState('')
   const [saving, setSaving] = useState(false)
+  const [placePickerOpen, setPlacePickerOpen] = useState(false)
+  const [placeQuery, setPlaceQuery] = useState('')
 
   const [connecting, setConnecting] = useState(false)
   const [connectStep, setConnectStep] = useState<'from' | 'to'>('from')
@@ -369,13 +371,49 @@ export function MapPage() {
 
     if (!adding) return
     setDraft({ x: rx, y: ry })
-    setSheetOpen(true)
+    setPlaceQuery('')
+    setPlacePickerOpen(true)
+    setSheetOpen(false)
     setFormName('')
     setFormCode('')
     setFormPower('')
     setFormLocation('')
     setFormType(types[0]?.code ?? 'ktp')
   }
+
+  const placeExisting = async (id: string) => {
+    if (!draft) return
+    setSaving(true)
+    try {
+      await gisApi.update(id, { x: draft.x, y: draft.y })
+      setPlacePickerOpen(false)
+      setDraft(null)
+      setAdding(false)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось разместить объект')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const placePickerItems = (() => {
+    const query = placeQuery.trim().toLowerCase()
+    return assets
+      .filter(
+        (asset) =>
+          !query ||
+          asset.name.toLowerCase().includes(query) ||
+          asset.code.toLowerCase().includes(query),
+      )
+      .slice()
+      .sort((a, b) => {
+        const left = a.x === null ? 0 : 1
+        const right = b.x === null ? 0 : 1
+        if (left !== right) return left - right
+        return a.name.localeCompare(b.name, 'ru')
+      })
+  })()
 
   const handleAssetDrop = async (id: string, x: number, y: number) => {
     const asset = assets.find((item) => item.id === id)
@@ -961,6 +999,60 @@ export function MapPage() {
       </BottomSheet>
 
       {/* создание объекта */}
+      <BottomSheet
+        open={placePickerOpen}
+        onClose={() => {
+          setPlacePickerOpen(false)
+          setDraft(null)
+        }}
+        title={draft ? `Куда поставить? X ${draft.x} м, Y ${draft.y} м` : 'Выбор объекта'}
+      >
+        <div className="space-y-2">
+          <input
+            className="input h-10"
+            value={placeQuery}
+            onChange={(e) => setPlaceQuery(e.target.value)}
+            placeholder="Поиск по названию или коду"
+          />
+          <div className="max-h-[45vh] space-y-1 overflow-y-auto">
+            {placePickerItems.map((asset) => (
+              <button
+                key={asset.id}
+                type="button"
+                className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-surface2"
+                disabled={saving}
+                onClick={() => void placeExisting(asset.id)}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-[13px] text-ink">
+                    {asset.type.icon} {asset.name}
+                  </span>
+                  <span className="block text-[11px] text-ink3">
+                    {asset.code} · {asset.type.name}
+                  </span>
+                </span>
+                <span className="shrink-0 text-[11px] text-ink3">
+                  {asset.x === null ? 'не размещён' : `X ${asset.x} · Y ${asset.y}`}
+                </span>
+              </button>
+            ))}
+            {placePickerItems.length === 0 ? (
+              <p className="text-[12px] text-ink3">Ничего не найдено</p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn-ghost h-10 w-full"
+            onClick={() => {
+              setPlacePickerOpen(false)
+              setSheetOpen(true)
+            }}
+          >
+            + Создать новый объект здесь
+          </button>
+        </div>
+      </BottomSheet>
+
       <BottomSheet
         open={sheetOpen && Boolean(draft)}
         onClose={() => {
