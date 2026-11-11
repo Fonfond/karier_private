@@ -564,3 +564,30 @@ class MaintenanceOut(BaseModel):
     cost: float | None = None
     note: str | None = None
     author_name: str | None = None
+
+class PolesGenerateIn(BaseModel):
+    type_code: str | None = None
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    count: int = Field(ge=1, le=200)
+    start: int = 1
+    step: int = Field(default=1, ge=1, le=100)
+    prefix: str = Field(default="оп.", max_length=16)
+    source_asset_id: uuid.UUID | None = None
+    link_type: Literal["overhead", "cable", "busbar", "jumper"] = "overhead"
+
+
+class PolesRenumberIn(BaseModel):
+    type_code: str | None = None
+    start: int = 1
+    step: int = Field(default=1, ge=1, le=100)
+    prefix: str = Field(default="оп.", max_length=16)
+
+
+class PolesResultOut(BaseModel):
+    count: int
+    first: str
+    last: str
+    ids: list[uuid.UUID] = []

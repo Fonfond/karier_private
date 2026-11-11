@@ -431,6 +431,27 @@ ensurePorts: (assetId: string) =>
       body: JSON.stringify({ kind: 'passport', asset_id: assetId }),
     }),
 
+generatePoles: (payload: {
+    type_code?: string
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+    count: number
+    start: number
+    step: number
+    prefix: string
+  }) => apiRequest<{ count: number; first: string; last: string; ids: string[] }>('/api/schema/poles/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
+  renumberPoles: (payload: { type_code?: string; start: number; step: number; prefix: string }) =>
+    apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
 schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),
 

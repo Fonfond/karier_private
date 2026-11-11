@@ -20,6 +20,9 @@ from app.schemas.gis import (
     AssetGroupOut,
     MaintenanceIn,
     MaintenanceOut,
+    PolesGenerateIn,
+    PolesRenumberIn,
+    PolesResultOut,
     AssetListOut,
     AssetOut,
     AssetTypeCreate,
@@ -54,6 +57,7 @@ from app.schemas.gis import (
 from app.services import audit, documents as documents_service, gis
 from app.services import groups as groups_service
 from app.services import maintenance as maintenance_service
+from app.services import poles as poles_service
 from app.services import links as links_service
 from app.services import state as state_service
 from app.services import schema_pdf as schema_pdf_service
@@ -797,3 +801,45 @@ def ensure_ports(
     db.commit()
     db.refresh(asset)
     return {"created": created, "ports": [{"id": str(p.id), "code": p.code} for p in asset.ports]}
+
+@router.post("/schema/poles/generate", response_model=PolesResultOut, summary="Расставить опоры ВЛ")
+def poles_generate(
+    payload: PolesGenerateIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> PolesResultOut:
+    return PolesResultOut(
+        **poles_service.generate(
+            db,
+            admin,
+            type_code=payload.type_code,
+            x1=payload.x1,
+            y1=payload.y1,
+            x2=payload.x2,
+            y2=payload.y2,
+            count=payload.count,
+            start=payload.start,
+            step=payload.step,
+            prefix=payload.prefix,
+            source_asset_id=payload.source_asset_id,
+            link_type=payload.link_type,
+        )
+    )
+
+
+@router.post("/schema/poles/renumber", response_model=PolesResultOut, summary="Перенумеровать опоры")
+def poles_renumber(
+    payload: PolesRenumberIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> PolesResultOut:
+    return PolesResultOut(
+        **poles_service.renumber(
+            db,
+            admin,
+            type_code=payload.type_code,
+            start=payload.start,
+            step=payload.step,
+            prefix=payload.prefix,
+        )
+    )

@@ -585,6 +585,11 @@ function Flow({
   const historyIndex = useRef(0)
   const [, setHistoryVersion] = useState(0)
   const [guides, setGuides] = useState<{ x?: number; y?: number } | null>(null)
+  const [poleDialog, setPoleDialog] = useState<'generate' | 'renumber' | null>(null)
+  const [polePick, setPolePick] = useState<'start' | 'end' | null>(null)
+  const [poleStartPoint, setPoleStartPoint] = useState<{ x: number; y: number } | null>(null)
+  const [poleForm, setPoleForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.' })
+  const { screenToFlowPosition } = useReactFlow()
   const [cableMark, setCableMark] = useState('')
   const [linkType, setLinkType] = useState('cable')
   const [edgeDraft, setEdgeDraft] = useState<EdgeDraft | null>(null)
@@ -923,6 +928,49 @@ function Flow({
     }
   }
 
+  const createPoleLine = async (start: { x: number; y: number }, end: { x: number; y: number }) => {
+    setSaving(true)
+    try {
+      const result = await gisApi.generatePoles({
+        type_code: 'op',
+        x1: start.x,
+        y1: start.y,
+        x2: end.x,
+        y2: end.y,
+        count: Math.max(1, Number(poleForm.count) || 1),
+        start: Number(poleForm.start) || 1,
+        step: Math.max(1, Number(poleForm.step) || 1),
+        prefix: poleForm.prefix || 'оп.',
+      })
+      setStatus(`Создано опор: ${result.count} (${result.first}…${result.last})`)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось расставить опоры')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const renumberAllPoles = async () => {
+    if (!window.confirm('Перенумеровать ВСЕ опоры типа «Опора»? Имена существующих опор изменятся.')) return
+    setSaving(true)
+    try {
+      const result = await gisApi.renumberPoles({
+        type_code: 'op',
+        start: Number(poleForm.start) || 1,
+        step: Math.max(1, Number(poleForm.step) || 1),
+        prefix: poleForm.prefix || 'оп.',
+      })
+      setStatus(`Перенумеровано: ${result.count} опор (${result.first}…${result.last})`)
+      setPoleDialog(null)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось перенумеровать опоры')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const deleteNode = async (id: string) => {
     if (!window.confirm('Удалить объект со схемы? Карточка сохранится в реестре.')) return
     try {
@@ -1081,6 +1129,12 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
+              <button type="button" className="btn-ghost h-8 px-3" onClick={() => setPoleDialog('generate')}>
+                ВЛ
+              </button>
+              <button type="button" className="btn-ghost h-8 px-2" title="Перенумеровать опоры" onClick={() => setPoleDialog('renumber')}>
+                №
+              </button>
               <button
                 type="button"
                 className="btn-ghost h-8 px-2"
@@ -1216,7 +1270,22 @@ function Flow({
           event.preventDefault()
           setMenu({ x: event.clientX, y: event.clientY, type: 'pane' })
         }}
-        onPaneClick={() => setMenu(null)}
+        onPaneClick={(event) => {
+          setMenu(null)
+          if (!polePick) return
+          const point = screenToFlowPosition({ x: event.clientX, y: event.clientY })
+          if (polePick === 'start') {
+            setPoleStartPoint({ x: Math.round(point.x), y: Math.round(point.y) })
+            setPolePick('end')
+            setStatus('Точка начала задана — кликните конец линии ВЛ')
+            return
+          }
+          if (polePick === 'end' && poleStartPoint) {
+            void createPoleLine(poleStartPoint, { x: Math.round(point.x), y: Math.round(point.y) })
+            setPolePick(null)
+            setPoleStartPoint(null)
+          }
+        }}
         onConnectStart={(_, params) => {
           if (!editMode || portDrag) return
           const node = graph.nodes.find((item) => item.id === params.nodeId)
@@ -1356,6 +1425,66 @@ function Flow({
               </button>
             </>
           ) : null}
+        </div>
+      ) : null}
+
+      {poleDialog ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
+            <div className="mb-2 text-[15px] font-semibold">
+              {poleDialog === 'generate' ? 'Расставить опоры ВЛ' : 'Перенумеровать опоры'}
+            </div>
+            {poleDialog === 'generate' ? (
+              <p className="mb-3 text-[12px] text-ink3">
+                Задайте количество и нумерацию, затем укажите на схеме две точки — начало и конец линии.
+                Опоры встанут равномерно, между ними появятся связи ВЛ.
+              </p>
+            ) : (
+              <p className="mb-3 text-[12px] text-ink3">
+                Будут перенумерованы все опоры типа «Опора» по порядку слева направо.
+              </p>
+            )}
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              {poleDialog === 'generate' ? (
+                <label className="text-[11px] text-ink3">
+                  Количество
+                  <input className="input mt-1 h-8" inputMode="numeric" value={poleForm.count} onChange={(e) => setPoleForm({ ...poleForm, count: e.target.value })} />
+                </label>
+              ) : null}
+              <label className="text-[11px] text-ink3">
+                Начальный номер
+                <input className="input mt-1 h-8" inputMode="numeric" value={poleForm.start} onChange={(e) => setPoleForm({ ...poleForm, start: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Шаг
+                <input className="input mt-1 h-8" inputMode="numeric" value={poleForm.step} onChange={(e) => setPoleForm({ ...poleForm, step: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Префикс
+                <input className="input mt-1 h-8" value={poleForm.prefix} onChange={(e) => setPoleForm({ ...poleForm, prefix: e.target.value })} />
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              {poleDialog === 'generate' ? (
+                <button
+                  type="button"
+                  className="btn-primary h-9 flex-1"
+                  onClick={() => {
+                    setPoleDialog(null)
+                    setPolePick('start')
+                    setStatus('Кликните на схеме точку начала линии ВЛ')
+                  }}
+                >
+                  Указать две точки
+                </button>
+              ) : (
+                <button type="button" className="btn-primary h-9 flex-1" disabled={saving} onClick={() => void renumberAllPoles()}>
+                  Перенумеровать
+                </button>
+              )}
+              <button type="button" className="btn-ghost h-9" onClick={() => setPoleDialog(null)}>Отмена</button>
+            </div>
+          </div>
         </div>
       ) : null}
 
