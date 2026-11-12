@@ -441,6 +441,7 @@ generatePoles: (payload: {
     start: number
     step: number
     prefix: string
+    path?: number[][]
   }) => apiRequest<{ count: number; first: string; last: string; ids: string[] }>('/api/schema/poles/generate', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -448,6 +449,12 @@ generatePoles: (payload: {
 
   renumberPoles: (payload: { type_code?: string; start: number; step: number; prefix: string }) =>
     apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+renumberPolesChain: (payload: { anchor_asset_id?: string; link_id?: string; type_code?: string; start: number; step: number; prefix: string }) =>
+    apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber-chain', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

@@ -577,9 +577,19 @@ class PolesGenerateIn(BaseModel):
     prefix: str = Field(default="оп.", max_length=16)
     source_asset_id: uuid.UUID | None = None
     link_type: Literal["overhead", "cable", "busbar", "jumper"] = "overhead"
+    path: list[list[float]] | None = None
 
 
 class PolesRenumberIn(BaseModel):
+    type_code: str | None = None
+    start: int = 1
+    step: int = Field(default=1, ge=1, le=100)
+    prefix: str = Field(default="оп.", max_length=16)
+
+
+class PolesRenumberChainIn(BaseModel):
+    anchor_asset_id: uuid.UUID | None = None
+    link_id: uuid.UUID | None = None
     type_code: str | None = None
     start: int = 1
     step: int = Field(default=1, ge=1, le=100)

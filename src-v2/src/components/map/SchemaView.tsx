@@ -586,8 +586,11 @@ function Flow({
   const [, setHistoryVersion] = useState(0)
   const [guides, setGuides] = useState<{ x?: number; y?: number } | null>(null)
   const [poleDialog, setPoleDialog] = useState<'generate' | 'renumber' | null>(null)
-  const [polePick, setPolePick] = useState<'start' | 'end' | null>(null)
-  const [poleStartPoint, setPoleStartPoint] = useState<{ x: number; y: number } | null>(null)
+  const [polePick, setPolePick] = useState<'polyline' | null>(null)
+  const [polePath, setPolePath] = useState<Array<{ x: number; y: number }>>([])
+  const [poleAnchor, setPoleAnchor] = useState<{ id: string; name: string } | null>(null)
+  const [anchorPick, setAnchorPick] = useState(false)
+  const [renumberMode, setRenumberMode] = useState<'all' | 'chain'>('chain')
   const [poleForm, setPoleForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.' })
   const { screenToFlowPosition } = useReactFlow()
   const [cableMark, setCableMark] = useState('')
@@ -928,24 +931,75 @@ function Flow({
     }
   }
 
-  const createPoleLine = async (start: { x: number; y: number }, end: { x: number; y: number }) => {
+  const createPoleLine = async (path: Array<{ x: number; y: number }>) => {
     setSaving(true)
     try {
       const result = await gisApi.generatePoles({
         type_code: 'op',
-        x1: start.x,
-        y1: start.y,
-        x2: end.x,
-        y2: end.y,
+        x1: path[0].x,
+        y1: path[0].y,
+        x2: path[path.length - 1].x,
+        y2: path[path.length - 1].y,
         count: Math.max(1, Number(poleForm.count) || 1),
         start: Number(poleForm.start) || 1,
         step: Math.max(1, Number(poleForm.step) || 1),
         prefix: poleForm.prefix || 'оп.',
+        path: path.map((point) => [point.x, point.y]),
       })
       setStatus(`Создано опор: ${result.count} (${result.first}…${result.last})`)
+      setPolePath([])
       onGraphChanged()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось расставить опоры')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const finishPoleLine = () => {
+    if (polePath.length < 2) {
+      setError('Поставьте минимум две точки линии')
+      return
+    }
+    void createPoleLine(polePath)
+    setPolePick(null)
+  }
+
+  useEffect(() => {
+    if (!polePick) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        finishPoleLine()
+      }
+      if (event.key === 'Escape') {
+        setPolePick(null)
+        setPolePath([])
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [polePick, polePath])
+
+  const renumberChain = async () => {
+    if (!poleAnchor) {
+      setError('Сначала укажите опору на линии')
+      return
+    }
+    setSaving(true)
+    try {
+      const result = await gisApi.renumberPolesChain({
+        anchor_asset_id: poleAnchor.id,
+        type_code: 'op',
+        start: Number(poleForm.start) || 1,
+        step: Math.max(1, Number(poleForm.step) || 1),
+        prefix: poleForm.prefix || 'оп.',
+      })
+      setStatus(`Перенумерована линия: ${result.count} опор (${result.first}…${result.last})`)
+      setPoleDialog(null)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось перенумеровать линию')
     } finally {
       setSaving(false)
     }
@@ -1129,7 +1183,16 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
-              <button type="button" className="btn-ghost h-8 px-3" onClick={() => setPoleDialog('generate')}>
+              <button
+                type="button"
+                className="btn-ghost h-8 px-3"
+                onClick={() => {
+                  setJumperMode(false)
+                  setPolePick(null)
+                  setPolePath([])
+                  setPoleDialog('generate')
+                }}
+              >
                 ВЛ
               </button>
               <button type="button" className="btn-ghost h-8 px-2" title="Перенумеровать опоры" onClick={() => setPoleDialog('renumber')}>
@@ -1170,7 +1233,9 @@ function Flow({
                 className={`btn-ghost h-8 px-3 ${jumperMode ? 'ring-1 ring-accent' : ''}`}
                 title="Перемычка между ячейками одного блока"
                 onClick={() => {
-                  setJumperMode((value) => !value)
+                  setPolePick(null)
+                  setPolePath([])
+                  setJumperMode(!jumperMode)
                   setJumperFirst(null)
                   setJumperPair(null)
                 }}
@@ -1222,7 +1287,15 @@ function Flow({
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={(_, node) => onSelect(node.id)}
+        onNodeClick={(_, node) => {
+          if (anchorPick) {
+            setPoleAnchor({ id: node.id, name: node.data?.node?.name ?? node.id })
+            setAnchorPick(false)
+            setStatus('Опора выбрана — нажмите «Перенумеровать линию»')
+            return
+          }
+          onSelect(node.id)
+        }}
         onEdgeClick={openEdge}
         onNodeDrag={(_, node) => {
           const width = node.measured?.width ?? 210
@@ -1274,17 +1347,11 @@ function Flow({
           setMenu(null)
           if (!polePick) return
           const point = screenToFlowPosition({ x: event.clientX, y: event.clientY })
-          if (polePick === 'start') {
-            setPoleStartPoint({ x: Math.round(point.x), y: Math.round(point.y) })
-            setPolePick('end')
-            setStatus('Точка начала задана — кликните конец линии ВЛ')
-            return
-          }
-          if (polePick === 'end' && poleStartPoint) {
-            void createPoleLine(poleStartPoint, { x: Math.round(point.x), y: Math.round(point.y) })
-            setPolePick(null)
-            setPoleStartPoint(null)
-          }
+          setPolePath((current) => [
+            ...current,
+            { x: Math.round(point.x), y: Math.round(point.y) },
+          ])
+          setStatus('Точка добавлена. Enter или «Завершить линию» — построить ВЛ')
         }}
         onConnectStart={(_, params) => {
           if (!editMode || portDrag) return
@@ -1337,6 +1404,17 @@ function Flow({
       >
         <Background color="#1B2733" gap={GRID} size={1} />
         <ViewportPortal>
+          {polePath.length > 1 ? (
+            <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none' }}>
+              <polyline
+                points={polePath.map((point) => `${point.x},${point.y}`).join(' ')}
+                fill="none"
+                stroke="#4C9AFF"
+                strokeWidth={2}
+                strokeDasharray="6 4"
+              />
+            </svg>
+          ) : null}
           {guides?.x != null ? (
             <div
               style={{
@@ -1436,13 +1514,37 @@ function Flow({
             </div>
             {poleDialog === 'generate' ? (
               <p className="mb-3 text-[12px] text-ink3">
-                Задайте количество и нумерацию, затем укажите на схеме две точки — начало и конец линии.
-                Опоры встанут равномерно, между ними появятся связи ВЛ.
+                Задайте количество и нумерацию, затем поставьте на схеме несколько точек —
+                линия пойдёт по ним (как полилиния). Enter или кнопка «Завершить линию» —
+                построить ВЛ. Опоры распределятся по всей длине, связи пойдут по сегментам.
               </p>
             ) : (
-              <p className="mb-3 text-[12px] text-ink3">
-                Будут перенумерованы все опоры типа «Опора» по порядку слева направо.
-              </p>
+              <div className="mb-3 space-y-2 text-[12px] text-ink3">
+                <label className="flex items-center gap-2 text-ink2">
+                  <input type="radio" checked={renumberMode === 'chain'} onChange={() => setRenumberMode('chain')} />
+                  только выбранная линия
+                </label>
+                <label className="flex items-center gap-2 text-ink2">
+                  <input type="radio" checked={renumberMode === 'all'} onChange={() => setRenumberMode('all')} />
+                  все опоры на схеме
+                </label>
+                {renumberMode === 'chain' ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      className="btn-ghost h-8 px-2"
+                      onClick={() => {
+                        setPoleDialog(null)
+                        setAnchorPick(true)
+                        setStatus('Кликните опору на нужной линии')
+                      }}
+                    >
+                      Указать опору
+                    </button>
+                    <span>{poleAnchor ? poleAnchor.name : 'опора не выбрана'}</span>
+                  </div>
+                ) : null}
+              </div>
             )}
             <div className="mb-2 grid grid-cols-2 gap-2">
               {poleDialog === 'generate' ? (
@@ -1471,20 +1573,38 @@ function Flow({
                   className="btn-primary h-9 flex-1"
                   onClick={() => {
                     setPoleDialog(null)
-                    setPolePick('start')
-                    setStatus('Кликните на схеме точку начала линии ВЛ')
+                    setPolePath([])
+                    setPolePick('polyline')
+                    setStatus('Кликните точки линии ВЛ. Enter — завершить')
                   }}
                 >
-                  Указать две точки
+                  Указать точки
                 </button>
               ) : (
-                <button type="button" className="btn-primary h-9 flex-1" disabled={saving} onClick={() => void renumberAllPoles()}>
+                <button
+                  type="button"
+                  className="btn-primary h-9 flex-1"
+                  disabled={saving || (renumberMode === 'chain' && !poleAnchor)}
+                  onClick={() => (renumberMode === 'chain' ? void renumberChain() : void renumberAllPoles())}
+                >
                   Перенумеровать
                 </button>
               )}
               <button type="button" className="btn-ghost h-9" onClick={() => setPoleDialog(null)}>Отмена</button>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {polePick === 'polyline' ? (
+        <div className="absolute inset-x-3 bottom-16 z-[1350] flex items-center gap-2 rounded-xl border border-accent/50 bg-surface1 p-2 text-[12px] shadow-xl sm:left-1/2 sm:right-auto sm:w-[360px] sm:-translate-x-1/2">
+          <span className="min-w-0 flex-1 text-ink2">Точек: {polePath.length}. Enter или кнопка справа.</span>
+          <button type="button" className="btn-primary h-8 px-3" disabled={polePath.length < 2 || saving} onClick={finishPoleLine}>
+            Завершить линию
+          </button>
+          <button type="button" className="btn-ghost h-8 px-2" onClick={() => { setPolePick(null); setPolePath([]) }}>
+            ✕
+          </button>
         </div>
       ) : null}
 

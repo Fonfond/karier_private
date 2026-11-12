@@ -21,6 +21,7 @@ from app.schemas.gis import (
     MaintenanceIn,
     MaintenanceOut,
     PolesGenerateIn,
+    PolesRenumberChainIn,
     PolesRenumberIn,
     PolesResultOut,
     AssetListOut,
@@ -823,6 +824,7 @@ def poles_generate(
             prefix=payload.prefix,
             source_asset_id=payload.source_asset_id,
             link_type=payload.link_type,
+            path=[(float(p[0]), float(p[1])) for p in payload.path] if payload.path else None,
         )
     )
 
@@ -841,5 +843,24 @@ def poles_renumber(
             start=payload.start,
             step=payload.step,
             prefix=payload.prefix,
+        )
+    )
+
+@router.post("/schema/poles/renumber-chain", response_model=PolesResultOut, summary="Перенумеровать опоры одной линии")
+def poles_renumber_chain(
+    payload: PolesRenumberChainIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> PolesResultOut:
+    return PolesResultOut(
+        **poles_service.renumber_chain(
+            db,
+            admin,
+            anchor_asset_id=payload.anchor_asset_id,
+            link_id=payload.link_id,
+            start=payload.start,
+            step=payload.step,
+            prefix=payload.prefix,
+            type_code=payload.type_code,
         )
     )
