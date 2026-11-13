@@ -83,7 +83,9 @@ def place(
         child_code = str(entry.get("type_code") or "").strip()
         count = max(1, min(int(entry.get("count") or 1), 64))
         label = str(entry.get("label") or "").strip()
-        child_type = db.scalar(select(AssetType).where(AssetType.code == child_code))
+        child_type = db.scalar(
+            select(AssetType).where(AssetType.code == child_code, AssetType.is_active.is_(True))
+        )
         if child_type is None:
             continue
         for number in range(1, count + 1):

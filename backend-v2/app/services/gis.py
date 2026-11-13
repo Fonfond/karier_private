@@ -630,6 +630,11 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
         is_active=True,
     )
     db.add(asset_type)
+    db.flush()
+    if payload.parent_id is not None:
+        parent = db.get(AssetType, payload.parent_id)
+        if parent is not None:
+            sync_composite_template(db, parent)
     db.commit()
     db.refresh(asset_type)
     return asset_type
@@ -649,6 +654,22 @@ def _descendants(db: Session, asset_type: AssetType) -> set[uuid.UUID]:
                 found.add(child.id)
                 stack.append(child.id)
     return found
+
+
+def sync_composite_template(db: Session, parent: AssetType) -> None:
+    """Если у типа есть подтипы — он комплектный; недостающие подтипы попадают в состав."""
+    children = list(
+        db.scalars(select(AssetType).where(AssetType.parent_id == parent.id, AssetType.is_active.is_(True))).all()
+    )
+    if not children:
+        return
+    parent.is_composite = True
+    template = list(parent.composite_template or [])
+    known = {str(item.get("type_code")) for item in template if isinstance(item, dict)}
+    for child in children:
+        if child.code not in known:
+            template.append({"type_code": child.code, "count": 1, "label": child.name})
+    parent.composite_template = template
 
 
 def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
@@ -686,6 +707,7 @@ def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
     ):
         if field in payload and payload[field] is not None:
             setattr(asset_type, field, payload[field])
+    sync_composite_template(db, asset_type)
     db.commit()
     db.refresh(asset_type)
     return asset_type

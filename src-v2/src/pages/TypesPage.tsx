@@ -152,8 +152,15 @@ function Editor({
         category: form.category,
         schema_symbol: form.schema_symbol,
         has_maintenance: form.has_maintenance,
-        is_composite: form.is_composite,
-        composite_template: Object.entries(form.composite)
+        is_composite: form.is_composite || types.some((item) => item.parent_id === form.id),
+        composite_template: Object.entries({
+          ...Object.fromEntries(
+            types
+              .filter((item) => item.parent_id === form.id)
+              .map((item) => [item.code, form.composite[item.code] ?? 1]),
+          ),
+          ...form.composite,
+        })
           .filter(([, count]) => Number(count) > 0)
           .map(([typeCode, count]) => ({
             type_code: typeCode,
@@ -243,12 +250,12 @@ function Editor({
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
-                  checked={form.is_composite}
+                  checked={form.is_composite || types.some((item) => item.parent_id === form.id)}
                   onChange={(e) => set('is_composite', e.target.checked)}
                 />
                 одно оборудование с ячейками
               </label>
-              {form.is_composite ? (
+              {form.is_composite || types.some((item) => item.parent_id === form.id) ? (
                 form.id ? (
                   <div className="space-y-1">
                     {types.filter((item) => item.parent_id === form.id).length === 0 ? (
