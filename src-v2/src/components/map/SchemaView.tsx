@@ -45,6 +45,9 @@ type AssetNodeData = {
   jumperFirstId?: string | null
   activeConnection?: { nodeId: string; portId: string; kind: string; voltage: number | null } | null
   onCellPick?: (blockId: string, cellId: string, name: string) => void
+  linkCellsMode?: boolean
+  onCellLink?: (blockId: string, cellId: string, name: string) => void
+  cellLinkFirstId?: string | null
 }
 
 function portLabel(port: AssetPort): string {
@@ -291,6 +294,8 @@ function AssetNode({ data, selected }: NodeProps<Node<AssetNodeData>>) {
                   event.stopPropagation()
                   if (data.jumperMode && data.onCellPick) {
                     data.onCellPick(block.asset_id, cell.id, cell.name)
+                  } else if (data.linkCellsMode && data.onCellLink) {
+                    data.onCellLink(block.asset_id, cell.id, cell.name)
                   } else {
                     data.onSelectChild?.(cell.id)
                   }
@@ -585,6 +590,8 @@ function Flow({
   const historyIndex = useRef(0)
   const [, setHistoryVersion] = useState(0)
   const [guides, setGuides] = useState<{ x?: number; y?: number } | null>(null)
+  const [cellLinkMode, setCellLinkMode] = useState(false)
+  const [cellLinkFirst, setCellLinkFirst] = useState<{ blockId: string; cellId: string; name: string } | null>(null)
   const [poleDialog, setPoleDialog] = useState<'generate' | 'renumber' | null>(null)
   const [polePick, setPolePick] = useState<'polyline' | null>(null)
   const [polePath, setPolePath] = useState<Array<{ x: number; y: number }>>([])
@@ -637,6 +644,41 @@ function Flow({
       .then(setLegend)
       .catch(() => setLegend([]))
   }, [])
+
+  const handleCellLink = useCallback(async (blockId: string, cellId: string, name: string) => {
+    if (!cellLinkMode) return
+    if (!cellLinkFirst) {
+      setCellLinkFirst({ blockId, cellId, name })
+      setStatus(`Связь ячеек: выбрана «${name}», кликните принимающую ячейку другого комплекта`)
+      return
+    }
+    if (cellLinkFirst.blockId === blockId) {
+      setError('Выберите ячейку другого комплекта')
+      return
+    }
+    try {
+      const [a, b] = await Promise.all([gisApi.asset(cellLinkFirst.blockId), gisApi.asset(blockId)])
+      await Promise.all([gisApi.ensurePorts(a.id), gisApi.ensurePorts(b.id)])
+      const [freshA, freshB] = await Promise.all([gisApi.asset(a.id), gisApi.asset(b.id)])
+      const fromPort = freshA.ports.find((port) => port.kind !== 'in') ?? freshA.ports[0]
+      const toPort = freshB.ports.find((port) => port.kind !== 'out') ?? freshB.ports[0]
+      if (!fromPort || !toPort) {
+        setError('У комплектов нет портов для связи')
+        return
+      }
+      await gisApi.createLink({
+        from_port_id: fromPort.id,
+        to_port_id: toPort.id,
+        link_type: 'cable',
+        cable_mark: `${cellLinkFirst.name} → ${name}`,
+      })
+      setStatus(`Связь создана: ${cellLinkFirst.name} → ${name}`)
+      setCellLinkFirst(null)
+      onGraphChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось соединить ячейки')
+    }
+  }, [cellLinkMode, cellLinkFirst, onGraphChanged])
 
   const handleCellPick = useCallback(
     (blockId: string, cellId: string, name: string) => {
@@ -758,6 +800,9 @@ function Flow({
           jumperMode,
           jumperFirstId: jumperFirst?.cellId ?? null,
           onCellPick: handleCellPick,
+          linkCellsMode: cellLinkMode,
+          onCellLink: (blockId, cellId, name) => void handleCellLink(blockId, cellId, name),
+          cellLinkFirstId: cellLinkFirst?.cellId ?? null,
         },
       })),
     )
@@ -768,7 +813,7 @@ function Flow({
     setEdgeDraft(null)
     setPending(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect, jumperMode, jumperFirst, handleCellPick, activeConnection])
+  }, [graph, setNodes, setEdges, handleAddCell, handleDeleteCell, handleToggleCollapse, onSelect, jumperMode, jumperFirst, handleCellPick, handleCellLink, cellLinkMode, cellLinkFirst, activeConnection])
 
   // Переключатели режимов меняют только флаги, не трогая позиции
   useEffect(() => {
@@ -1183,6 +1228,20 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
+              <button
+                type="button"
+                className={`btn-ghost h-8 px-3 ${cellLinkMode ? 'ring-1 ring-accent' : ''}`}
+                title="Соединить ячейку одного комплекта с ячейкой другого"
+                onClick={() => {
+                  setJumperMode(false)
+                  setPolePick(null)
+                  setPolePath([])
+                  setCellLinkFirst(null)
+                  setCellLinkMode((value) => !value)
+                }}
+              >
+                Ячейки
+              </button>
               <button type="button" className="btn-ghost h-8 px-2" title="Перенумеровать опоры" onClick={() => setPoleDialog('renumber')}>
                 №
               </button>
@@ -1276,6 +1335,10 @@ function Flow({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => {
+          if (cellLinkMode) {
+            void handleCellLink(node.id, '', node.data?.node?.name ?? node.id)
+            return
+          }
           if (anchorPick) {
             setPoleAnchor({ id: node.id, name: node.data?.node?.name ?? node.id })
             setAnchorPick(false)
