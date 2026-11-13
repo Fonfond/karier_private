@@ -62,6 +62,7 @@ def generate(
     step: int,
     prefix: str,
     source_asset_id: uuid.UUID | None = None,
+    target_asset_id: uuid.UUID | None = None,
     link_type: str = "overhead",
     path: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
@@ -72,7 +73,18 @@ def generate(
 
     asset_type = _pole_type(db, type_code)
     pit = gis.get_pit(db)
+    source = db.get(Asset, source_asset_id) if source_asset_id is not None else None
+    target = db.get(Asset, target_asset_id) if target_asset_id is not None else None
+    if source is not None and (source.x is None or source.y is None):
+        raise ApiError(400, "pole.source_no_coords", "У объекта-источника нет координат на карте")
+    if target is not None and (target.x is None or target.y is None):
+        raise ApiError(400, "pole.target_no_coords", "У объекта-приёмника нет координат на карте")
+
     points = list(path or [(x1, y1), (x2, y2)])
+    if source is not None:
+        points = [(float(source.x), float(source.y))] + [pt for pt in points if pt != (float(source.x), float(source.y))]
+    if target is not None:
+        points = points + [(float(target.x), float(target.y))]
     if len(points) < 2:
         raise ApiError(400, "pole.path", "Нужно минимум две точки линии")
     for px, py in points:
@@ -96,9 +108,14 @@ def generate(
             remaining -= segment
         return points[-1]
 
+    anchored = source is not None or target is not None
     poles: list[Asset] = []
     for index in range(count):
-        ratio = index / (count - 1) if count > 1 else 0.0
+        if anchored:
+            # опоры внутри пролёта «оборудование → оборудование», без крайних точек
+            ratio = (index + 1) / (count + 1)
+        else:
+            ratio = index / (count - 1) if count > 1 else 0.0
         x, y = point_at(total * ratio)
         x = round(x, 1)
         y = round(y, 1)
@@ -134,12 +151,28 @@ def generate(
             )
 
     if source_asset_id is not None:
-        source = db.get(Asset, source_asset_id)
         if source is None:
             raise ApiError(404, "asset.not_found", "Объект-источник не найден")
         _ensure_ports(db, source)
         from_port = _port(source, "out")
         to_port = _port(poles[0], "in")
+        if from_port and to_port:
+            links_service.create_link(
+                db,
+                pit.id,
+                LinkCreate(
+                    from_port_id=from_port.id,
+                    to_port_id=to_port.id,
+                    link_type=link_type,
+                    cable_mark="ВЛ 6 кВ",
+                ),
+                actor=actor,
+            )
+
+    if target is not None and poles:
+        _ensure_ports(db, target)
+        from_port = _port(poles[-1], "out")
+        to_port = _port(target, "in")
         if from_port and to_port:
             links_service.create_link(
                 db,

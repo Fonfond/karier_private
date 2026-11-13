@@ -71,7 +71,7 @@ export function MapPage() {
   const [vlDialog, setVlDialog] = useState(false)
   const [vlSaving, setVlSaving] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
-  const [vlForm, setVlForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.' })
+  const [vlForm, setVlForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.', sourceId: '', targetId: '' })
   const [placeQuery, setPlaceQuery] = useState('')
 
   const [connecting, setConnecting] = useState(false)
@@ -382,23 +382,36 @@ export function MapPage() {
   }
 
   const finishVl = async () => {
-    if (vlPath.length < 2) {
-      setError('Поставьте минимум две точки линии')
+    const source = vlForm.sourceId ? assets.find((item) => item.id === vlForm.sourceId) : null
+    const target = vlForm.targetId ? assets.find((item) => item.id === vlForm.targetId) : null
+    const direct =
+      source && target && source.x != null && source.y != null && target.x != null && target.y != null
+    let pathPoints = vlPath
+    if (!direct && pathPoints.length < 2) {
+      setError('Поставьте минимум две точки линии или выберите оборудование «откуда» и «куда»')
       return
+    }
+    if (direct && pathPoints.length === 0) {
+      pathPoints = [
+        { x: source!.x as number, y: source!.y as number },
+        { x: target!.x as number, y: target!.y as number },
+      ]
     }
     setVlSaving(true)
     try {
       const result = await gisApi.generatePoles({
         type_code: 'op',
-        x1: vlPath[0].x,
-        y1: vlPath[0].y,
-        x2: vlPath[vlPath.length - 1].x,
-        y2: vlPath[vlPath.length - 1].y,
+        x1: pathPoints[0].x,
+        y1: pathPoints[0].y,
+        x2: pathPoints[pathPoints.length - 1].x,
+        y2: pathPoints[pathPoints.length - 1].y,
         count: Math.max(1, Number(vlForm.count) || 1),
         start: Number(vlForm.start) || 1,
         step: Math.max(1, Number(vlForm.step) || 1),
         prefix: vlForm.prefix || 'оп.',
-        path: vlPath.map((point) => [point.x, point.y]),
+        source_asset_id: vlForm.sourceId || undefined,
+        target_asset_id: vlForm.targetId || undefined,
+        path: pathPoints.map((point) => [point.x, point.y]),
       })
       setVlMode(false)
       setVlPath([])
@@ -1115,7 +1128,29 @@ export function MapPage() {
                 Префикс
                 <input className="input mt-1 h-9" value={vlForm.prefix} onChange={(e) => setVlForm({ ...vlForm, prefix: e.target.value })} />
               </label>
+              <label className="text-[11px] text-ink3">
+                Откуда (оборудование)
+                <select className="input mt-1 h-9" value={vlForm.sourceId} onChange={(e) => setVlForm({ ...vlForm, sourceId: e.target.value })}>
+                  <option value="">— не указывать —</option>
+                  {assets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-[11px] text-ink3">
+                Куда (оборудование)
+                <select className="input mt-1 h-9" value={vlForm.targetId} onChange={(e) => setVlForm({ ...vlForm, targetId: e.target.value })}>
+                  <option value="">— не указывать —</option>
+                  {assets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.name}</option>
+                  ))}
+                </select>
+              </label>
             </div>
+            <p className="mb-2 text-[11px] text-ink3">
+              Если выбраны «Откуда» и «Куда» — можно ничего не кликать, линия пойдёт по прямой,
+              опоры встанут равномерно между ними. Клики по карте добавляют изломы трассы.
+            </p>
             <div className="mt-3 flex gap-2">
               <button
                 type="button"
@@ -1143,7 +1178,7 @@ export function MapPage() {
       {vlMode && !vlDialog ? (
         <div className="fixed inset-x-3 bottom-[calc(150px+env(safe-area-inset-bottom))] z-[1350] flex items-center gap-2 rounded-xl border border-accent/50 bg-surface1 p-2 text-[12px] shadow-xl sm:left-1/2 sm:right-auto sm:w-[380px] sm:-translate-x-1/2">
           <span className="min-w-0 flex-1 text-ink2">Точек: {vlPath.length}</span>
-          <button type="button" className="btn-primary h-9 px-3" disabled={vlPath.length < 2 || vlSaving} onClick={() => void finishVl()}>
+          <button type="button" className="btn-primary h-9 px-3" disabled={vlSaving || (vlPath.length < 2 && !(vlForm.sourceId && vlForm.targetId))} onClick={() => void finishVl()}>
             {vlSaving ? 'Строим…' : 'Завершить'}
           </button>
           <button type="button" className="btn-ghost h-9 px-2" onClick={() => { setVlMode(false); setVlPath([]) }}>

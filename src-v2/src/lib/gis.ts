@@ -441,6 +441,8 @@ generatePoles: (payload: {
     start: number
     step: number
     prefix: string
+    source_asset_id?: string
+    target_asset_id?: string
     path?: number[][]
   }) => apiRequest<{ count: number; first: string; last: string; ids: string[] }>('/api/schema/poles/generate', {
     method: 'POST',

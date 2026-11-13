@@ -823,6 +823,7 @@ def poles_generate(
             step=payload.step,
             prefix=payload.prefix,
             source_asset_id=payload.source_asset_id,
+            target_asset_id=payload.target_asset_id,
             link_type=payload.link_type,
             path=[(float(p[0]), float(p[1])) for p in payload.path] if payload.path else None,
         )
