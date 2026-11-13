@@ -1183,18 +1183,6 @@ function Flow({
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
               </button>
-              <button
-                type="button"
-                className="btn-ghost h-8 px-3"
-                onClick={() => {
-                  setJumperMode(false)
-                  setPolePick(null)
-                  setPolePath([])
-                  setPoleDialog('generate')
-                }}
-              >
-                ВЛ
-              </button>
               <button type="button" className="btn-ghost h-8 px-2" title="Перенумеровать опоры" onClick={() => setPoleDialog('renumber')}>
                 №
               </button>

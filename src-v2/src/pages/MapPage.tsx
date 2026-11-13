@@ -66,6 +66,12 @@ export function MapPage() {
   const [formLocation, setFormLocation] = useState('')
   const [saving, setSaving] = useState(false)
   const [placePickerOpen, setPlacePickerOpen] = useState(false)
+  const [vlMode, setVlMode] = useState(false)
+  const [vlPath, setVlPath] = useState<Array<{ x: number; y: number }>>([])
+  const [vlDialog, setVlDialog] = useState(false)
+  const [vlSaving, setVlSaving] = useState(false)
+  const [hint, setHint] = useState<string | null>(null)
+  const [vlForm, setVlForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.' })
   const [placeQuery, setPlaceQuery] = useState('')
 
   const [connecting, setConnecting] = useState(false)
@@ -93,6 +99,23 @@ export function MapPage() {
   const canManageDocs = can('document.manage')
   const placeAssetId = (location.state as { placeAssetId?: string } | null)?.placeAssetId ?? null
   const openAssetId = (location.state as { openAssetId?: string } | null)?.openAssetId ?? null
+
+  useEffect(() => {
+    if (!vlMode) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        void finishVl()
+      }
+      if (event.key === 'Escape') {
+        setVlMode(false)
+        setVlPath([])
+        setVlDialog(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [vlMode, vlPath, vlForm])
 
   useEffect(() => {
     if (openAssetId) {
@@ -348,6 +371,46 @@ export function MapPage() {
     }
   }
 
+  const startVl = () => {
+    setAdding(false)
+    setDraft(null)
+    setLinkMode(false)
+    setConnecting(false)
+    setVlPath([])
+    setVlMode(true)
+    setVlDialog(true)
+  }
+
+  const finishVl = async () => {
+    if (vlPath.length < 2) {
+      setError('Поставьте минимум две точки линии')
+      return
+    }
+    setVlSaving(true)
+    try {
+      const result = await gisApi.generatePoles({
+        type_code: 'op',
+        x1: vlPath[0].x,
+        y1: vlPath[0].y,
+        x2: vlPath[vlPath.length - 1].x,
+        y2: vlPath[vlPath.length - 1].y,
+        count: Math.max(1, Number(vlForm.count) || 1),
+        start: Number(vlForm.start) || 1,
+        step: Math.max(1, Number(vlForm.step) || 1),
+        prefix: vlForm.prefix || 'оп.',
+        path: vlPath.map((point) => [point.x, point.y]),
+      })
+      setVlMode(false)
+      setVlPath([])
+      setHint(`ВЛ построена: ${result.count} опор (${result.first}…${result.last})`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось построить ВЛ')
+    } finally {
+      setVlSaving(false)
+    }
+  }
+
   const startAdding = () => {
     setAdding(true)
     setDraft(null)
@@ -364,6 +427,12 @@ export function MapPage() {
   const handleMapClick = async (x: number, y: number) => {
     const rx = Math.round(x * 10) / 10
     const ry = Math.round(y * 10) / 10
+
+    if (vlMode) {
+      setVlPath((current) => [...current, { x: rx, y: ry }])
+      setHint(`Точек: ${vlPath.length + 1}. Enter или «Завершить» — построить ВЛ`)
+      return
+    }
 
     if (movingAsset) {
       setMoveDraft({ x: rx, y: ry })
@@ -568,9 +637,10 @@ export function MapPage() {
             assets={filtered}
             selectedId={selectedId}
             onSelect={openAsset}
-            adding={adding || Boolean(placeAssetId) || Boolean(movingAsset)}
+            adding={adding || Boolean(placeAssetId) || Boolean(movingAsset) || vlMode}
             onMapClick={handleMapClick}
             draft={draft ?? moveDraft}
+            vlPath={vlPath}
             history={moveHistory}
             draggable={can('asset.create') && !movingAsset && !placeAssetId}
             onDragEnd={(id, x, y) => void handleAssetDrop(id, x, y)}
@@ -822,6 +892,15 @@ export function MapPage() {
           </button>
           <button
             type="button"
+            onClick={vlMode ? () => { setVlMode(false); setVlPath([]); setVlDialog(false) } : startVl}
+            className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold shadow-lg ${
+              vlMode ? 'border-warm bg-warm/20 text-warm' : 'border-line bg-bg/90 text-ink'
+            }`}
+          >
+            ВЛ
+          </button>
+          <button
+            type="button"
             onClick={startAdding}
             className="flex h-12 items-center gap-2 rounded-full bg-accent px-5 text-[14px] font-semibold text-[#08131F] shadow-lg active:scale-[0.98]"
           >
@@ -1011,6 +1090,74 @@ export function MapPage() {
       </BottomSheet>
 
       {/* создание объекта */}
+      {vlDialog ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
+            <div className="mb-2 text-[15px] font-semibold">Построить ВЛ</div>
+            <p className="mb-3 text-[12px] text-ink3">
+              Задайте количество опор и нумерацию, затем поставьте на карте несколько точек —
+              линия пойдёт по ним. Enter или кнопка «Завершить» — построить ВЛ.
+            </p>
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <label className="text-[11px] text-ink3">
+                Количество
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.count} onChange={(e) => setVlForm({ ...vlForm, count: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Начальный номер
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.start} onChange={(e) => setVlForm({ ...vlForm, start: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Шаг
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.step} onChange={(e) => setVlForm({ ...vlForm, step: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Префикс
+                <input className="input mt-1 h-9" value={vlForm.prefix} onChange={(e) => setVlForm({ ...vlForm, prefix: e.target.value })} />
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary h-10 flex-1"
+                onClick={() => {
+                  setVlDialog(false)
+                  setVlPath([])
+                  setHint('Кликайте точки линии на карте. Enter — завершить')
+                }}
+              >
+                Указать точки
+              </button>
+              <button
+                type="button"
+                className="btn-ghost h-10"
+                onClick={() => { setVlDialog(false); setVlMode(false); setVlPath([]) }}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {vlMode && !vlDialog ? (
+        <div className="fixed inset-x-3 bottom-[calc(150px+env(safe-area-inset-bottom))] z-[1350] flex items-center gap-2 rounded-xl border border-accent/50 bg-surface1 p-2 text-[12px] shadow-xl sm:left-1/2 sm:right-auto sm:w-[380px] sm:-translate-x-1/2">
+          <span className="min-w-0 flex-1 text-ink2">Точек: {vlPath.length}</span>
+          <button type="button" className="btn-primary h-9 px-3" disabled={vlPath.length < 2 || vlSaving} onClick={() => void finishVl()}>
+            {vlSaving ? 'Строим…' : 'Завершить'}
+          </button>
+          <button type="button" className="btn-ghost h-9 px-2" onClick={() => { setVlMode(false); setVlPath([]) }}>
+            ✕
+          </button>
+        </div>
+      ) : null}
+
+      {hint ? (
+        <div className="fixed inset-x-3 top-16 z-[1350] mx-auto max-w-md rounded-lg border border-accent/40 bg-surface1 px-3 py-2 text-[12px] text-ink2 shadow-lg" onClick={() => setHint(null)}>
+          {hint}
+        </div>
+      ) : null}
+
       <BottomSheet
         open={placePickerOpen}
         onClose={() => {

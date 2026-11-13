@@ -23,6 +23,7 @@ interface MapViewProps {
   linkMode?: boolean
   dragFrom?: string | null
   onConnectStart?: (id: string) => void
+  vlPath?: Array<{ x: number; y: number }>
   onConnectDrop?: (id: string) => void
 }
 
@@ -107,6 +108,7 @@ export function MapView({
   linkMode = false,
   dragFrom = null,
   onConnectStart,
+  vlPath = [],
   onConnectDrop,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
@@ -159,6 +161,12 @@ export function MapView({
         ),
       )}
 
+      {vlPath.length > 1 ? (
+        <Polyline
+          positions={vlPath.map((point) => [point.y, point.x] as [number, number])}
+          pathOptions={{ color: '#4C9AFF', weight: 3, dashArray: '8 6' }}
+        />
+      ) : null}
       {links.map((link) => {
         const from = positions[link.from_asset_id]
         const to = positions[link.to_asset_id]
