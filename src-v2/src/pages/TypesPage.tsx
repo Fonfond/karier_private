@@ -47,6 +47,8 @@ interface Draft {
   category: string
   schema_symbol: string
   has_maintenance: boolean
+  is_composite: boolean
+  composite: Record<string, number>
   icon: string
   color: string
   parent_id: string
@@ -66,6 +68,8 @@ const EMPTY: Draft = {
   category: 'equipment',
   schema_symbol: 'load',
   has_maintenance: false,
+  is_composite: false,
+  composite: {},
   icon: '🔧',
   color: '#4C9AFF',
   parent_id: '',
@@ -88,6 +92,8 @@ function draftFrom(type: AssetType): Draft {
     category: type.category,
     schema_symbol: type.schema_symbol ?? 'load',
     has_maintenance: type.has_maintenance ?? false,
+    is_composite: type.is_composite ?? false,
+    composite: Object.fromEntries((type.composite_template ?? []).map((item) => [String(item.type_code), Number(item.count) || 1])),
     icon: type.icon ?? '🔧',
     color: type.color ?? '#4C9AFF',
     parent_id: type.parent_id ?? '',
@@ -146,6 +152,14 @@ function Editor({
         category: form.category,
         schema_symbol: form.schema_symbol,
         has_maintenance: form.has_maintenance,
+        is_composite: form.is_composite,
+        composite_template: Object.entries(form.composite)
+          .filter(([, count]) => Number(count) > 0)
+          .map(([typeCode, count]) => ({
+            type_code: typeCode,
+            count: Number(count),
+            label: types.find((item) => item.code === typeCode)?.name ?? typeCode,
+          })),
         icon: form.icon || '●',
         color: form.color,
         description: form.description.trim() || null,
@@ -223,6 +237,46 @@ function Editor({
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Комплектное оборудование">
+            <div className="space-y-1 text-[12px] text-ink2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.is_composite}
+                  onChange={(e) => set('is_composite', e.target.checked)}
+                />
+                одно оборудование с ячейками
+              </label>
+              {form.is_composite ? (
+                form.id ? (
+                  <div className="space-y-1">
+                    {types.filter((item) => item.parent_id === form.id).length === 0 ? (
+                      <p className="text-[11px] text-ink3">Сначала добавьте подтипы (ячейки) этого типа.</p>
+                    ) : (
+                      types
+                        .filter((item) => item.parent_id === form.id)
+                        .map((child) => (
+                          <label key={child.code} className="flex items-center justify-between gap-2">
+                            <span className="truncate">{child.name}</span>
+                            <input
+                              type="number"
+                              min={0}
+                              className="input h-7 w-16"
+                              value={form.composite[child.code] ?? 1}
+                              onChange={(e) =>
+                                set('composite', { ...form.composite, [child.code]: Number(e.target.value) })
+                              }
+                            />
+                          </label>
+                        ))
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-ink3">Сохраните тип, затем добавьте подтипы и укажите их количество.</p>
+                )
+              ) : null}
+            </div>
           </Field>
           <Field label="Журнал ТО">
             <label className="flex items-center gap-2 text-[12px] text-ink2">

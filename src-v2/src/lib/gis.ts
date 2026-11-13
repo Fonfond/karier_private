@@ -8,6 +8,8 @@ export interface TypeRef {
   category: string
   schema_symbol?: string
   has_maintenance?: boolean
+  is_composite?: boolean
+  composite_template?: Array<{ type_code: string; count: number; label?: string }>
   icon: string | null
   color: string | null
 }
@@ -30,6 +32,8 @@ export interface AssetType {
   category: string
   schema_symbol: string
   has_maintenance?: boolean
+  is_composite?: boolean
+  composite_template?: Array<{ type_code: string; count: number; label?: string }>
   icon: string | null
   color: string | null
   port_template: { ports?: Array<{ code: string; name: string; kind: string; voltage_kv?: number }> }
@@ -459,6 +463,18 @@ renumberPolesChain: (payload: { anchor_asset_id?: string; link_id?: string; type
     apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber-chain', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+placeComposite: (payload: { type_id: string; x: number; y: number; name?: string }) =>
+    apiRequest<{ id: string; name: string; code: string; children: number }>('/api/composites/place', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  attachComposite: (parentId: string, childIds: string[]) =>
+    apiRequest<{ id: string; name: string; code: string; children: number }>(`/api/composites/${parentId}/attach`, {
+      method: 'POST',
+      body: JSON.stringify({ child_ids: childIds }),
     }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),

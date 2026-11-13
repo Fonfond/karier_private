@@ -104,6 +104,9 @@ class AssetType(Base, TimestampMixin):
     is_mobile_default = Column(Boolean, nullable=False, default=False)
     # ведёт журнал ТО (моточасы, топливо)
     has_maintenance = Column(Boolean, nullable=False, default=False, server_default="false")
+    # комплектное оборудование: при размещении создаёт дочерние ячейки по шаблону
+    is_composite = Column(Boolean, nullable=False, default=False, server_default="false")
+    composite_template = Column(JSONB, nullable=False, default=list, server_default="[]")
     # символ на однолинейной схеме: breaker, disconnector, busbar, load, generator, source, line, ct, arrester
     schema_symbol = Column(String(24), nullable=False, default="load")
     sort_order = Column(Integer, nullable=False, default=100)

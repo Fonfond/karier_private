@@ -132,6 +132,8 @@ class AssetTypeOut(BaseModel):
     has_maintenance: bool = False
     schema_symbol: str = "load"
     has_maintenance: bool = False
+    is_composite: bool = False
+    composite_template: list[dict[str, Any]] = []
     icon: str | None = None
     color: str | None = None
     port_template: dict[str, Any] = {}
@@ -173,6 +175,8 @@ class AssetTypeUpdate(BaseModel):
     required_attrs: list[str] | None = None
     is_mobile_default: bool | None = None
     has_maintenance: bool | None = None
+    is_composite: bool | None = None
+    composite_template: list[dict[str, Any]] | None = None
     schema_symbol: str | None = Field(default=None, max_length=24)
     sort_order: int | None = None
     description: str | None = None
@@ -602,3 +606,20 @@ class PolesResultOut(BaseModel):
     first: str
     last: str
     ids: list[uuid.UUID] = []
+
+class CompositePlaceIn(BaseModel):
+    type_id: uuid.UUID
+    x: float
+    y: float
+    name: str | None = None
+
+
+class CompositeAttachIn(BaseModel):
+    child_ids: list[uuid.UUID] = []
+
+
+class CompositeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    code: str
+    children: int = 0

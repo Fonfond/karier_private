@@ -71,6 +71,9 @@ export function MapPage() {
   const [vlDialog, setVlDialog] = useState(false)
   const [vlSaving, setVlSaving] = useState(false)
   const [hint, setHint] = useState<string | null>(null)
+  const [compositeDialog, setCompositeDialog] = useState(false)
+  const [compositeTypeId, setCompositeTypeId] = useState('')
+  const [compositeMode, setCompositeMode] = useState(false)
   const [vlForm, setVlForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.', sourceId: '', targetId: '' })
   const [placeQuery, setPlaceQuery] = useState('')
 
@@ -440,6 +443,21 @@ export function MapPage() {
   const handleMapClick = async (x: number, y: number) => {
     const rx = Math.round(x * 10) / 10
     const ry = Math.round(y * 10) / 10
+
+    if (compositeMode && compositeTypeId) {
+      setSaving(true)
+      try {
+        const result = await gisApi.placeComposite({ type_id: compositeTypeId, x: rx, y: ry })
+        setHint(`Размещён комплект «${result.name}»: ${result.children} ячеек`)
+        setCompositeMode(false)
+        await refresh()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось разместить комплект')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
 
     if (vlMode) {
       setVlPath((current) => [...current, { x: rx, y: ry }])
@@ -905,6 +923,19 @@ export function MapPage() {
           </button>
           <button
             type="button"
+            onClick={() => {
+              setAdding(false)
+              setLinkMode(false)
+              setCompositeDialog(true)
+            }}
+            className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold shadow-lg ${
+              compositeMode ? 'border-accent bg-accent/15 text-accent' : 'border-line bg-bg/90 text-ink'
+            }`}
+          >
+            Комплект
+          </button>
+          <button
+            type="button"
             onClick={vlMode ? () => { setVlMode(false); setVlPath([]); setVlDialog(false) } : startVl}
             className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold shadow-lg ${
               vlMode ? 'border-warm bg-warm/20 text-warm' : 'border-line bg-bg/90 text-ink'
@@ -1103,6 +1134,44 @@ export function MapPage() {
       </BottomSheet>
 
       {/* создание объекта */}
+      {compositeDialog ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
+            <div className="mb-2 text-[15px] font-semibold">Разместить комплект</div>
+            <p className="mb-3 text-[12px] text-ink3">
+              Одно оборудование с ячейками: на карте появится один объект, на схеме — рамка
+              с ячейками. Состав задаётся в типе (флаг «Комплектное оборудование»).
+            </p>
+            {types.filter((type) => type.is_composite).length === 0 ? (
+              <p className="mb-3 text-[12px] text-warm">
+                Нет комплектных типов. Включите флаг в «Типах» и укажите состав.
+              </p>
+            ) : (
+              <label className="mb-3 block text-[11px] text-ink3">
+                Тип комплекта
+                <select className="input mt-1 h-9" value={compositeTypeId} onChange={(e) => setCompositeTypeId(e.target.value)}>
+                  <option value="">— выберите —</option>
+                  {types.filter((type) => type.is_composite).map((type) => (
+                    <option key={type.id} value={type.id}>{type.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn-primary h-9 flex-1"
+                disabled={!compositeTypeId}
+                onClick={() => { setCompositeDialog(false); setCompositeMode(true); setHint('Кликните на карте место для комплекта') }}
+              >
+                Указать место
+              </button>
+              <button type="button" className="btn-ghost h-9" onClick={() => setCompositeDialog(false)}>Отмена</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {vlDialog ? (
         <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
           <div className="card modal-safe w-full max-w-md p-4 text-[13px]">

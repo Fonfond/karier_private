@@ -17,6 +17,9 @@ from app.models import Asset, AssetPort, AssetType, Employee, Line, Link
 from app.schemas.gis import (
     AssetCreate,
     AssetGroupIn,
+    CompositeAttachIn,
+    CompositeOut,
+    CompositePlaceIn,
     AssetGroupOut,
     MaintenanceIn,
     MaintenanceOut,
@@ -57,6 +60,7 @@ from app.schemas.gis import (
 )
 from app.services import audit, documents as documents_service, gis
 from app.services import groups as groups_service
+from app.services import composite as composite_service
 from app.services import maintenance as maintenance_service
 from app.services import poles as poles_service
 from app.services import links as links_service
@@ -865,3 +869,26 @@ def poles_renumber_chain(
             type_code=payload.type_code,
         )
     )
+
+@router.post("/composites/place", response_model=CompositeOut, summary="Разместить комплектное оборудование")
+def place_composite(
+    payload: CompositePlaceIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> CompositeOut:
+    return CompositeOut(
+        **composite_service.place(
+            db, admin, type_id=payload.type_id, x=payload.x, y=payload.y, name=payload.name
+        )
+    )
+
+
+@router.post("/composites/{parent_id}/attach", response_model=CompositeOut, summary="Добавить ячейки в комплект")
+def attach_composite(
+    parent_id: uuidlib.UUID,
+    payload: CompositeAttachIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> CompositeOut:
+    parent = gis.get_asset(db, parent_id)
+    return CompositeOut(**composite_service.attach(db, admin, parent, payload.child_ids))
