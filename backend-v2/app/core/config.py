@@ -5,7 +5,13 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Значения-заглушки: реальные секреты задаются только через .env (не коммитится)
+# или переменные окружения. См. docs/team/08-s1-repo-hygiene.md.
+PLACEHOLDER_DB_PASSWORD = "__SET_DB_PASSWORD__"
+PLACEHOLDER_SECRET_KEY = "__SET_SECRET_KEY__"
 
 
 class Settings(BaseSettings):
@@ -23,15 +29,17 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
 
     # --- база данных ---
+    # Пароль в коде не хранится: задайте DATABASE_URL в backend-v2/.env
     DATABASE_URL: str = (
-        "postgresql+psycopg://karier_user:Df492357816@127.0.0.1:5432/karier_db"
+        f"postgresql+psycopg://karier_user:{PLACEHOLDER_DB_PASSWORD}@127.0.0.1:5432/karier_db"
     )
     DB_ECHO: bool = False
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
     # --- безопасность ---
-    SECRET_KEY: str = "dev-only-secret-change-me-karier-2026"
+    # Заглушка: рабочий ключ — только в backend-v2/.env (32+ случайных символа)
+    SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     JWT_ALGORITHM: str = "HS256"
 
     ACCESS_TOKEN_TTL_MIN: int = 15
@@ -85,6 +93,27 @@ class Settings(BaseSettings):
     EXPOSE_OTP_CODE: bool = True
     # Печатать письма/коды в stdout вместо отправки.
     CONSOLE_NOTIFICATIONS: bool = True
+
+    @model_validator(mode="after")
+    def _require_real_secrets_in_prod(self) -> "Settings":
+        """В prod без .env приложение обязано упасть, а не работать на заглушках."""
+        if self.ENV != "prod":
+            return self
+        problems: list[str] = []
+        if PLACEHOLDER_DB_PASSWORD in self.DATABASE_URL:
+            problems.append(
+                "DATABASE_URL: не задан пароль БД (добавьте DATABASE_URL в backend-v2/.env)"
+            )
+        if self.SECRET_KEY == PLACEHOLDER_SECRET_KEY or len(self.SECRET_KEY) < 32:
+            problems.append(
+                "SECRET_KEY: не задан или короче 32 символов "
+                "(добавьте SECRET_KEY в backend-v2/.env)"
+            )
+        if problems:
+            raise ValueError(
+                "Некорректная конфигурация для ENV=prod: " + "; ".join(problems)
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

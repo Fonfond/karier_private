@@ -5,12 +5,29 @@
 
 param(
     [string]$BaseUrl = 'http://127.0.0.1:8001',
-    [string]$TotpSecret = 'VIKFSSCEEHU4M2CQCPAQYCZAMMUYCZIH',
-    [string]$Python = 'C:\karier\backend-v2\venv\Scripts\python.exe'
+    [string]$TotpSecret = '',
+    [string]$Python = (Join-Path (Split-Path $PSScriptRoot -Parent) 'venv\Scripts\python.exe')
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Секреты в скрипте не хранятся: TOTP-секрет оператора берём из параметра
+# или из $env:KARIER_TOTP_SECRET, пароль БД — из $env:PGPASSWORD или backend-v2/.env.
+if (-not $TotpSecret) { $TotpSecret = $env:KARIER_TOTP_SECRET }
+if (-not $TotpSecret) {
+    throw 'Не задан TOTP-секрет оператора: передайте -TotpSecret или задайте $env:KARIER_TOTP_SECRET (значение — в seed.py / хранилище секретов).'
+}
+
+function Get-DbPassword {
+    if ($env:PGPASSWORD) { return $env:PGPASSWORD }
+    $envFile = Join-Path (Split-Path $PSScriptRoot -Parent) '.env'
+    if (Test-Path $envFile) {
+        $line = Get-Content $envFile | Where-Object { $_ -match '^\s*DATABASE_URL\s*=' } | Select-Object -First 1
+        if ($line -and $line -match '://[^:]+:([^@]+)@') { return $Matches[1] }
+    }
+    throw 'Пароль БД не найден. Задайте $env:PGPASSWORD или DATABASE_URL в backend-v2/.env (файл не коммитится).'
+}
 
 $script:passed = 0
 $script:failed = 0
@@ -65,7 +82,7 @@ function ExpectStatus($name, [int]$expected, [scriptblock]$action, $extra = '') 
 function ResetFixtures {
     # Приводим тестовые данные к исходному состоянию, чтобы скрипт можно
     # было запускать многократно: 000003 перерегистрируется, 000004 создаётся заново
-    $env:PGPASSWORD = 'Df492357816'
+    $env:PGPASSWORD = Get-DbPassword
     $sql = @"
 delete from auth.credentials where employee_id in (select id from auth.employees where tab_no = '000003');
 delete from auth.mfa_factors where employee_id in (select id from auth.employees where tab_no = '000003');
@@ -168,7 +185,7 @@ $actions = (($audit.items | Select-Object -ExpandProperty action -Unique) -join 
 Step 'есть отказы в доступе' (($audit.items | Where-Object { $_.result -eq 'denied' }).Count -gt 0)
 
 Section '10. Защита журнала от изменения'
-$env:PGPASSWORD = 'Df492357816'
+$env:PGPASSWORD = Get-DbPassword
 $prevErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $tryUpdate = & psql -h 127.0.0.1 -U karier_user -d karier_db -tAc "update audit.audit_log set result='hacked' where id=(select max(id) from audit.audit_log);" 2>&1

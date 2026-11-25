@@ -1,0 +1,23 @@
+# Нормализация переводов строк.
+# Правило: в репозитории — LF, скрипты Windows (PowerShell/cmd/bat) — CRLF.
+# Пересчёт индекса — отдельный коммит «renormalize» (см. docs/team/08-s1-repo-hygiene.md).
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Бинарные файлы не нормализуем
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.zip binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.dump binary

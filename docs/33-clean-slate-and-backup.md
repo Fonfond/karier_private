@@ -66,7 +66,8 @@ UPDATE gis.schema_blocks SET is_active = false;  -- шаблоны сохран�
 
 ```powershell
 # 1) восстановить базу из дампа
-$env:PGPASSWORD='Df492357816'
+# Пароль karier_user в документации не хранится: он в backend-v2/.env (файл в .gitignore)
+$env:PGPASSWORD = (Select-String -Path 'C:\karier\karier\backend-v2\.env' -Pattern '^DATABASE_URL').Line -replace '^.*://[^:]+:([^@]+)@.*$','$1'
 & 'C:\Program Files\PostgreSQL\18\bin\pg_restore.exe' `
     -h 127.0.0.1 -U karier_user -d karier_db `
     --clean --if-exists --no-owner `

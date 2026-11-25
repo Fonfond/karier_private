@@ -3,6 +3,8 @@ node_modules/
 venv/
 .venv/
 backend-v2/venv/
+backend-v2/venv*/
+*.broken-*
 
 # Сборка
 dist/
@@ -23,6 +25,8 @@ __pycache__/
 .env
 .env.local
 .env.*.local
+# Локальный DSN тестовой БД (с паролем) — создаётся на машине, не коммитится
+backend-v2/tests/.env.test
 
 # Рабочие каталоги и кэши стенда
 .tmp/
