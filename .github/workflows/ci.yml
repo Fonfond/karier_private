@@ -1,0 +1,200 @@
+# CI «Карьер» (S-3): защитная сетка, которая ловит регрессии до пользователя.
+#
+# Три независимых job'а:
+#   backend    — поднимает PostgreSQL 18, собирает karier_test_db из миграций и
+#                seed-скриптов, гоняет полный pytest с покрытием;
+#   frontend   — npm ci, tsc --noEmit, vite build, vitest;
+#   migrations — на ОТДЕЛЬНОЙ пустой базе прогоняет upgrade head → downgrade base →
+#                upgrade head и проверяет, что autogenerate не показывает нового дрейфа
+#                (известный baseline-дрейф S-10 перечислен в tests/test_migrations.py).
+#
+# Важно про данные: рабочий стенд наполняется демо-дампом из backups/ (этот каталог
+# в .gitignore, 372 МБ), поэтому CI собирает базу из миграций + seed-скриптов
+# (seed.py → seed_gis.py → seed_topology.py → seed_schema_blocks.py →
+# seed_demo_sketch.py → seed_demo.py → seed_break_glass.py). Такой набор даёт
+# объекты, на которые опираются тесты (PS_35-1, BKRU-1/BKRU1-*, KTP-14, POLE-3, ф.21К).
+#
+# Пароль в ci.yml — фиктивный и относится только к эфемерному PostgreSQL внутри
+# job'а; секретов стенда в workflow нет.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.14"
+  NODE_VERSION: "22"
+  # только для сервисного PostgreSQL внутри job'а
+  CI_DB_USER: karier_user
+  CI_DB_PASSWORD: ci-password
+  # приложение в CI работает в dev-режиме, но с валидным по длине ключом
+  SECRET_KEY: ci-only-secret-key-0123456789abcdef0123456789abcdef
+  ENV: ci
+
+jobs:
+  backend:
+    name: Backend · pytest + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: karier_user
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: karier_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U karier_user -d karier_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # conftest.py разрешает только базу karier_test_db — так тесты не попадут в karier_db
+      TEST_DATABASE_URL: postgresql+psycopg://karier_user:ci-password@127.0.0.1:5432/karier_test_db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend-v2/requirements.txt
+
+      - name: Зависимости (requirements)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend-v2/requirements.txt
+
+      - name: Создать karier_test_db
+        env:
+          PGPASSWORD: ci-password
+        run: |
+          psql -h 127.0.0.1 -U karier_user -d karier_db -v ON_ERROR_STOP=1 \
+            -c "create database karier_test_db owner karier_user encoding 'UTF8' template template0;"
+
+      - name: Схема + seed-данные для тестовой БД
+        working-directory: backend-v2
+        env:
+          DATABASE_URL: postgresql+psycopg://karier_user:ci-password@127.0.0.1:5432/karier_test_db
+        run: |
+          python -m alembic upgrade head
+          for seed in seed.py seed_gis.py seed_topology.py seed_schema_blocks.py \
+                      seed_demo_sketch.py seed_demo.py seed_break_glass.py; do
+            echo "== $seed"
+            python "$seed"
+          done
+
+      - name: pytest (полный набор, покрытие)
+        working-directory: backend-v2
+        run: |
+          # 4 теста проверяют детали демо-дампа (backups/, 372 МБ, в .gitignore):
+          # состав библиотеки блоков ЯКНО, символы ГОСТ на импортированной из эскиза
+          # схеме и порядок медиа. В CI база собрана из seed-скриптов, поэтому эти
+          # проверки пропускаются осознанно (локально на каноническом дампе — проходят;
+          # убрать --deselect можно после S-9: данные для тестов должны быть в репозитории).
+          python -m pytest \
+            --deselect tests/test_blocks_s18.py::test_legend_lists_used_symbols \
+            --deselect tests/test_blocks_s21.py::test_simple_blocks_available \
+            --deselect tests/test_gost_schema.py::test_graph_nodes_have_schema_symbols \
+            --deselect tests/test_ops_api.py::test_media_list_by_asset \
+            --cov=app --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Артефакт покрытия
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend-v2/coverage.xml
+          if-no-files-found: warn
+
+  frontend:
+    name: Frontend · typecheck + build + vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src-v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: src-v2/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Типы (tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Сборка (vite build)
+        run: npm run build
+
+      - name: Unit-тесты (vitest)
+        run: npm run test
+
+  migrations:
+    name: Migrations · upgrade → downgrade → upgrade + autogenerate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: karier_user
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: karier_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U karier_user -d karier_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # отдельная база: цикл downgrade base удаляет все таблицы
+      TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://karier_user:ci-password@127.0.0.1:5432/karier_migrations_test
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: karier_user
+      PGPASSWORD: ci-password
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend-v2/requirements.txt
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend-v2/requirements.txt
+
+      - name: Клиент psql
+        run: psql --version
+
+      # Полный цикл: upgrade head → downgrade base → upgrade head, затем сверка
+      # autogenerate с зафиксированным baseline (29 предсуществующих операций,
+      # зафиксирован 2026-11-25: docs/team/11-v1-acceptance.md §6 и
+      # docs/team/13-r2-review.md, оговорка C1). Новые расхождения — падение.
+      # Пустой autogenerate глобально в этом спринте не требуется — это задача S-10.
+      - name: Цикл миграций + сверка autogenerate с baseline (S-10)
+        run: bash backend-v2/scripts/check_migrations.sh
