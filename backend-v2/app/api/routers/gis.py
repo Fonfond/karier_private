@@ -6,10 +6,11 @@ import uuid as uuidlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_permission
+from app.api.deps import current_user, require_admin, require_permission
 from app.core.errors import not_found
 from app.db.session import get_db
 from app.models import Asset, AssetType, Employee, Line, Link
@@ -19,8 +20,12 @@ from app.schemas.gis import (
     AssetOut,
     AssetTypeCreate,
     AssetTypeOut,
+    AssetTypeUpdate,
     AssetUpdate,
     ChildAssetOut,
+    GraphBlockChildOut,
+    GraphJumperOut,
+    GraphBlockOut,
     GraphEdgeOut,
     GraphNodeOut,
     LineCreate,
@@ -33,6 +38,10 @@ from app.schemas.gis import (
     PortRefOut,
     PowerPathNode,
     PowerPathOut,
+    SchemaFrameIn,
+    SchemaFrameOut,
+    SchemaLayoutIn,
+    SchemaLayoutOut,
     StateChangeIn,
     StateChangeOut,
     TopologyGraphOut,
@@ -40,6 +49,7 @@ from app.schemas.gis import (
 )
 from app.services import audit, documents as documents_service, gis, links as links_service
 from app.services import state as state_service
+from app.services import schema_pdf as schema_pdf_service
 from app.services import topology
 
 router = APIRouter(tags=["gis"])
@@ -49,10 +59,14 @@ router = APIRouter(tags=["gis"])
 
 @router.get("/asset-types", response_model=list[AssetTypeOut], summary="Справочник типов")
 def list_asset_types(
+    include_inactive: bool = Query(default=False, description="Показать и архивные типы"),
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> list[AssetTypeOut]:
-    return [AssetTypeOut.model_validate(item) for item in gis.list_types(db)]
+    return [
+        AssetTypeOut(**gis.type_out(db, item))
+        for item in gis.list_types(db, include_inactive=include_inactive)
+    ]
 
 
 @router.post(
@@ -71,7 +85,7 @@ def create_asset_type(
         detail=f"Добавлен тип {asset_type.code}",
         payload={"code": asset_type.code, "category": asset_type.category},
     )
-    return AssetTypeOut.model_validate(asset_type)
+    return AssetTypeOut(**gis.type_out(db, asset_type))
 
 
 @router.patch(
@@ -79,7 +93,7 @@ def create_asset_type(
 )
 def patch_asset_type(
     type_id: uuidlib.UUID,
-    payload: dict[str, Any],
+    payload: AssetTypeUpdate,
     _: Employee = Depends(require_permission("settings.edit")),
     db: Session = Depends(get_db),
 ) -> AssetTypeOut:
@@ -90,7 +104,26 @@ def patch_asset_type(
     audit.add(
         "asset_type.updated", entity="asset_type", entity_id=updated.id, detail=f"Изменён тип {updated.code}"
     )
-    return AssetTypeOut.model_validate(updated)
+    return AssetTypeOut(**gis.type_out(db, updated))
+
+
+@router.delete("/asset-types/{type_id}", response_model=AssetTypeOut, summary="Архивировать тип (админ)")
+def delete_asset_type(
+    type_id: uuidlib.UUID,
+    _: Employee = Depends(require_permission("settings.edit")),
+    db: Session = Depends(get_db),
+) -> AssetTypeOut:
+    asset_type = db.get(AssetType, type_id)
+    if asset_type is None:
+        raise not_found("Тип не найден")
+    gis.deactivate_type(db, asset_type)
+    audit.add(
+        "asset_type.deactivated",
+        entity="asset_type",
+        entity_id=asset_type.id,
+        detail=f"Тип {asset_type.code} переведён в архив",
+    )
+    return AssetTypeOut(**gis.type_out(db, asset_type))
 
 
 # --- объекты ---------------------------------------------------------------
@@ -427,6 +460,27 @@ def topology_graph(
     pit = gis.get_pit(db)
     data = topology.graph_payload(db, pit.id)
 
+    blocks_map: dict = {}
+    for item in data["nodes"]:
+        asset = item["asset"]
+        if asset.schema_block_id is not None:
+            block = blocks_map.setdefault(
+                asset.schema_block_id,
+                {"parent": None, "children": []},
+            )
+            block["children"].append(
+                GraphBlockChildOut(
+                    id=asset.id,
+                    code=asset.code,
+                    name=asset.name,
+                    role=asset.schema_role,
+                    local_x=float(asset.schema_local_x) if asset.schema_local_x is not None else None,
+                    local_y=float(asset.schema_local_y) if asset.schema_local_y is not None else None,
+                    type_name=asset.asset_type.name if asset.asset_type else None,
+                    params=asset.attrs or {},
+                )
+            )
+
     nodes = [
         GraphNodeOut(
             id=item["asset"].id,
@@ -437,13 +491,29 @@ def topology_graph(
             type_icon=item["asset"].asset_type.icon,
             type_color=item["asset"].asset_type.color,
             category=item["asset"].asset_type.category,
+            schema_symbol=item["asset"].asset_type.schema_symbol,
             status=item["asset"].status,
             grounded=item["asset"].grounded,
             energized=item["energized"],
             is_source=item["is_source"],
             parent_id=item["asset"].parent_asset_id,
+            schema_x=float(item["asset"].schema_x) if item["asset"].schema_x is not None else None,
+            schema_y=float(item["asset"].schema_y) if item["asset"].schema_y is not None else None,
+            ports=[
+                PortRefOut(
+                    id=p.id,
+                    code=p.code,
+                    name=p.name,
+                    kind=p.kind,
+                    voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
+                    schema_x=float(p.schema_x) if p.schema_x is not None else None,
+                    schema_y=float(p.schema_y) if p.schema_y is not None else None,
+                )
+                for p in item["asset"].ports
+            ],
         )
         for item in data["nodes"]
+        if item["asset"].schema_block_id is None
     ]
     edges = [
         GraphEdgeOut(
@@ -454,10 +524,124 @@ def topology_graph(
             link_type=item["link"].link_type,
             state=item["link"].state,
             feed_role=item["link"].feed_role,
+            cable_mark=item["link"].cable_mark,
+            length_m=float(item["link"].length_m) if item["link"].length_m else None,
+            cross_section_mm2=(
+                float(item["link"].cross_section_mm2) if item["link"].cross_section_mm2 else None
+            ),
+            cores=item["link"].cores,
+            version=item["link"].version,
         )
         for item in data["edges"]
     ]
-    return TopologyGraphOut(nodes=nodes, edges=edges)
+
+    blocks = []
+    for block_id, bucket in blocks_map.items():
+        parent_asset = next(
+            (item["asset"] for item in data["nodes"] if item["asset"].id == block_id), None
+        )
+        if parent_asset is None:
+            continue
+        children_ids = {child.id for child in bucket["children"]}
+        port_owner: dict = {}
+        for item in data["nodes"]:
+            asset = item["asset"]
+            for port in asset.ports:
+                if asset.id in children_ids:
+                    port_owner[port.id] = asset.id
+        jumpers: list = []
+        for edge_item in data.get("edges", []):
+            link = edge_item["link"]
+            if getattr(link, "link_type", None) != "jumper":
+                continue
+            source = port_owner.get(link.from_port_id)
+            target = port_owner.get(link.to_port_id)
+            if source and target and source != target:
+                jumpers.append(
+                    GraphJumperOut(
+                        id=link.id,
+                        from_cell_id=source,
+                        to_cell_id=target,
+                        label=link.cable_mark,
+                    )
+                )
+
+        blocks.append(
+            GraphBlockOut(
+                asset_id=parent_asset.id,
+                code=parent_asset.code,
+                name=parent_asset.name,
+                block_code=(parent_asset.attrs or {}).get("block_code"),
+                schema_x=float(parent_asset.schema_x) if parent_asset.schema_x is not None else None,
+                schema_y=float(parent_asset.schema_y) if parent_asset.schema_y is not None else None,
+                collapsed=bool((parent_asset.attrs or {}).get("collapsed")),
+                jumpers=jumpers,
+                children=bucket["children"],
+            )
+        )
+
+    return TopologyGraphOut(nodes=nodes, edges=edges, blocks=blocks)
+
+
+@router.put(
+    "/topology/layout",
+    response_model=SchemaLayoutOut,
+    summary="Сохранить ручную раскладку схемы (только админ)",
+)
+def save_schema_layout(
+    payload: SchemaLayoutIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SchemaLayoutOut:
+    pit = gis.get_pit(db)
+    result = gis.set_schema_layout(
+        db,
+        pit.id,
+        [item.model_dump() for item in payload.items],
+        admin,
+        ports=[item.model_dump() for item in payload.ports],
+    )
+    return SchemaLayoutOut(**result)
+
+
+@router.get("/topology/frame", response_model=SchemaFrameOut, summary="Рамка и штамп схемы")
+def get_schema_frame(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> SchemaFrameOut:
+    pit = gis.get_pit(db)
+    return SchemaFrameOut(**gis.get_schema_frame(db, pit))
+
+
+@router.put("/topology/frame", response_model=SchemaFrameOut, summary="Изменить штамп (админ)")
+def save_schema_frame(
+    payload: SchemaFrameIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SchemaFrameOut:
+    pit = gis.get_pit(db)
+    data = gis.save_schema_frame(db, pit, payload.model_dump())
+    audit.add(
+        "schema.frame_saved",
+        entity="pit",
+        entity_id=pit.id,
+        detail=f"Обновлён штамп схемы: {data.get('object_name', '')[:60]}",
+    )
+    return SchemaFrameOut(**data)
+
+
+@router.get("/topology/schema.pdf", summary="Печать схемы в PDF (A3, рамка и штамп)")
+def schema_pdf(
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    pit = gis.get_pit(db)
+    data = schema_pdf_service.schema_pdf(db, pit)
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="karier-schema.pdf"'},
+    )
 
 
 @router.get("/topology/issues", response_model=list[TopologyIssueOut], summary="Проверки схемы")

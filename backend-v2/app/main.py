@@ -19,10 +19,12 @@ from app.api.routers import (
     gis,
     health,
     inspections,
+    map_layers,
     me,
     media,
     moves,
     reports,
+    schema_blocks,
     sync,
 )
 from app.core.config import settings
@@ -117,12 +119,14 @@ app.include_router(employees.router, prefix=api)
 app.include_router(audit.router, prefix=api)
 app.include_router(gis.router, prefix=api)
 app.include_router(documents.router, prefix=api)
+app.include_router(map_layers.router, prefix=api)
 app.include_router(media.router, prefix=api)
 app.include_router(inspections.router, prefix=api)
 app.include_router(defects.router, prefix=api)
 app.include_router(moves.router, prefix=api)
 app.include_router(sync.router, prefix=api)
 app.include_router(reports.router, prefix=api)
+app.include_router(schema_blocks.router, prefix=api)
 
 
 @app.get("/", tags=["health"])

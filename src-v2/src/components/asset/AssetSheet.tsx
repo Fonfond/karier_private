@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Badge } from '../ui'
+import { Alert, Badge, Field } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { AssetOut, ChildAsset, PowerPath } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
@@ -47,6 +47,16 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
   const [tab, setTab] = useState<Tab>('passport')
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState({
+    name: '',
+    code: '',
+    status: 'off',
+    location_text: '',
+    power: '',
+  })
   const [showChildren, setShowChildren] = useState(false)
   const [showQr, setShowQr] = useState(false)
 
@@ -80,6 +90,42 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
 
   const statusColor = STATUS_COLOR[asset.status] ?? '#6B7A8A'
   const attrs = Object.entries(asset.attrs ?? {})
+
+  const openEditor = () => {
+    setEditForm({
+      name: asset.name,
+      code: asset.code,
+      status: asset.status,
+      location_text: asset.location_text ?? '',
+      power: asset.attrs?.power_kw !== undefined ? String(asset.attrs.power_kw) : '',
+    })
+    setEditError(null)
+    setEditOpen(true)
+  }
+
+  const saveEditor = async () => {
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      const nextAttrs: Record<string, unknown> = { ...(asset.attrs ?? {}) }
+      if (editForm.power.trim()) nextAttrs.power_kw = Number(editForm.power.replace(',', '.'))
+      else delete nextAttrs.power_kw
+
+      await gisApi.update(asset.id, {
+        name: editForm.name.trim(),
+        code: editForm.code.trim().toUpperCase(),
+        status: editForm.status,
+        location_text: editForm.location_text.trim() || null,
+        attrs: nextAttrs,
+      })
+      setEditOpen(false)
+      await load()
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : 'Не удалось сохранить карточку')
+    } finally {
+      setEditSaving(false)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -125,13 +171,13 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
         </button>
       </div>
 
-      <div className="flex gap-1 rounded-xl border border-line bg-surface2/50 p-1">
+      <div className="-mx-1 flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface2/50 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {TABS.map((item) => (
           <button
             key={item.key}
             type="button"
             onClick={() => setTab(item.key)}
-            className={`flex-1 rounded-lg px-1 py-2 text-[12px] ${
+            className={`min-h-[44px] shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] ${
               tab === item.key ? 'bg-surface1 text-ink' : 'text-ink2'
             }`}
           >
@@ -229,6 +275,11 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           ) : null}
 
           <div className="flex flex-wrap gap-2 pt-1">
+            {canManage ? (
+              <button type="button" className="btn-ghost admin-only h-10 px-3 text-[13px]" onClick={openEditor}>
+                ✎ Редактировать
+              </button>
+            ) : null}
             {onMove && asset.is_mobile ? (
               <button type="button" className="btn-primary h-10 px-3 text-[13px]" onClick={() => onMove(asset)}>
                 🚚 Переместить
@@ -288,6 +339,89 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
         asset={{ id: asset.id, code: asset.code, name: asset.name }}
         onClose={() => setShowQr(false)}
       />
+
+      {editOpen ? (
+        <div className="modal-safe fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-line bg-surface1 p-4 md:max-h-none sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[16px] font-semibold">Редактирование объекта</h2>
+              <button
+                type="button"
+                className="btn-ghost h-9 px-3 text-[12px]"
+                onClick={() => setEditOpen(false)}
+              >
+                Закрыть
+              </button>
+            </div>
+
+            {editError ? <Alert kind="error">{editError}</Alert> : null}
+
+            <div className="mt-3 space-y-3">
+              <Field label="Название">
+                <input
+                  className="input"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Код">
+                  <input
+                    className="input font-mono"
+                    value={editForm.code}
+                    onChange={(e) => setEditForm({ ...editForm, code: e.target.value })}
+                  />
+                </Field>
+                <Field label="Тип">
+                  <input className="input" value={asset.type.name} disabled />
+                </Field>
+                <Field label="Состояние">
+                  <select
+                    className="input"
+                    value={editForm.status}
+                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                  >
+                    {Object.entries(STATUS_LABEL).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Мощность, кВт">
+                  <input
+                    className="input"
+                    value={editForm.power}
+                    onChange={(e) => setEditForm({ ...editForm, power: e.target.value })}
+                    placeholder="например 250"
+                  />
+                </Field>
+              </div>
+              <Field label="Расположение">
+                <input
+                  className="input"
+                  value={editForm.location_text}
+                  onChange={(e) => setEditForm({ ...editForm, location_text: e.target.value })}
+                />
+              </Field>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary px-5"
+                disabled={editSaving || editForm.name.trim().length < 2}
+                onClick={() => void saveEditor()}
+              >
+                {editSaving ? 'Сохраняем…' : 'Сохранить'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setEditOpen(false)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

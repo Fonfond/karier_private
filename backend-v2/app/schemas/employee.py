@@ -56,6 +56,7 @@ class EmployeeOut(BaseModel):
     otp_channel: str
     role: str
     status: str
+    is_break_glass: bool = False
     access_until: datetime | None = None
     has_credentials: bool = False
     mfa_enabled: bool = False

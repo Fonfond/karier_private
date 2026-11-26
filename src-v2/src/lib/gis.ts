@@ -6,6 +6,7 @@ export interface TypeRef {
   code: string
   name: string
   category: string
+  schema_symbol?: string
   icon: string | null
   color: string | null
 }
@@ -17,6 +18,8 @@ export interface AssetPort {
   kind: 'in' | 'out' | 'io'
   nominal_voltage_kv: number | null
   sort_order: number
+  schema_x?: number | null
+  schema_y?: number | null
 }
 
 export interface AssetType {
@@ -24,6 +27,7 @@ export interface AssetType {
   code: string
   name: string
   category: string
+  schema_symbol: string
   icon: string | null
   color: string | null
   port_template: { ports?: Array<{ code: string; name: string; kind: string; voltage_kv?: number }> }
@@ -33,6 +37,9 @@ export interface AssetType {
   sort_order: number
   is_active: boolean
   description: string | null
+  parent_id: string | null
+  parent_name: string | null
+  assets_count: number
 }
 
 export interface AssetBrief {
@@ -111,11 +118,57 @@ export interface GraphNode {
   type_icon: string | null
   type_color: string | null
   category: string
+  schema_symbol: string
   status: string
   grounded: boolean
   energized: boolean
   is_source: boolean
   parent_id: string | null
+  schema_x: number | null
+  schema_y: number | null
+  ports: AssetPort[]
+}
+
+export interface GraphBlockChild {
+  id: string
+  code: string
+  name: string
+  role: string | null
+  local_x: number | null
+  local_y: number | null
+  type_name: string | null
+  params: Record<string, unknown>
+}
+
+export interface SchemaBlock {
+  id: string
+  code: string
+  name: string
+  block_type: string
+  icon: string | null
+  asset_type_code: string | null
+  nodes_count: number
+  external_ports: number
+  roles: string[]
+}
+
+export interface GraphJumper {
+  id: string
+  from_cell_id: string
+  to_cell_id: string
+  label: string | null
+}
+
+export interface GraphBlock {
+  asset_id: string
+  code: string
+  name: string
+  block_code: string | null
+  schema_x: number | null
+  schema_y: number | null
+  collapsed?: boolean
+  jumpers?: GraphJumper[]
+  children: GraphBlockChild[]
 }
 
 export interface GraphEdge {
@@ -126,11 +179,17 @@ export interface GraphEdge {
   link_type: string
   state: string
   feed_role: string
+  cable_mark: string | null
+  length_m: number | null
+  cross_section_mm2: number | null
+  cores: number | null
+  version: number
 }
 
 export interface TopologyGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
+  blocks: GraphBlock[]
 }
 
 export interface TopologyIssue {
@@ -216,12 +275,25 @@ export const gisApi = {
 
   layer: () => apiRequest<MapLayer>('/api/map/layers/active'),
 
+  uploadMap: (
+    file: File,
+    params: { name: string; meters_per_pixel: number; origin_x: number; origin_y: number },
+  ) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', params.name)
+    form.append('meters_per_pixel', String(params.meters_per_pixel))
+    form.append('origin_x', String(params.origin_x))
+    form.append('origin_y', String(params.origin_y))
+    return apiRequest<MapLayer>('/api/map/layers', { method: 'POST', body: form })
+  },
+
   create: (payload: {
     name: string
     type_code: string
     code?: string
-    x: number
-    y: number
+    x?: number | null
+    y?: number | null
     status?: string
     parent_id?: string | null
     location_text?: string | null
@@ -289,11 +361,80 @@ export const gisApi = {
   deleteDocument: (id: string) =>
     apiRequest<{ message: string }>(`/api/documents/${id}`, { method: 'DELETE' }),
 
+  getSchemaFrame: () =>
+    apiRequest<SchemaFrame>('/api/topology/frame'),
+
+  saveSchemaFrame: (payload: Record<string, unknown>) =>
+    apiRequest<SchemaFrame>('/api/topology/frame', { method: 'PUT', body: JSON.stringify(payload) }),
+
   createType: (payload: Record<string, unknown>) =>
     apiRequest<AssetType>('/api/asset-types', { method: 'POST', body: JSON.stringify(payload) }),
 
   updateType: (id: string, payload: Record<string, unknown>) =>
     apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  deleteType: (id: string) =>
+    apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'DELETE' }),
+
+  saveSchemaLayout: (
+    items: Array<{ asset_id: string; x: number; y: number }>,
+    ports: Array<{ port_id: string; x: number; y: number }> = [],
+  ) =>
+    apiRequest<{ updated: number; updated_ports: number; skipped: string[] }>('/api/topology/layout', {
+      method: 'PUT',
+      body: JSON.stringify({ items, ports }),
+    }),
+
+  allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
+schemaBlocks: () => apiRequest<SchemaBlock[]>('/api/schema/blocks'),
+
+  instantiateBlock: (code: string, x: number, y: number, name?: string) =>
+    apiRequest<{ asset_id: string; code: string; children: number; block_code: string }>(
+      `/api/schema/blocks/${code}/instantiate`,
+      { method: 'POST', body: JSON.stringify({ x, y, name }) },
+    ),
+
+schemaLegend: () =>
+    apiRequest<{ symbol: string; title: string; count: number }[]>('/api/schema/legend'),
+
+  collapseBlock: (assetId: string, collapsed: boolean) =>
+    apiRequest<{ asset_id: string; collapsed: boolean }>(
+      `/api/schema/assets/${assetId}/collapse`,
+      { method: 'POST', body: JSON.stringify({ collapsed }) },
+    ),
+
+  deleteBlockCell: (assetId: string, cellId: string) =>
+    apiRequest<{ message: string; id: string }>(
+      `/api/schema/assets/${assetId}/cells/${cellId}`,
+      { method: 'DELETE' },
+    ),
+
+  createJumper: (assetId: string, fromCellId: string, toCellId: string, label?: string) =>
+    apiRequest<{ id: string; from: string; to: string }>(
+      `/api/schema/assets/${assetId}/jumpers`,
+      { method: 'POST', body: JSON.stringify({ from_cell_id: fromCellId, to_cell_id: toCellId, label }) },
+    ),
+
+  addBlockCell: (assetId: string, label: string, role = 'outgoing') =>
+    apiRequest<{ id: string; code: string; name: string; role: string }>(
+      `/api/schema/assets/${assetId}/cells`,
+      { method: 'POST', body: JSON.stringify({ label, role }) },
+    ),
+
+}
+
+export interface SchemaFrame {
+  sheet_format: string
+  organization: string
+  department: string
+  object_name: string
+  sheet: string
+  scale: string
+  developed_by: string
+  checked_by: string
+  approved_by: string
+  date: string
+  show_on_screen: boolean
 }
 
 export const STATUS_LABEL: Record<string, string> = {

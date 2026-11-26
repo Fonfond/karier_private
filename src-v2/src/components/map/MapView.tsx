@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import L from 'leaflet'
+import { useState } from 'react'
 import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
+import type { GraphEdge } from '../../lib/gis'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
 import { STATUS_COLOR } from '../../lib/gis'
 
@@ -13,6 +15,15 @@ interface MapViewProps {
   onMapClick: (x: number, y: number) => void
   draft: { x: number; y: number } | null
   history?: Array<{ x: number; y: number }>
+  draggable?: boolean
+  onDragEnd?: (id: string, x: number, y: number) => void
+  links?: GraphEdge[]
+  positions?: Record<string, [number, number]>
+  onLinkClick?: (id: string) => void
+  linkMode?: boolean
+  dragFrom?: string | null
+  onConnectStart?: (id: string) => void
+  onConnectDrop?: (id: string) => void
 }
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
@@ -88,6 +99,15 @@ export function MapView({
   onMapClick,
   draft,
   history,
+  draggable = false,
+  onDragEnd,
+  links = [],
+  positions = {},
+  onLinkClick,
+  linkMode = false,
+  dragFrom = null,
+  onConnectStart,
+  onConnectDrop,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
     [layer.bounds[0][0], layer.bounds[0][1]],
@@ -119,11 +139,49 @@ export function MapView({
             key={asset.id}
             position={[asset.y, asset.x]}
             icon={markerIcon(asset, asset.id === selectedId)}
-            eventHandlers={{ click: () => onSelect(asset.id) }}
+            draggable={draggable && !linkMode}
+            eventHandlers={{
+              click: () => onSelect(asset.id),
+              mousedown: () => {
+                if (linkMode) onConnectStart?.(asset.id)
+              },
+              mouseup: () => {
+                if (linkMode && dragFrom) onConnectDrop?.(asset.id)
+              },
+              dragend: (event) => {
+                if (!onDragEnd) return
+                const { lat, lng } = (event.target as L.Marker).getLatLng()
+                onDragEnd(asset.id, Math.round(lng * 10) / 10, Math.round(lat * 10) / 10)
+              },
+            }}
             zIndexOffset={asset.id === selectedId ? 1000 : 0}
           />
         ),
       )}
+
+      {links.map((link) => {
+        const from = positions[link.from_asset_id]
+        const to = positions[link.to_asset_id]
+        if (!from || !to) return null
+        const color = link.link_type === 'jumper' ? '#A56BFF' : link.link_type === 'overhead' ? '#4C9AFF' : '#7BD88F'
+        return (
+          <Polyline
+            key={link.id}
+            positions={[from, to]}
+            pathOptions={{
+              color,
+              weight: 3,
+              opacity: 0.9,
+              dashArray: link.state === 'connected' ? undefined : '8 6',
+            }}
+            eventHandlers={{ click: () => onLinkClick?.(link.id) }}
+          />
+        )
+      })}
+
+      {linkMode && dragFrom && positions[dragFrom] ? (
+        <ConnectPreview from={positions[dragFrom]} />
+      ) : null}
 
       {historyPoints.length > 1 ? (
         <>
@@ -140,6 +198,72 @@ export function MapView({
       ) : null}
 
       {draft ? <Marker position={[draft.y, draft.x]} icon={draftIcon} interactive={false} /> : null}
+      <MobileMapControls bounds={bounds} />
     </MapContainer>
+  )
+}
+
+function ConnectPreview({ from }: { from: [number, number] }) {
+  const [point, setPoint] = useState<[number, number] | null>(null)
+  useMapEvents({
+    mousemove(event) {
+      setPoint([event.latlng.lat, event.latlng.lng])
+    },
+  })
+  if (!point) return null
+  return <Polyline positions={[from, point]} pathOptions={{ color: '#4C9AFF', weight: 2, dashArray: '6 6' }} />
+}
+
+
+/** Крупные кнопки зума и центрирования для телефона (48×48, в зоне большого пальца). */
+function MobileMapControls({ bounds }: { bounds: L.LatLngBounds }) {
+  const map = useMap()
+
+  const button = 'grid h-12 w-12 place-items-center rounded-xl border border-line bg-surface1/95 text-[22px] text-ink shadow-lg backdrop-blur active:bg-surface2'
+
+  return (
+    <div className="pointer-events-none absolute bottom-3 right-3 z-[1001] flex flex-col gap-2 md:bottom-20">
+      <button
+        type="button"
+        className={`pointer-events-auto ${button}`}
+        aria-label="Приблизить"
+        onClick={() => map.zoomIn()}
+      >
+        +
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button}`}
+        aria-label="Отдалить"
+        onClick={() => map.zoomOut()}
+      >
+        −
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button} text-[18px]`}
+        aria-label="Центрировать карту"
+        onClick={() => map.fitBounds(bounds, { animate: true })}
+        title="Центр карьера"
+      >
+        ⌖
+      </button>
+      <button
+        type="button"
+        className={`pointer-events-auto ${button} text-[18px]`}
+        aria-label="Моё положение"
+        title="Моё положение"
+        onClick={() => {
+          if (!navigator.geolocation) return
+          navigator.geolocation.getCurrentPosition(
+            () => map.fitBounds(bounds, { animate: true }),
+            () => map.fitBounds(bounds, { animate: true }),
+            { timeout: 4000 },
+          )
+        }}
+      >
+        ◎
+      </button>
+    </div>
   )
 }

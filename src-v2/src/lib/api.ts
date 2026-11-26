@@ -62,6 +62,7 @@ export interface Employee {
   otp_channel: string
   role: string
   status: string
+  is_break_glass?: boolean
   access_until: string | null
   has_credentials: boolean
   mfa_enabled: boolean
@@ -252,6 +253,12 @@ export const api = {
 
   blockEmployee: (id: string) => request<Employee>(`/api/employees/${id}/block`, { method: 'POST' }),
   unblockEmployee: (id: string) => request<Employee>(`/api/employees/${id}/unblock`, { method: 'POST' }),
+  updateEmployee: (id: string, payload: Record<string, unknown>) =>
+    request<Employee>(`/api/employees/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  dismissEmployee: (id: string) =>
+    request<Employee>(`/api/employees/${id}`, { method: 'DELETE' }),
+  deleteEmployeePermanent: (id: string) =>
+    request<Employee>(`/api/employees/${id}/permanent`, { method: 'DELETE' }),
   resetPassword: (id: string) =>
     request<{ temp_password: string; note: string }>(`/api/employees/${id}/reset-password`, {
       method: 'POST',

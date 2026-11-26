@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
-import { Alert, Badge, PageTitle } from '../components/ui'
+import { Alert, Badge, Field, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetBrief, AssetType } from '../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
@@ -20,6 +20,18 @@ export function RegistryPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [parentFilter, setParentFilter] = useState('')
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'code', dir: 1 })
+  const [notice, setNotice] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState({
+    name: '',
+    type_code: '',
+    code: '',
+    status: 'off',
+    location_text: '',
+    x: '',
+    y: '',
+  })
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +90,53 @@ export function RegistryPage() {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: 1 }))
   }
 
+  const createAsset = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const payload: Parameters<typeof gisApi.create>[0] = {
+        name: form.name.trim(),
+        type_code: form.type_code,
+        status: form.status,
+        location_text: form.location_text.trim() || null,
+      }
+      if (form.code.trim()) payload.code = form.code.trim().toUpperCase()
+      if (form.x.trim() && form.y.trim()) {
+        payload.x = Number(form.x.replace(',', '.'))
+        payload.y = Number(form.y.replace(',', '.'))
+      }
+      const created = await gisApi.create(payload)
+      setNotice(
+        created.x === null
+          ? `Объект ${created.code} создан без координат — он в списке «Не размещённые»`
+          : `Объект ${created.code} создан и размещён на карте`,
+      )
+      setCreateOpen(false)
+      setForm({ name: '', type_code: '', code: '', status: 'off', location_text: '', x: '', y: '' })
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось создать объект')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeAsset = async (item: AssetBrief) => {
+    if (!window.confirm(`Удалить объект «${item.code} — ${item.name}»? История сохранится, объект исчезнет из реестра.`)) {
+      return
+    }
+    setError(null)
+    try {
+      await gisApi.remove(item.id)
+      setNotice(`Объект ${item.code} удалён из реестра`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить объект')
+    }
+  }
+
+  const unplaced = useMemo(() => items.filter((item) => item.x === null || item.y === null), [items])
+
   const header = (key: SortKey, label: string) => (
     <th className="whitespace-nowrap px-3 py-2 font-medium">
       <button type="button" className="inline-flex items-center gap-1 hover:text-ink" onClick={() => toggleSort(key)}>
@@ -95,6 +154,28 @@ export function RegistryPage() {
       />
 
       {error ? <Alert kind="error">{error}</Alert> : null}
+      {notice ? <Alert kind="success">{notice}</Alert> : null}
+
+      {unplaced.length > 0 ? (
+        <div className="card flex flex-wrap items-center gap-2 text-[12px] text-ink2">
+          <Badge tone="warm">Не размещённые</Badge>
+          <span>объектов без координат: {unplaced.length}</span>
+          <button
+            type="button"
+            className="text-[12px] text-accent"
+            onClick={() => {
+              setParentFilter('')
+              setStatusFilter('')
+              setTypeFilter('')
+              setSearch('')
+              setSort({ key: 'code', dir: 1 })
+            }}
+          >
+            показать все
+          </button>
+          <span className="text-ink3">— разместите их на карте кнопкой «Разместить»</span>
+        </div>
+      ) : null}
 
       <div className="card flex flex-wrap items-end gap-2">
         <label className="min-w-[220px] flex-1">
@@ -148,10 +229,77 @@ export function RegistryPage() {
             ⬇ Excel
           </button>
         ) : null}
+        {can('asset.create') ? (
+          <button
+            type="button"
+            className="btn-primary admin-only h-10 px-3 text-[12px]"
+            onClick={() => {
+              setForm((prev) => ({ ...prev, type_code: prev.type_code || types[0]?.code || '' }))
+              setCreateOpen(true)
+            }}
+          >
+            + Объект
+          </button>
+        ) : null}
         <span className="ml-auto text-[12px] text-ink3">Показано {rows.length} из {items.length}</span>
       </div>
 
-      <div className="card overflow-x-auto p-0">
+      <div className="space-y-2 md:hidden">
+        {rows.map((item) => (
+          <div key={item.id} className="card p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-mono text-[12px] text-ink3">{item.code}</div>
+                <div className="truncate text-[15px] font-medium">{item.name}</div>
+                <div className="mt-0.5 text-[12px] text-ink2">
+                  {item.type.icon} {item.type.name}
+                  {item.is_mobile ? ' · мобильный' : ''}
+                </div>
+              </div>
+              <span
+                className="shrink-0 rounded-full px-2 py-1 text-[12px]"
+                style={{ background: `${STATUS_COLOR[item.status]}22`, color: STATUS_COLOR[item.status] }}
+              >
+                {STATUS_LABEL[item.status] ?? item.status}
+              </span>
+            </div>
+            <div className="mt-2 text-[12px] text-ink3">
+              X {item.x ?? '—'} · Y {item.y ?? '—'}
+              {item.grounded ? ' · заземлён' : ''}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn-ghost h-11 flex-1 px-3 text-[13px]"
+                onClick={() => navigate('/map', { state: { openAssetId: item.id } })}
+              >
+                Открыть
+              </button>
+              {can('asset.create') ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-ghost h-11 flex-1 px-3 text-[13px]"
+                    onClick={() => navigate('/map', { state: { placeAssetId: item.id } })}
+                  >
+                    {item.x === null ? 'Разместить' : 'Переместить'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost admin-only h-11 px-3 text-[13px] text-warm"
+                    onClick={() => void removeAsset(item)}
+                  >
+                    🗑
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ))}
+        {rows.length === 0 ? <div className="card text-[13px] text-ink3">Ничего не найдено</div> : null}
+      </div>
+
+      <div className="card hidden overflow-x-auto p-0 md:block">
         <table className="w-full min-w-[900px] text-left text-[13px]">
           <thead className="bg-surface2/60 text-[12px] uppercase tracking-wide text-ink3">
             <tr>
@@ -198,13 +346,23 @@ export function RegistryPage() {
                       На карте
                     </button>
                     {can('asset.create') ? (
-                      <button
-                        type="button"
-                        className="btn-ghost h-8 px-2.5 text-[12px]"
-                        onClick={() => navigate('/map', { state: { placeAssetId: item.id } })}
-                      >
-                        {item.x === null ? 'Разместить' : 'Переместить'}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="btn-ghost h-8 px-2.5 text-[12px]"
+                          onClick={() => navigate('/map', { state: { placeAssetId: item.id } })}
+                        >
+                          {item.x === null ? 'Разместить' : 'Переместить'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost admin-only h-8 px-2.5 text-[12px] text-warm"
+                          title="Удалить объект"
+                          onClick={() => void removeAsset(item)}
+                        >
+                          🗑
+                        </button>
+                      </>
                     ) : null}
                   </div>
                 </td>
@@ -220,6 +378,107 @@ export function RegistryPage() {
           </tbody>
         </table>
       </div>
+
+      {createOpen ? (
+        <div className="modal-safe fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-2xl overflow-y-auto md:max-h-[92vh] rounded-t-2xl border border-line bg-surface1 p-4 sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[16px] font-semibold">Новый объект</h2>
+              <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={() => setCreateOpen(false)}>
+                Закрыть
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <Field label="Название">
+                  <input
+                    className="input"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="КТП-20 (новая)"
+                  />
+                </Field>
+              </div>
+              <Field label="Тип">
+                <select
+                  className="input"
+                  value={form.type_code}
+                  onChange={(e) => setForm({ ...form, type_code: e.target.value })}
+                >
+                  <option value="">— выберите —</option>
+                  {types.map((type) => (
+                    <option key={type.code} value={type.code}>
+                      {type.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Код (необязательно)">
+                <input
+                  className="input"
+                  value={form.code}
+                  onChange={(e) => setForm({ ...form, code: e.target.value })}
+                  placeholder="сгенерируется автоматически"
+                />
+              </Field>
+              <Field label="Состояние">
+                <select
+                  className="input"
+                  value={form.status}
+                  onChange={(e) => setForm({ ...form, status: e.target.value })}
+                >
+                  {Object.entries(STATUS_LABEL).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Расположение (текстом)">
+                <input
+                  className="input"
+                  value={form.location_text}
+                  onChange={(e) => setForm({ ...form, location_text: e.target.value })}
+                  placeholder="Гор. +120, борт северный"
+                />
+              </Field>
+              <Field label="X, м (необязательно)">
+                <input
+                  className="input"
+                  value={form.x}
+                  onChange={(e) => setForm({ ...form, x: e.target.value })}
+                  placeholder="можно оставить пустым"
+                />
+              </Field>
+              <Field label="Y, м (необязательно)">
+                <input
+                  className="input"
+                  value={form.y}
+                  onChange={(e) => setForm({ ...form, y: e.target.value })}
+                  placeholder="можно оставить пустым"
+                />
+              </Field>
+            </div>
+            <p className="mt-2 text-[11px] text-ink3">
+              Без координат объект создастся сразу и попадёт в список «Не размещённые»; на карту его можно
+              поставить позже кнопкой «Разместить».
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary px-5"
+                disabled={busy || form.name.trim().length < 2 || !form.type_code}
+                onClick={() => void createAsset()}
+              >
+                {busy ? 'Создаём…' : 'Создать объект'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setCreateOpen(false)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

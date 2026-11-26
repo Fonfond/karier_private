@@ -104,7 +104,7 @@ def list_defects(
     asset_id: uuid.UUID | None = None,
     limit: int = 200,
 ) -> list[Defect]:
-    stmt = select(Defect).where(Defect.pit_id == pit_id)
+    stmt = select(Defect).where(Defect.pit_id == pit_id, Defect.deleted_at.is_(None))
     if status:
         stmt = stmt.where(Defect.status == status)
     if severity:
@@ -118,9 +118,31 @@ def list_defects(
 
 def get_defect(db: Session, defect_id: uuid.UUID) -> Defect:
     defect = db.get(Defect, defect_id)
-    if defect is None:
+    if defect is None or defect.deleted_at is not None:
         raise not_found("Дефект не найден")
     return defect
+
+
+def delete_defect(db: Session, defect: Defect, *, actor: Employee) -> None:
+    """Мягкое удаление: дефект исчезает из списков и статистики, но остаётся в аудите."""
+    from datetime import datetime, timezone
+
+    from app.services import audit
+
+    defect.deleted_at = datetime.now(timezone.utc)
+    defect.deleted_by = actor.id
+    db.commit()
+    audit.add(
+        "defect.deleted",
+        entity="defect",
+        entity_id=defect.id,
+        detail=f"Удалён дефект: {defect.description[:80]}",
+        payload={
+            "asset_id": str(defect.asset_id),
+            "severity": defect.severity,
+            "status": defect.status,
+        },
+    )
 
 
 def update_defect(

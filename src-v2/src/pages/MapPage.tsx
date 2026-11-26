@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { AssetSheet } from '../components/asset/AssetSheet'
 import { BottomSheet } from '../components/BottomSheet'
@@ -39,8 +39,14 @@ export function MapPage() {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const [view, setView] = useState<View>('map')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [view, setView] = useState<View>(() => (searchParams.get('view') === 'schema' ? 'schema' : 'map'))
   const [layer, setLayer] = useState<MapLayer | null>(null)
+  const [mapOpen, setMapOpen] = useState(false)
+  const [mapFile, setMapFile] = useState<File | null>(null)
+  const [mapSaving, setMapSaving] = useState(false)
+  const [mapError, setMapError] = useState<string | null>(null)
+  const [mapForm, setMapForm] = useState({ name: 'Новая карта', mpp: '0.5', ox: '0', oy: '0' })
   const [assets, setAssets] = useState<AssetBrief[]>([])
   const [types, setTypes] = useState<AssetType[]>([])
   const [graph, setGraph] = useState<TopologyGraph | null>(null)
@@ -69,6 +75,10 @@ export function MapPage() {
   const [linkMark, setLinkMark] = useState('')
   const [linkLength, setLinkLength] = useState('')
   const [linkType, setLinkType] = useState('cable')
+  const [linkMode, setLinkMode] = useState(false)
+  const [dragFrom, setDragFrom] = useState<string | null>(null)
+  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; length: string; state: string } | null>(null)
+  const [linkSaving, setLinkSaving] = useState(false)
 
   const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
   const [moveDraft, setMoveDraft] = useState<{ x: number; y: number } | null>(null)
@@ -123,12 +133,12 @@ export function MapPage() {
   }, [load])
 
   useEffect(() => {
-    if (view === 'schema' && !graph) void loadGraph()
+    if (!graph) void loadGraph()
   }, [view, graph, loadGraph])
 
   const refresh = useCallback(async () => {
     await load()
-    if (view === 'schema') await loadGraph()
+    await loadGraph()
   }, [load, loadGraph, view])
 
   const filtered = useMemo(() => {
@@ -138,6 +148,7 @@ export function MapPage() {
 
   const openAsset = (id: string) => {
     if (movingAsset) return
+    if (linkMode) return
     if (connecting) {
       void openConnectPicker(id)
       return
@@ -234,6 +245,78 @@ export function MapPage() {
     }
   }
 
+  const startLinkDrag = (id: string) => {
+    if (!linkMode) return
+    setDragFrom(id)
+  }
+
+  const dropLinkDrag = async (id: string) => {
+    if (!linkMode || !dragFrom || id === dragFrom) return
+    const sourceId = dragFrom
+    setDragFrom(null)
+    try {
+      const [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+      const fromPort = source.ports.find((port) => port.kind !== 'in')
+      const toPort = target.ports.find((port) => port.kind !== 'out')
+      if (!fromPort || !toPort) {
+        setError('У одного из объектов нет подходящих портов для связи')
+        return
+      }
+      setConnectFrom({ assetId: source.id, assetName: source.name, portId: fromPort.id, portCode: fromPort.code })
+      setConnectTo({ assetId: target.id, assetName: target.name, portId: toPort.id, portCode: toPort.code })
+      setConnecting(true)
+      setConnectStep('from')
+      setError(null)
+    } catch {
+      setError('Не удалось получить порты объектов')
+    }
+  }
+
+  const openLinkEditor = (id: string) => {
+    const edge = graph?.edges.find((item) => item.id === id)
+    if (!edge) return
+    setEditLink({
+      id,
+      type: edge.link_type,
+      mark: edge.cable_mark ?? '',
+      length: edge.length_m != null ? String(edge.length_m) : '',
+      state: edge.state,
+    })
+  }
+
+  const saveLinkEdit = async () => {
+    if (!editLink) return
+    setLinkSaving(true)
+    try {
+      await gisApi.updateLink(editLink.id, {
+        link_type: editLink.type,
+        cable_mark: editLink.mark || null,
+        length_m: editLink.length ? Number(editLink.length) : null,
+        state: editLink.state,
+      })
+      setEditLink(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить связь')
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
+  const removeLink = async () => {
+    if (!editLink) return
+    setLinkSaving(true)
+    try {
+      await gisApi.deleteLink(editLink.id)
+      setEditLink(null)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить связь')
+    } finally {
+      setLinkSaving(false)
+    }
+  }
+
   const startAdding = () => {
     setAdding(true)
     setDraft(null)
@@ -275,6 +358,73 @@ export function MapPage() {
     setFormPower('')
     setFormLocation('')
     setFormType(types[0]?.code ?? 'ktp')
+  }
+
+  const handleAssetDrop = async (id: string, x: number, y: number) => {
+    const asset = assets.find((item) => item.id === id)
+    if (!asset) return
+
+    // сразу показываем новое место, не дожидаясь сервера
+    setAssets((prev) => prev.map((item) => (item.id === id ? { ...item, x, y } : item)))
+    setMoveHistory((prev) => [...prev, { x, y }])
+    setError(null)
+
+    const offline = typeof navigator !== 'undefined' && !navigator.onLine
+    try {
+      if (offline) {
+        if (asset.is_mobile) {
+          await enqueue('asset_move', {
+            assetId: id,
+            x,
+            y,
+            note: 'перетащен на карте (офлайн)',
+            client_ts: new Date().toISOString(),
+          })
+        } else {
+          await enqueue('asset_update', {
+            assetId: id,
+            patch: { x, y },
+            base_version: asset.version,
+            client_ts: new Date().toISOString(),
+          })
+        }
+        await syncOutbox()
+      } else if (asset.is_mobile) {
+        await syncApi.move(id, { x, y, note: 'перетащен на карте', source: 'online' })
+        await refresh()
+      } else {
+        await gisApi.update(id, { x, y })
+        await refresh()
+      }
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось переместить объект')
+      await refresh()
+    }
+  }
+
+  const uploadMap = async () => {
+    if (!mapFile) {
+      setMapError('Выберите файл изображения')
+      return
+    }
+    setMapSaving(true)
+    setMapError(null)
+    try {
+      const created = await gisApi.uploadMap(mapFile, {
+        name: mapForm.name.trim() || 'Новая карта',
+        meters_per_pixel: Number(mapForm.mpp.replace(',', '.')) || 0.5,
+        origin_x: Number(mapForm.ox.replace(',', '.')) || 0,
+        origin_y: Number(mapForm.oy.replace(',', '.')) || 0,
+      })
+      setLayer(created)
+      setMapOpen(false)
+      setMapFile(null)
+      await refresh()
+    } catch (err) {
+      setMapError(err instanceof ApiError ? err.message : 'Не удалось загрузить карту')
+    } finally {
+      setMapSaving(false)
+    }
   }
 
   const submitMove = async () => {
@@ -355,6 +505,19 @@ export function MapPage() {
             onMapClick={handleMapClick}
             draft={draft ?? moveDraft}
             history={moveHistory}
+            draggable={can('asset.create') && !movingAsset && !placeAssetId}
+            onDragEnd={(id, x, y) => void handleAssetDrop(id, x, y)}
+            links={graph?.edges ?? []}
+            positions={Object.fromEntries(
+              assets
+                .filter((asset) => asset.x !== null && asset.y !== null)
+                .map((asset) => [asset.id, [asset.y as number, asset.x as number] as [number, number]]),
+            )}
+            onLinkClick={openLinkEditor}
+            linkMode={linkMode}
+            dragFrom={dragFrom}
+            onConnectStart={startLinkDrag}
+            onConnectDrop={(id) => void dropLinkDrag(id)}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-ink2">
@@ -363,7 +526,13 @@ export function MapPage() {
         )
       ) : graph ? (
         <Suspense fallback={<div className="flex h-full items-center justify-center text-ink2">Строим схему…</div>}>
-          <SchemaView graph={graph} selectedId={selectedId} onSelect={openAsset} />
+          <SchemaView
+            graph={graph}
+            selectedId={selectedId}
+            onSelect={openAsset}
+            canEdit={can('settings.edit')}
+            onGraphChanged={() => void loadGraph()}
+          />
         </Suspense>
       ) : (
         <div className="flex h-full items-center justify-center text-ink2">Строим схему…</div>
@@ -375,18 +544,28 @@ export function MapPage() {
           <div className="flex rounded-full border border-line bg-bg/85 p-1 backdrop-blur">
             <button
               type="button"
-              onClick={() => setView('map')}
+              onClick={() => { setView('map'); setSearchParams({}, { replace: true }) }}
               className={`rounded-full px-3 py-1.5 text-[12px] ${view === 'map' ? 'bg-accent text-[#08131F]' : 'text-ink2'}`}
             >
               Карта
             </button>
             <button
               type="button"
-              onClick={() => setView('schema')}
+              data-tour="schema"
+              onClick={() => { setView('schema'); setSearchParams({ view: 'schema' }, { replace: true }) }}
               className={`rounded-full px-3 py-1.5 text-[12px] ${view === 'schema' ? 'bg-accent text-[#08131F]' : 'text-ink2'}`}
             >
               Схема
             </button>
+            {can('settings.edit') ? (
+              <button
+                type="button"
+                className="admin-only hidden whitespace-nowrap rounded-full border border-line bg-bg/85 px-3 py-1.5 text-[12px] text-ink2 backdrop-blur hover:text-ink md:inline-flex"
+                onClick={() => setMapOpen(true)}
+              >
+                🖼 Загрузить карту
+              </button>
+            ) : null}
           </div>
 
           {view === 'map' ? (
@@ -456,7 +635,7 @@ export function MapPage() {
         {adding ? (
           <div className="pointer-events-auto mt-2 flex items-center justify-between gap-3 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-[13px] text-accent backdrop-blur">
             <span>
-              {draft ? `Точка: X ${draft.x} м, Y ${draft.y} м` : 'Кликните по карте, чтобы поставить объект'}
+              {draft ? `Точка: X ${draft.x} м, Y ${draft.y} м` : 'Тапните по карте, чтобы поставить объект'}
             </span>
             <button type="button" className="text-[12px] underline" onClick={cancelAdding}>
               Отмена
@@ -490,21 +669,63 @@ export function MapPage() {
         </div>
       )}
 
+      {editLink ? (
+        <div className="absolute inset-x-3 bottom-24 z-[1002] rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-xl sm:left-auto sm:right-4 sm:w-[320px]">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-semibold text-ink">Связь</span>
+            <button type="button" className="text-ink3" onClick={() => setEditLink(null)}>✕</button>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Тип соединения
+            <select className="input mt-1 h-8" value={editLink.type} onChange={(e) => setEditLink({ ...editLink, type: e.target.value })}>
+              <option value="cable">Кабель</option>
+              <option value="overhead">Воздушная линия</option>
+              <option value="busbar">Шина</option>
+              <option value="jumper">Перемычка</option>
+            </select>
+          </label>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="block text-[11px] text-ink3">
+              Марка
+              <input className="input mt-1 h-8" value={editLink.mark} onChange={(e) => setEditLink({ ...editLink, mark: e.target.value })} placeholder="СБ-3×95" />
+            </label>
+            <label className="block text-[11px] text-ink3">
+              Длина, м
+              <input className="input mt-1 h-8" value={editLink.length} inputMode="decimal" onChange={(e) => setEditLink({ ...editLink, length: e.target.value })} placeholder="120" />
+            </label>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Состояние
+            <select className="input mt-1 h-8" value={editLink.state} onChange={(e) => setEditLink({ ...editLink, state: e.target.value })}>
+              <option value="connected">Включена</option>
+              <option value="open">Разомкнута</option>
+              <option value="grounded">Заземлена</option>
+            </select>
+          </label>
+          <div className="flex gap-2">
+            <button type="button" className="btn-primary h-8 flex-1" disabled={linkSaving} onClick={() => void saveLinkEdit()}>Сохранить</button>
+            <button type="button" className="btn-ghost h-8 text-bad" disabled={linkSaving} onClick={() => void removeLink()}>🗑</button>
+          </div>
+        </div>
+      ) : null}
+
       {isAdmin && view === 'map' && !adding ? (
         <div className="absolute bottom-5 right-4 z-[1000] flex gap-2">
           <button
             type="button"
             onClick={() => {
-              setConnecting((prev) => !prev)
-              setConnectStep('from')
+              setLinkMode((prev) => !prev)
+              setDragFrom(null)
+              setConnecting(false)
               setConnectFrom(null)
+              setConnectTo(null)
               setError(null)
             }}
             className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold ${
-              connecting ? 'border-accent bg-accent text-[#08131F]' : 'border-line bg-bg/90 text-ink'
+              linkMode ? 'border-accent bg-accent text-[#08131F]' : 'border-line bg-bg/90 text-ink'
             }`}
           >
-            🔗 Соединить
+            🔗 Связать
           </button>
           <button
             type="button"
@@ -779,6 +1000,99 @@ export function MapPage() {
           </div>
         </div>
       </BottomSheet>
+
+      {mapOpen ? (
+        <div className="modal-safe fixed inset-0 z-[1450] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-line bg-surface1 p-4 md:max-h-none sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[16px] font-semibold">Новая подложка карты</h2>
+              <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={() => setMapOpen(false)}>
+                Закрыть
+              </button>
+            </div>
+
+            {mapError ? <Alert kind="error">{mapError}</Alert> : null}
+
+            <div className="space-y-3">
+              <label className="block">
+                <span className="label">Изображение (PNG, JPEG, WebP)</span>
+                <input
+                  className="input h-10 py-1.5"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => setMapFile(e.target.files?.[0] ?? null)}
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="label">Название</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.name}
+                    onChange={(e) => setMapForm({ ...mapForm, name: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Масштаб, м/пиксель</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.mpp}
+                    onChange={(e) => setMapForm({ ...mapForm, mpp: e.target.value })}
+                    placeholder="0.5"
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Начало X, м</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.ox}
+                    onChange={(e) => setMapForm({ ...mapForm, ox: e.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Начало Y, м</span>
+                  <input
+                    className="input h-10"
+                    value={mapForm.oy}
+                    onChange={(e) => setMapForm({ ...mapForm, oy: e.target.value })}
+                  />
+                </label>
+              </div>
+              <p className="text-[11px] text-ink3">
+                Координаты объектов заданы в метрах и не меняются: новая подложка просто
+                накладывается на ту же систему координат. Масштаб 0.5 м/px соответствует
+                прежней карте.
+              </p>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary px-5"
+                disabled={mapSaving || !mapFile}
+                onClick={() => void uploadMap()}
+              >
+                {mapSaving ? 'Загружаем…' : 'Загрузить карту'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setMapOpen(false)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {can('asset.create') && view === 'map' ? (
+        <button
+          type="button"
+          className="absolute right-3 z-[1002] grid h-14 w-14 place-items-center rounded-2xl bg-accent text-[28px] font-semibold text-[#06111f] shadow-xl active:scale-95 md:hidden"
+          style={{ bottom: '236px' }}
+          aria-label={adding ? 'Отменить добавление' : 'Добавить объект'}
+          onClick={() => (adding ? cancelAdding() : setAdding(true))}
+        >
+          {adding ? '×' : '+'}
+        </button>
+      ) : null}
 
       {connecting && connectStep === 'to' ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-24 z-[1000] flex justify-center">

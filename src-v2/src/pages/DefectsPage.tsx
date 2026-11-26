@@ -113,7 +113,7 @@ export function DefectsPage() {
 
       <div className="space-y-2">
         {items.map((defect) => (
-          <div key={defect.id} className="card flex flex-wrap gap-4 p-4">
+          <div key={defect.id} className="card flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap sm:gap-4">
             {defect.photo_before ? (
               <a
                 href={defect.photo_before.content_url}
@@ -188,6 +188,22 @@ export function DefectsPage() {
                   }}
                 >
                   Принять
+                </button>
+              ) : null}
+              {can('settings.edit') ? (
+                <button
+                  type="button"
+                  className="btn-ghost admin-only h-9 px-3 text-[12px] text-bad"
+                  title="Удалить дефект (статистика и списки обновятся)"
+                  onClick={async () => {
+                    if (!window.confirm('Удалить дефект? Он исчезнет из списков и статистики, событие останется в аудите.')) {
+                      return
+                    }
+                    await opsApi.deleteDefect(defect.id)
+                    await load()
+                  }}
+                >
+                  🗑 Удалить
                 </button>
               ) : null}
             </div>

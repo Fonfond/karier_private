@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, require_permission
+from app.api.deps import current_user, require_admin, require_permission
 from app.db.session import get_db
 from app.models import Employee
 from app.schemas.ops import (
@@ -51,6 +51,20 @@ def list_defects(
         items=[DefectOut(**defects_service.defect_out(db, row, employee_id=str(user.id))) for row in rows],
         total=len(rows),
     )
+
+
+@router.delete(
+    "/defects/{defect_id}",
+    summary="Удалить дефект (мягко, только админ)",
+)
+def delete_defect(
+    defect_id: uuid.UUID,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    defect = defects_service.get_defect(db, defect_id)
+    defects_service.delete_defect(db, defect, actor=admin)
+    return {"message": "Дефект удалён", "id": str(defect_id)}
 
 
 @router.get("/defects/{defect_id}", response_model=DefectOut, summary="Карточка дефекта")

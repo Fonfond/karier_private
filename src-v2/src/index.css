@@ -190,3 +190,73 @@
   display: none;
 }
 
+
+/* Режим презентации: крупнее интерфейс, без админских и технических деталей */
+html.presentation {
+  zoom: 1.12;
+}
+html.presentation .admin-only,
+html.presentation .tech-only {
+  display: none !important;
+}
+/* --- mobile-first: перчатки, солнце, safe-area --- */
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+
+@media (max-width: 767px) {
+  input.input,
+  select.input,
+  textarea.input,
+  .input {
+    min-height: 48px;
+    font-size: 16px; /* iOS Safari не зумит при фокусе */
+  }
+
+  .btn-primary,
+  .btn-ghost,
+  .btn-danger {
+    min-height: 44px;
+  }
+
+  /* крупные подписи и контраст на солнце */
+  .label {
+    font-size: 13px;
+    color: #c7d3df;
+  }
+}
+
+/* контраст статусов в тёмной теме */
+:root {
+  --ok-strong: #35d07f;
+  --bad-strong: #ff5d66;
+  --warm-strong: #ffb020;
+  --ground-strong: #b58bff;
+}
+/* --- единый отступ под нижнюю навигацию (Спринт 14) --- */
+:root {
+  --bottom-nav: 0px;
+}
+@media (max-width: 767px) {
+  :root {
+    --bottom-nav: calc(64px + env(safe-area-inset-bottom));
+  }
+}
+.pb-nav {
+  padding-bottom: calc(var(--bottom-nav) + 16px);
+}
+.nav-safe-bottom {
+  bottom: var(--bottom-nav);
+}
+.nav-safe-above {
+  bottom: calc(var(--bottom-nav) + 12px);
+}
+.modal-safe {
+  padding-bottom: calc(var(--bottom-nav) + 12px);
+}
+@media (min-width: 768px) {
+  .pb-nav { padding-bottom: 0; }
+  .modal-safe { padding-bottom: 0; }
+}

@@ -39,6 +39,8 @@ class Pit(Base, TimestampMixin):
     timezone = Column(String(64), nullable=False, default="Asia/Irkutsk")
     crs_name = Column(String(64), nullable=False, default="Локальная СК карьера, м")
     is_active = Column(Boolean, nullable=False, default=True)
+    # настройки рамки и штампа однолинейной схемы
+    schema_frame = Column(JSONB, nullable=False, default=dict)
 
 
 class MapLayer(Base, TimestampMixin):
@@ -100,9 +102,16 @@ class AssetType(Base, TimestampMixin):
     required_attrs = Column(ARRAY(String), nullable=False, default=list)
 
     is_mobile_default = Column(Boolean, nullable=False, default=False)
+    # символ на однолинейной схеме: breaker, disconnector, busbar, load, generator, source, line, ct, arrester
+    schema_symbol = Column(String(24), nullable=False, default="load")
     sort_order = Column(Integer, nullable=False, default=100)
     is_active = Column(Boolean, nullable=False, default=True)
     description = Column(Text)
+
+    # иерархия: категория → тип → подтип
+    parent_id = Column(Uuid, ForeignKey(f"{SCHEMA}.asset_types.id", ondelete="SET NULL"))
+    parent = relationship("AssetType", remote_side="AssetType.id", back_populates="children")
+    children = relationship("AssetType", back_populates="parent", order_by="AssetType.sort_order")
 
     assets = relationship("Asset", back_populates="asset_type")
 
@@ -152,6 +161,15 @@ class Asset(Base, TimestampMixin):
     lat = Column(Numeric(10, 7))
     lon = Column(Numeric(10, 7))
 
+    # ручная раскладка в однолинейной схеме (пиксели холста)
+    schema_x = Column(Numeric(10, 2))
+    schema_y = Column(Numeric(10, 2))
+    # принадлежность блоку схемы: id родительского блока и локальные координаты
+    schema_block_id = Column(Uuid, ForeignKey(f"{SCHEMA}.assets.id", ondelete="CASCADE"))
+    schema_local_x = Column(Numeric(10, 2))
+    schema_local_y = Column(Numeric(10, 2))
+    schema_role = Column(String(24))
+
     attrs = Column(JSONB, nullable=False, default=dict)
 
     created_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
@@ -167,7 +185,9 @@ class Asset(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="AssetPort.sort_order",
     )
-    parent = relationship("Asset", remote_side=[id], lazy="joined")
+    parent = relationship(
+        "Asset", remote_side=[id], lazy="joined", foreign_keys=[parent_asset_id]
+    )
 
 
 class AssetPort(Base):
@@ -190,4 +210,30 @@ class AssetPort(Base):
     phase = Column(String(8), default="3ph")
     sort_order = Column(Integer, nullable=False, default=0)
 
+    # положение кружка порта на узле схемы: доли ширины/высоты узла (0…1)
+    schema_x = Column(Numeric(6, 4))
+    schema_y = Column(Numeric(6, 4))
+
     asset = relationship("Asset", back_populates="ports")
+
+class SchemaBlock(Base):
+    """Шаблон блока схемы: ПС, БКРУ, КТП и одиночные символы."""
+
+    __tablename__ = "schema_blocks"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_schema_blocks_code"),
+        CheckConstraint("block_type in ('composite','simple')", name="ck_schema_blocks_type"),
+        {"schema": SCHEMA},
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    code = Column(String(48), nullable=False)
+    name = Column(String(128), nullable=False)
+    block_type = Column(String(16), nullable=False, default="composite")
+    asset_type_id = Column(Uuid, ForeignKey(f"{SCHEMA}.asset_types.id", ondelete="SET NULL"))
+    template_json = Column(JSONB, nullable=False, default=dict)
+    icon = Column(String(16), default="▣")
+    sort_order = Column(Integer, nullable=False, default=100)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    asset_type = relationship("AssetType")

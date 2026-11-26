@@ -2,6 +2,9 @@ import { lazy, Suspense, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
 import { useOutbox } from '../lib/useOutbox'
+import { usePresentation } from '../lib/usePresentation'
+import { Tour } from './Tour'
+import { BottomNav } from './BottomNav'
 import { Badge } from './ui'
 
 // Сканер тянет html5-qrcode (~300 КБ) — грузим только при открытии
@@ -15,6 +18,7 @@ export function AppShell() {
   const location = useLocation()
   const isMap = location.pathname === '/map'
   const { pending, online, syncing } = useOutbox()
+  const { presentation, togglePresentation } = usePresentation()
   const [scanOpen, setScanOpen] = useState(false)
 
   const handleLogout = async () => {
@@ -33,23 +37,23 @@ export function AppShell() {
         <div className="mx-auto flex w-full max-w-[1400px] items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
           <div className="flex shrink-0 items-center gap-2">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/15 text-lg">⚡</span>
-            <div className="hidden leading-tight lg:block">
+            <div className="leading-tight">
               <div className="text-[15px] font-semibold">Карьер</div>
-              <div className="text-[11px] text-ink3">электроснабжение</div>
+              <div className="hidden text-[11px] text-ink3 sm:block">электроснабжение</div>
             </div>
           </div>
 
-          <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <NavLink to="/" className={link} end>
+          <nav className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:flex">
+            <NavLink to="/" className={link} end data-tour="dashboard">
               Дашборд
             </NavLink>
-            <NavLink to="/map" className={link}>
+            <NavLink to="/map" className={link} data-tour="map">
               Карта
             </NavLink>
             <NavLink to="/registry" className={link}>
               Реестр
             </NavLink>
-            <NavLink to="/inspections" className={link}>
+            <NavLink to="/inspections" className={link} data-tour="inspections">
               Обход
             </NavLink>
             <NavLink to="/defects" className={link}>
@@ -75,6 +79,14 @@ export function AppShell() {
           <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
+              className={`hidden h-9 px-2.5 text-[12px] sm:inline-flex ${presentation ? 'btn-primary' : 'btn-ghost'}`}
+              title="Режим презентации: крупнее интерфейс, скрыты админские кнопки"
+              onClick={togglePresentation}
+            >
+              🎬
+            </button>
+            <button
+              type="button"
               className="btn-ghost h-9 w-9 p-0 text-[15px]"
               title="Сканировать QR"
               onClick={() => setScanOpen(true)}
@@ -84,7 +96,7 @@ export function AppShell() {
 
             <NavLink
               to="/sync"
-              className={`hidden h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] sm:flex ${
+              className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] ${
                 !online
                   ? 'border-warm/40 bg-warm/10 text-warm'
                   : pending > 0
@@ -93,18 +105,21 @@ export function AppShell() {
               }`}
               title={online ? 'Синхронизация' : 'Нет сети'}
             >
-              {syncing ? '↻ синхронизация' : online ? (pending > 0 ? `↑ ${pending}` : '✓ синхронно') : `офлайн · ${pending}`}
+              <span className="sm:hidden">{online ? (pending > 0 ? `↑${pending}` : '☁') : '⚡'}</span>
+              <span className="hidden sm:inline">
+                {syncing ? '↻ синхронизация' : online ? (pending > 0 ? `↑ ${pending}` : '✓ синхронно') : `офлайн · ${pending}`}
+              </span>
             </NavLink>
 
-            <span className="hidden sm:inline-flex">
+            <span className="hidden md:inline-flex">
               {user?.mfa_enabled ? <Badge tone="ok">2FA</Badge> : <Badge tone="warm">без 2FA</Badge>}
             </span>
-            <NavLink to="/profile" className="btn-ghost h-9 px-2.5 text-[12px]">
-              {user?.tab_no}
+            <NavLink to="/profile" className="btn-ghost h-9 w-9 p-0 text-[12px] sm:w-auto sm:px-2.5">
+              {user?.tab_no?.slice(-2) ?? '👤'}
             </NavLink>
             <button
               type="button"
-              className="btn-ghost h-9 px-2.5 text-[12px]"
+              className="btn-ghost hidden h-9 px-2.5 text-[12px] md:inline-flex"
               onClick={handleLogout}
             >
               Выйти
@@ -113,9 +128,20 @@ export function AppShell() {
         </div>
       </header>
 
-      <main className={isMap ? 'relative min-h-0 flex-1' : 'mx-auto w-full max-w-6xl flex-1 px-4 py-6'}>
+      <main
+        style={isMap ? { paddingBottom: 'var(--bottom-nav)' } : undefined}
+        className={
+          isMap
+            ? 'relative min-h-0 flex-1'
+            : 'mx-auto w-full max-w-6xl flex-1 px-3 py-4 pb-nav sm:px-4 sm:py-6'
+        }
+      >
         <Outlet />
       </main>
+
+      <BottomNav />
+
+      <Tour />
 
       {scanOpen ? (
         <Suspense fallback={null}>

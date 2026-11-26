@@ -45,6 +45,8 @@ class AssetOut(BaseModel):
     z: float | None = None
     lat: float | None = None
     lon: float | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
     location_text: str | None = None
     attrs: dict[str, Any] = {}
     parent_id: uuid.UUID | None = None
@@ -125,6 +127,7 @@ class AssetTypeOut(BaseModel):
     code: str
     name: str
     category: str
+    schema_symbol: str = "load"
     icon: str | None = None
     color: str | None = None
     port_template: dict[str, Any] = {}
@@ -134,6 +137,9 @@ class AssetTypeOut(BaseModel):
     sort_order: int = 100
     is_active: bool = True
     description: str | None = None
+    parent_id: uuid.UUID | None = None
+    parent_name: str | None = None
+    assets_count: int = 0
 
 
 class AssetTypeCreate(BaseModel):
@@ -146,8 +152,70 @@ class AssetTypeCreate(BaseModel):
     attr_schema: dict[str, Any] = {}
     required_attrs: list[str] = []
     is_mobile_default: bool = False
+    schema_symbol: str = Field(default="load", max_length=24)
     sort_order: int = 100
     description: str | None = None
+    parent_id: uuid.UUID | None = None
+
+
+class AssetTypeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=128)
+    category: Literal["source", "line", "equipment", "mobile", "lighting", "aux", "pole"] | None = None
+    icon: str | None = Field(default=None, max_length=16)
+    color: str | None = Field(default=None, max_length=16)
+    port_template: dict[str, Any] | None = None
+    attr_schema: dict[str, Any] | None = None
+    required_attrs: list[str] | None = None
+    is_mobile_default: bool | None = None
+    schema_symbol: str | None = Field(default=None, max_length=24)
+    sort_order: int | None = None
+    description: str | None = None
+    parent_id: uuid.UUID | None = None
+    clear_parent: bool = False
+    is_active: bool | None = None
+
+
+class SchemaLayoutItem(BaseModel):
+    asset_id: uuid.UUID
+    x: float
+    y: float
+
+
+class SchemaPortItem(BaseModel):
+    port_id: uuid.UUID
+    x: float = Field(ge=0, le=1, description="Доля ширины узла, 0…1")
+    y: float = Field(ge=0, le=1, description="Доля высоты узла, 0…1")
+
+
+class SchemaLayoutIn(BaseModel):
+    items: list[SchemaLayoutItem] = Field(default_factory=list, max_length=500)
+    ports: list[SchemaPortItem] = Field(default_factory=list, max_length=1000)
+
+
+class SchemaLayoutOut(BaseModel):
+    updated: int
+    updated_ports: int = 0
+    skipped: list[uuid.UUID] = []
+
+
+class SchemaFrameIn(BaseModel):
+    """Штамп и рамка листа: строки можно менять без релиза."""
+
+    sheet_format: Literal["A4", "A3", "A1"] = "A3"
+    organization: str = Field(default="ООО «Удоканская медь»", max_length=128)
+    department: str = Field(default="Служба главного энергетика", max_length=128)
+    object_name: str = Field(default="Однолинейная схема электроснабжения карьера", max_length=255)
+    sheet: str = Field(default="Лист 1", max_length=32)
+    scale: str = Field(default="б/м", max_length=16)
+    developed_by: str = Field(default="", max_length=128)
+    checked_by: str = Field(default="", max_length=128)
+    approved_by: str = Field(default="", max_length=128)
+    date: str = Field(default="", max_length=32)
+    show_on_screen: bool = True
+
+
+class SchemaFrameOut(SchemaFrameIn):
+    pass
 
 
 class MapLayerOut(BaseModel):
@@ -197,6 +265,8 @@ class PortRefOut(BaseModel):
     name: str
     kind: str
     voltage_kv: float | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
 
 
 class AssetRefOut(BaseModel):
@@ -307,12 +377,16 @@ class GraphNodeOut(BaseModel):
     type_icon: str | None = None
     type_color: str | None = None
     category: str
+    schema_symbol: str = "load"
     status: str
     grounded: bool
     energized: bool
     is_source: bool
     parent_id: uuid.UUID | None = None
     level: int = 0
+    schema_x: float | None = None
+    schema_y: float | None = None
+    ports: list[PortRefOut] = []
 
 
 class GraphEdgeOut(BaseModel):
@@ -323,11 +397,47 @@ class GraphEdgeOut(BaseModel):
     link_type: str
     state: str
     feed_role: str
+    cable_mark: str | None = None
+    length_m: float | None = None
+    cross_section_mm2: float | None = None
+    cores: int | None = None
+    version: int = 1
+
+
+class GraphBlockChildOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    role: str | None = None
+    local_x: float | None = None
+    local_y: float | None = None
+    type_name: str | None = None
+    params: dict[str, Any] = {}
+
+
+class GraphJumperOut(BaseModel):
+    id: uuid.UUID
+    from_cell_id: uuid.UUID
+    to_cell_id: uuid.UUID
+    label: str | None = None
+
+
+class GraphBlockOut(BaseModel):
+    asset_id: uuid.UUID
+    code: str
+    name: str
+    block_code: str | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None
+    collapsed: bool = False
+    jumpers: list[GraphJumperOut] = []
+    children: list[GraphBlockChildOut] = []
 
 
 class TopologyGraphOut(BaseModel):
     nodes: list[GraphNodeOut]
     edges: list[GraphEdgeOut]
+    blocks: list[GraphBlockOut] = []
 
 
 class TopologyIssueOut(BaseModel):
@@ -350,3 +460,55 @@ class ChildAssetOut(BaseModel):
     energized: bool
     ports: list[PortRefOut] = []
 
+class SchemaBlockOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    block_type: str
+    icon: str | None = None
+    asset_type_code: str | None = None
+    nodes_count: int = 0
+    external_ports: int = 0
+    roles: list[str] = []
+
+
+class BlockInstantiateIn(BaseModel):
+    x: float
+    y: float
+    name: str | None = Field(default=None, max_length=255)
+
+
+class BlockInstantiateOut(BaseModel):
+    asset_id: uuid.UUID
+    code: str
+    children: int
+    block_code: str
+
+
+class BlockCellIn(BaseModel):
+    label: str = Field(min_length=1, max_length=128)
+    role: Literal["cell", "incoming", "outgoing"] = "cell"
+    type_code: str = Field(default="cell", max_length=48)
+    params: dict[str, Any] = {}
+
+
+class BlockCellOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    role: str | None = None
+
+class BlockCollapseIn(BaseModel):
+    collapsed: bool
+
+
+class BlockJumperIn(BaseModel):
+    from_cell_id: uuid.UUID
+    to_cell_id: uuid.UUID
+    label: str | None = Field(default=None, max_length=64)
+
+
+class LegendItemOut(BaseModel):
+    symbol: str
+    title: str
+    count: int

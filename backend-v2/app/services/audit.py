@@ -41,12 +41,15 @@ class AuditContext:
     actor_id: uuid.UUID | None = None
     actor_tab_no: str | None = None
     actor_role: str | None = None
+    # действия аварийной учётной записи помечаются в журнале отдельно
+    break_glass: bool = False
     entries: list[PendingAudit] = field(default_factory=list)
 
-    def set_actor(self, *, actor_id, tab_no: str, role: str) -> None:
+    def set_actor(self, *, actor_id, tab_no: str, role: str, break_glass: bool = False) -> None:
         self.actor_id = actor_id
         self.actor_tab_no = tab_no
         self.actor_role = role
+        self.break_glass = break_glass
 
 
 _ctx: ContextVar[AuditContext | None] = ContextVar("audit_ctx", default=None)
@@ -66,8 +69,10 @@ def get_context() -> AuditContext:
     return ctx
 
 
-def set_actor(*, actor_id, tab_no: str, role: str) -> None:
-    get_context().set_actor(actor_id=actor_id, tab_no=tab_no, role=role)
+def set_actor(*, actor_id, tab_no: str, role: str, break_glass: bool = False) -> None:
+    get_context().set_actor(
+        actor_id=actor_id, tab_no=tab_no, role=role, break_glass=break_glass
+    )
 
 
 def add(
@@ -83,6 +88,9 @@ def add(
     actor_role: str | None = None,
 ) -> None:
     ctx = get_context()
+    marked = dict(payload or {})
+    if ctx.break_glass:
+        marked["break_glass"] = True
     ctx.entries.append(
         PendingAudit(
             action=action,
@@ -90,7 +98,7 @@ def add(
             entity_id=str(entity_id) if entity_id is not None else None,
             result=result,
             detail=detail,
-            payload=payload,
+            payload=marked or None,
             actor_id=actor_id or ctx.actor_id,
             actor_tab_no=actor_tab_no or ctx.actor_tab_no,
             actor_role=actor_role or ctx.actor_role,

@@ -8,6 +8,7 @@ const roleOptions = [
   { value: 'operator', label: 'Оператор' },
   { value: 'admin', label: 'Администратор' },
   { value: 'viewer', label: 'Наблюдатель' },
+  { value: 'contractor', label: 'Подрядчик' },
 ]
 
 const statusTone: Record<string, 'ok' | 'bad' | 'warm' | 'neutral'> = {
@@ -35,6 +36,83 @@ export function EmployeesPage() {
   const [role, setRole] = useState('operator')
   const [otpChannel, setOtpChannel] = useState('telegram')
   const [telegramId, setTelegramId] = useState('')
+
+  const [editing, setEditing] = useState<Employee | null>(null)
+  const [editForm, setEditForm] = useState({ full_name: '', position: '', role: 'operator', phone_e164: '' })
+
+  const openEditor = (employee: Employee) => {
+    setEditing(employee)
+    setEditForm({
+      full_name: employee.full_name,
+      position: employee.position ?? '',
+      role: employee.role,
+      phone_e164: employee.phone_e164 ?? '',
+    })
+  }
+
+  const saveEditor = async () => {
+    if (!editing) return
+    setBusy(true)
+    setError(null)
+    try {
+      await api.updateEmployee(editing.id, {
+        full_name: editForm.full_name.trim(),
+        position: editForm.position.trim() || null,
+        role: editForm.role,
+        phone_e164: editForm.phone_e164.trim() || null,
+      })
+      setNotice(`Карточка ${editing.tab_no} обновлена`)
+      setEditing(null)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить карточку')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removePermanently = async (employee: Employee) => {
+    if (
+      !window.confirm(
+        `Удалить ${employee.full_name} (таб. ${employee.tab_no}) НАВСЕГДА? Действие необратимо.`,
+      )
+    ) {
+      return
+    }
+    setError(null)
+    try {
+      await api.deleteEmployeePermanent(employee.id)
+      setNotice(`Сотрудник ${employee.tab_no} удалён из базы`)
+      await load()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setNotice(
+          'У сотрудника есть действия в журнале — удаление стёрло бы авторство. Используйте «Уволить».',
+        )
+        setError(err.message)
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Не удалось удалить сотрудника')
+      }
+    }
+  }
+
+  const dismiss = async (employee: Employee) => {
+    if (
+      !window.confirm(
+        `Уволить ${employee.full_name} (таб. ${employee.tab_no})? Учётная запись будет заархивирована, вход заблокирован.`,
+      )
+    ) {
+      return
+    }
+    setError(null)
+    try {
+      await api.dismissEmployee(employee.id)
+      setNotice(`Сотрудник ${employee.tab_no} уволен, сессии отозваны`)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось уволить сотрудника')
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -206,7 +284,10 @@ export function EmployeesPage() {
                 <tr key={employee.id}>
                   <td className="px-2 py-3 font-mono">{employee.tab_no}</td>
                   <td className="px-2 py-3">
-                    <div>{employee.full_name}</div>
+                    <div className="flex items-center gap-1.5">
+                      <span>{employee.full_name}</span>
+                      {employee.is_break_glass ? <Badge tone="warm">аварийный</Badge> : null}
+                    </div>
                     <div className="text-[12px] text-ink3">{employee.position ?? '—'}</div>
                   </td>
                   <td className="px-2 py-3">{employee.role}</td>
@@ -225,7 +306,14 @@ export function EmployeesPage() {
                   </td>
                   <td className="px-2 py-3">
                     <div className="flex flex-wrap gap-1.5">
-                      {employee.status === 'active' ? (
+                      {employee.is_break_glass ? (
+                        <span className="text-[11px] text-ink3">
+                          защищён: только SQL или reset_break_glass.py
+                        </span>
+                      ) : null}
+                      {!employee.is_break_glass ? (
+                        <>
+                          {employee.status === 'active' ? (
                         <button
                           type="button"
                           className="btn-danger h-8 px-2.5 text-[12px]"
@@ -245,6 +333,32 @@ export function EmployeesPage() {
                       <button
                         type="button"
                         className="btn-ghost h-8 px-2.5 text-[12px]"
+                        title="Изменить ФИО, должность, роль"
+                        onClick={() => openEditor(employee)}
+                      >
+                        ✎
+                      </button>
+                      {employee.status !== 'dismissed' ? (
+                        <button
+                          type="button"
+                          className="btn-ghost h-8 px-2.5 text-[12px] text-warm"
+                          title="Уволить (архивировать)"
+                          onClick={() => void dismiss(employee)}
+                        >
+                          Уволить
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn-ghost h-8 px-2.5 text-[12px] text-bad"
+                        title="Удалить навсегда (только без истории)"
+                        onClick={() => void removePermanently(employee)}
+                      >
+                        🗑
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost h-8 px-2.5 text-[12px]"
                         onClick={() => void act('reset', employee)}
                       >
                         Сброс пароля
@@ -257,6 +371,8 @@ export function EmployeesPage() {
                         >
                           Код
                         </button>
+                      ) : null}
+                        </>
                       ) : null}
                     </div>
                   </td>
@@ -273,6 +389,72 @@ export function EmployeesPage() {
           </table>
         </div>
       </div>
+
+      {editing ? (
+        <div className="modal-safe fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 sm:items-center sm:p-4">
+          <div className="max-h-[calc(100dvh-var(--bottom-nav)-16px)] w-full max-w-lg overflow-y-auto rounded-t-2xl border border-line bg-surface1 p-4 md:max-h-none sm:rounded-2xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-[16px] font-semibold">Карточка {editing.tab_no}</h2>
+              <button type="button" className="btn-ghost h-9 px-3 text-[12px]" onClick={() => setEditing(null)}>
+                Закрыть
+              </button>
+            </div>
+            <div className="space-y-3">
+              <Field label="ФИО">
+                <input
+                  className="input"
+                  value={editForm.full_name}
+                  onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                />
+              </Field>
+              <Field label="Должность">
+                <input
+                  className="input"
+                  value={editForm.position}
+                  onChange={(e) => setEditForm({ ...editForm, position: e.target.value })}
+                  placeholder="Старший электромонтёр"
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Роль">
+                  <select
+                    className="input"
+                    value={editForm.role}
+                    onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                  >
+                    {roleOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Телефон">
+                  <input
+                    className="input"
+                    value={editForm.phone_e164}
+                    onChange={(e) => setEditForm({ ...editForm, phone_e164: e.target.value })}
+                    placeholder="+79000000000"
+                  />
+                </Field>
+              </div>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary px-5"
+                disabled={busy || editForm.full_name.trim().length < 3}
+                onClick={() => void saveEditor()}
+              >
+                {busy ? 'Сохраняем…' : 'Сохранить'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

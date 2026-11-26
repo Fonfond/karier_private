@@ -64,6 +64,34 @@
 | Перемещения | `gis.asset_moves`, `POST /api/assets/{id}/move`, `GET /api/assets/{id}/moves` |
 | Проверка | `pytest` — 44 теста, включая идемпотентность, LWW и сохранение графа после перемещения |
 
+### Спринт 8: CRUD справочника и ручная схема
+
+| Блок | Детали |
+|---|---|
+| Иерархия | `gis.asset_types.parent_id` — категория → тип → подтип, запрет циклов |
+| Типы | `GET /asset-types?include_inactive=`, `POST`, `PATCH`, `DELETE` (мягко, с проверкой использования) |
+| Раскладка | `gis.assets.schema_x/schema_y`, `PUT /topology/layout` (только роль admin) |
+| Граф | `GET /topology/graph` отдаёт `schema_x/y` и порты — по ним схема соединяет узлы |
+| Сотрудники | `DELETE /employees/{id}` — увольнение с отзывом сессий, защита последнего админа |
+| Права | новый `require_admin`; типы — `settings.edit`, объекты — `asset.create` |
+
+### Спринт 9: UX-полировка
+
+| Блок | Детали |
+|---|---|
+| Позиции портов | `gis.asset_ports.schema_x/schema_y` (доли 0…1), отдаются в графе и связях |
+| Раскладка | `PUT /topology/layout` принимает `items` и `ports` |
+| Удаление людей | `DELETE /employees/{id}/permanent` с защитой истории (`employee.has_history`) |
+| Тесты | 68 pytest |
+
+### Спринт 12: подложки и связи
+
+| Блок | Детали |
+|---|---|
+| Карты | POST /api/map/layers (multipart, admin), GET /api/map/layers, GET /api/map/layers/{id}/image |
+| Связи | граф отдаёт марку, длину, сечение и версию связи для редактора |
+| Тесты | 84 pytest |
+
 ### Спринты 6–7: дашборд, отчёты, деплой
 
 | Блок | Детали |
@@ -106,7 +134,7 @@ backend-v2/
 ├── scripts/
 │   ├── smoke.ps1       # сквозной тест через HTTP (26 проверок)
 │   └── smoke-result.txt
-├── tests/              # pytest: 50 тестов (auth, реестр, топология, обходы, синхронизация, отчёты)
+├── tests/              # pytest: 61 тест (auth, реестр, топология, обходы, синхронизация, отчёты, админка)
 ├── seed.py
 ├── requirements.txt
 └── .env / .env.example

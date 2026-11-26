@@ -47,6 +47,7 @@ def _serialize(db: Session, employee: Employee) -> EmployeeOut:
         otp_channel=employee.otp_channel,
         role=employee.role.code if employee.role else "",
         status=employee.status,
+        is_break_glass=bool(employee.is_break_glass),
         access_until=employee.access_until,
         has_credentials=employee.credential is not None,
         mfa_enabled=mfa_factor(db, employee.id) is not None,
@@ -154,6 +155,12 @@ def update_employee(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     before = {
         "full_name": employee.full_name,
         "role": employee.role.code if employee.role else None,
@@ -180,6 +187,127 @@ def update_employee(
     return _serialize(db, employee)
 
 
+@router.delete(
+    "/{employee_id}",
+    response_model=EmployeeOut,
+    summary="Уволить сотрудника (архивировать учётную запись)",
+)
+def dismiss_employee(
+    employee_id: uuid.UUID,
+    admin: Employee = Permission,
+    db: Session = Depends(get_db),
+) -> EmployeeOut:
+    employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
+    if employee.id == admin.id:
+        raise ApiError(400, "employee.self_action", "Нельзя уволить самого себя")
+
+    if employee.role is not None and employee.role.code == "admin":
+        active_admins = db.scalar(
+            select(func.count(Employee.id))
+            .join(Role, Employee.role_id == Role.id)
+            .where(Role.code == "admin", Employee.status == "active")
+        ) or 0
+        if active_admins <= 1:
+            raise conflict(
+                "Нельзя уволить последнего администратора", "employee.last_admin"
+            )
+
+    employee.status = "dismissed"
+    db.commit()
+    from app.services.auth import revoke_all_sessions
+
+    revoked = revoke_all_sessions(db, employee, reason="employee_dismissed")
+    audit.add(
+        "employee.dismissed",
+        entity="employee",
+        entity_id=employee.id,
+        detail=f"Сотрудник {employee.tab_no} уволен, отозвано сессий: {revoked}",
+    )
+    return _serialize(db, employee)
+
+
+@router.delete(
+    "/{employee_id}/permanent",
+    response_model=EmployeeOut,
+    summary="Удалить сотрудника навсегда (только без истории)",
+)
+def delete_employee_permanently(
+    employee_id: uuid.UUID,
+    admin: Employee = Permission,
+    db: Session = Depends(get_db),
+) -> EmployeeOut:
+    employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
+    if employee.id == admin.id:
+        raise ApiError(400, "employee.self_action", "Нельзя удалить самого себя")
+
+    if employee.role is not None and employee.role.code == "admin":
+        active_admins = db.scalar(
+            select(func.count(Employee.id))
+            .join(Role, Employee.role_id == Role.id)
+            .where(Role.code == "admin", Employee.status == "active")
+        ) or 0
+        if active_admins <= 1:
+            raise conflict("Нельзя удалить последнего администратора", "employee.last_admin")
+
+    from app.models import AuditLog
+
+    actions = db.scalar(
+        select(func.count(AuditLog.id)).where(AuditLog.actor_id == employee.id)
+    ) or 0
+    if actions:
+        raise conflict(
+            f"У сотрудника есть история действий в журнале ({actions}). "
+            "Удаление стёрло бы авторство — используйте «Уволить»",
+            "employee.has_history",
+        )
+
+    payload = {"tab_no": employee.tab_no, "full_name": employee.full_name}
+    created_at = employee.created_at
+    from app.services.auth import revoke_all_sessions
+
+    revoke_all_sessions(db, employee, reason="employee_deleted")
+    audit.add(
+        "employee.deleted",
+        entity="employee",
+        entity_id=employee.id,
+        detail=f"Сотрудник {employee.tab_no} удалён навсегда",
+        payload=payload,
+    )
+    db.delete(employee)
+    db.commit()
+
+    return EmployeeOut(
+        id=employee_id,
+        tab_no=payload["tab_no"],
+        full_name=payload["full_name"],
+        position=None,
+        department=None,
+        phone_e164=None,
+        email=None,
+        telegram_id=None,
+        otp_channel="manual",
+        role="",
+        status="deleted",
+        access_until=None,
+        has_credentials=False,
+        mfa_enabled=False,
+        last_login_at=None,
+        created_at=created_at,
+    )
+
+
 @router.post("/{employee_id}/block", response_model=EmployeeOut, summary="Заблокировать")
 def block_employee(
     employee_id: uuid.UUID,
@@ -187,6 +315,12 @@ def block_employee(
     db: Session = Depends(get_db),
 ) -> EmployeeOut:
     employee = _get_or_404(db, employee_id)
+    if employee.is_break_glass:
+        raise ApiError(
+            400,
+            "employee.break_glass_protected",
+            "Аварийная учётная запись защищена: используйте reset_break_glass.py",
+        )
     if employee.id == admin.id:
         raise ApiError(400, "employee.self_action", "Нельзя заблокировать самого себя")
 

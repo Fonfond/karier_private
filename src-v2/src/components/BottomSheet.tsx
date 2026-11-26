@@ -8,18 +8,29 @@ interface BottomSheetProps {
   children: ReactNode
 }
 
+type Snap = 'peek' | 'half' | 'full'
+
+const HEIGHTS: Record<Snap, string> = {
+  peek: '25dvh',
+  half: '52dvh',
+  full: '90dvh',
+}
+
+const ORDER: Snap[] = ['peek', 'half', 'full']
+
 /**
- * Шторка снизу: два положения (peek ≈ 46vh и full ≈ 88vh).
- * Тянется за ручку, закрывается свайпом вниз или тапом по фону.
+ * Шторка снизу с тремя точками фиксации:
+ * peek (25% — название и статус), half (52% — характеристики), full (90% — все вкладки).
+ * Свайп вниз из peek закрывает карточку, из остальных — опускает на шаг.
  */
 export function BottomSheet({ open, onClose, title, children }: BottomSheetProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [snap, setSnap] = useState<Snap>('half')
   const startY = useRef<number | null>(null)
   const [dragOffset, setDragOffset] = useState(0)
 
   useEffect(() => {
     if (!open) {
-      setExpanded(false)
+      setSnap('half')
       setDragOffset(0)
     }
   }, [open])
@@ -31,8 +42,7 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
 
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (startY.current === null) return
-    const delta = event.clientY - startY.current
-    setDragOffset(delta)
+    setDragOffset(event.clientY - startY.current)
   }
 
   const onPointerUp = () => {
@@ -40,30 +50,36 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
     const delta = dragOffset
     startY.current = null
     setDragOffset(0)
-    if (delta < -50) setExpanded(true)
-    else if (delta > 70) {
-      if (expanded) setExpanded(false)
-      else onClose()
+
+    if (delta > 90) {
+      const index = ORDER.indexOf(snap)
+      if (index === 0) onClose()
+      else setSnap(ORDER[index - 1])
+      return
+    }
+    if (delta < -80) {
+      const index = ORDER.indexOf(snap)
+      setSnap(ORDER[Math.min(index + 1, ORDER.length - 1)])
     }
   }
 
-  const height = expanded ? '88vh' : '46vh'
+  const expandToFull = () => setSnap((prev) => (prev === 'full' ? 'half' : 'full'))
 
   return (
     <>
       {open ? (
-        <div
-          className="fixed inset-0 z-[1100] bg-black/40 transition-opacity"
-          onClick={onClose}
-          aria-hidden
-        />
+        <div className="fixed inset-0 z-[1100] bg-black/40 transition-opacity" onClick={onClose} aria-hidden />
       ) : null}
 
       <section
-        className={`fixed inset-x-0 bottom-0 z-[1200] flex flex-col rounded-t-2xl border-t border-line bg-surface1 shadow-sheet transition-transform duration-200 ${
-          open ? 'translate-y-0' : 'translate-y-full'
+        className={`fixed inset-x-0 z-[1350] flex flex-col rounded-t-2xl border-t border-line bg-surface1 shadow-sheet transition-[height,transform] duration-200 md:bottom-0 md:left-1/2 md:max-w-xl md:-translate-x-1/2 ${
+          open ? 'translate-y-0' : 'translate-y-[calc(100%+var(--bottom-nav))]'
         }`}
-        style={{ height, transform: dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined }}
+        style={{
+          height: HEIGHTS[snap],
+          bottom: 'var(--bottom-nav)',
+          transform: dragOffset > 0 ? `translateY(${dragOffset}px)` : undefined,
+        }}
         role="dialog"
         aria-modal="true"
         aria-label={title ?? 'Карточка объекта'}
@@ -74,14 +90,22 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onDoubleClick={expandToFull}
         >
-          <div className="h-1 w-10 rounded-full bg-line" />
-          {title ? (
-            <div className="mt-2 px-4 text-[13px] font-medium text-ink2">{title}</div>
-          ) : null}
+          <div className="h-1.5 w-12 rounded-full bg-line" />
+          <div className="mt-1 flex items-center gap-3 text-[11px] text-ink3">
+            <button type="button" onClick={() => setSnap('peek')} className="px-2 py-1">
+              свернуть
+            </button>
+            <span>·</span>
+            <button type="button" onClick={expandToFull} className="px-2 py-1">
+              {snap === 'full' ? 'на половину' : 'развернуть'}
+            </button>
+          </div>
+          {title ? <div className="mt-0.5 px-4 text-[13px] font-medium text-ink2">{title}</div> : null}
         </div>
 
-        <div className="mt-2 flex-1 overflow-y-auto overscroll-contain px-4 pb-6">{children}</div>
+        <div className="mt-1 flex-1 overflow-y-auto overscroll-contain px-4 pb-6">{children}</div>
       </section>
     </>
   )

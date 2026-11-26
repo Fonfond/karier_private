@@ -1,0 +1,470 @@
+{
+  "format": "karier.sketch/v1",
+  "name": "Схема по эскизу: ПС 35/6 — БКРУ-2 / КТП №4",
+  "description": "Собрана из блоков библиотеки: ПС с двумя секциями шин, реклоузер, опоры ВЛ, КТП и БКРУ",
+  "generated_at": "2026-11-09T04:49:53.024734+00:00",
+  "canvas": {
+    "width": 1024,
+    "height": 576,
+    "units": "m"
+  },
+  "library": [
+    "bkru_standard",
+    "ktp_standard",
+    "pole",
+    "recloser",
+    "substation_35_6",
+    "yakno"
+  ],
+  "blocks": [
+    {
+      "id": "b0",
+      "block": "substation_35_6",
+      "title": "ПС 35/6 кВ «Карьер»",
+      "position": {
+        "x": 40.0,
+        "y": 40.0
+      },
+      "params": {
+        "sections": [
+          "I секция шин 6.3 кВ (яч. 1–15)",
+          "II секция шин 6.3 кВ (яч. 16–30)"
+        ],
+        "incoming": [
+          "Ввод 1 · ЯКНО-6 №1 (яч. 1)",
+          "Ввод 2 · ЯКНО-6 №2 (яч. 16)"
+        ],
+        "feeders": [
+          {
+            "name": "ф.7к",
+            "cable": "СБ-3×185"
+          },
+          {
+            "name": "ф.16к",
+            "cable": "СБ-3×95"
+          },
+          {
+            "name": "ф.21к",
+            "cable": "СБ-3×95"
+          },
+          {
+            "name": "ф.5к",
+            "cable": "СБ-3×70"
+          }
+        ],
+        "section_breaker": "СВ · секционный выключатель (яч. 8/23)",
+        "equipment": [
+          "ТТ 6 кВ",
+          "ОПН 6 кВ",
+          "ЗНВ-6"
+        ]
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "in",
+          "label": "Ввод 1",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "IN-2",
+          "kind": "in",
+          "label": "Ввод 2",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "out",
+          "label": "ф.7к",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-2",
+          "kind": "out",
+          "label": "ф.16к",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-3",
+          "kind": "out",
+          "label": "ф.21к",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-4",
+          "kind": "out",
+          "label": "ф.5к",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b1",
+      "block": "bkru_standard",
+      "title": "БКРУ-2",
+      "position": {
+        "x": 320.0,
+        "y": 320.0
+      },
+      "params": {
+        "sections": [
+          "Секция БКРУ-1 6 кВ"
+        ],
+        "incoming": [
+          "Ячейка №1 (ввод 1)",
+          "Ячейка №2 (ввод 2)"
+        ],
+        "feeders": [
+          {
+            "name": "Ячейка №4 (ф.7-6)",
+            "cable": "СБ-3×95"
+          },
+          {
+            "name": "Ячейка №5 (ф.16-6)",
+            "cable": "СБ-3×95"
+          },
+          {
+            "name": "Ячейка №6 (ф.21-6)",
+            "cable": "СБ-3×70"
+          }
+        ],
+        "section_breaker": "Ячейка №3 (секционная)",
+        "equipment": []
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "in",
+          "label": "Ввод 1",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "IN-2",
+          "kind": "in",
+          "label": "Ввод 2",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "out",
+          "label": "ф.7-6",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-2",
+          "kind": "out",
+          "label": "ф.16-6",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-3",
+          "kind": "out",
+          "label": "ф.21-6",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b2",
+      "block": "recloser",
+      "title": "Реклоузер",
+      "position": {
+        "x": 320.0,
+        "y": 40.0
+      },
+      "params": {},
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "in",
+          "label": "Реклоузер",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "out",
+          "label": "Реклоузер",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b3",
+      "block": "yakno",
+      "title": "ЯКНО-1",
+      "position": {
+        "x": 620.0,
+        "y": 340.0
+      },
+      "params": {},
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "in",
+          "label": "ЯКНО-6",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "out",
+          "label": "ЯКНО-6",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b4",
+      "block": "pole",
+      "title": "оп.14",
+      "position": {
+        "x": 470.0,
+        "y": 40.0
+      },
+      "params": {
+        "pole_no": "оп.14"
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b5",
+      "block": "pole",
+      "title": "оп.13",
+      "position": {
+        "x": 600.0,
+        "y": 40.0
+      },
+      "params": {
+        "pole_no": "оп.13"
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b6",
+      "block": "pole",
+      "title": "оп.12",
+      "position": {
+        "x": 730.0,
+        "y": 40.0
+      },
+      "params": {
+        "pole_no": "оп.12"
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "io",
+          "label": "Опора ВЛ",
+          "voltage_kv": 6.0
+        }
+      ]
+    },
+    {
+      "id": "b7",
+      "block": "ktp_standard",
+      "title": "КТП №4",
+      "position": {
+        "x": 860.0,
+        "y": 40.0
+      },
+      "params": {
+        "sections": [],
+        "incoming": [
+          "Ввод 6 кВ"
+        ],
+        "feeders": [
+          {
+            "name": "Л-4 0.4 кВ",
+            "cable": "АВБбШв 4×10"
+          },
+          {
+            "name": "Л-2 0.4 кВ",
+            "cable": "АВБбШв 4×16"
+          },
+          {
+            "name": "Л-1 0.4 кВ",
+            "cable": "АВБбШв 4×25"
+          },
+          {
+            "name": "Л-3 0.4 кВ",
+            "cable": "АВБбШв 4×16"
+          }
+        ],
+        "section_breaker": null,
+        "equipment": [
+          "ТР 6/0.4 кВ"
+        ]
+      },
+      "ports": [
+        {
+          "code": "IN-1",
+          "kind": "in",
+          "label": "Ввод 6 кВ",
+          "voltage_kv": 6.0
+        },
+        {
+          "code": "OUT-1",
+          "kind": "out",
+          "label": "Л-1",
+          "voltage_kv": 0.4
+        },
+        {
+          "code": "OUT-2",
+          "kind": "out",
+          "label": "Л-2",
+          "voltage_kv": 0.4
+        },
+        {
+          "code": "OUT-3",
+          "kind": "out",
+          "label": "Л-3",
+          "voltage_kv": 0.4
+        },
+        {
+          "code": "OUT-4",
+          "kind": "out",
+          "label": "Л-4",
+          "voltage_kv": 0.4
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "id": "d5dc5a63-f04f-4047-90f7-2fefe677d4ff",
+      "from": {
+        "block": "b1",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b3",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СБ-3×70",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "682310b1-cc3a-476f-afe7-0ebe963657ee",
+      "from": {
+        "block": "b0",
+        "port": "OUT-2"
+      },
+      "to": {
+        "block": "b1",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СБ-3×95",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "6ca10d52-1756-42b7-8577-396a51ad3114",
+      "from": {
+        "block": "b5",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b6",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СИП-3 3×120",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "284cd6c1-cccd-426a-8f44-36f7c1cc1724",
+      "from": {
+        "block": "b6",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b7",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СИП-3 3×70",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "15de9f4f-d48e-402c-8635-c66718cd3f99",
+      "from": {
+        "block": "b2",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b4",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СИП-3 3×120",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "748af8c5-f816-4cca-8857-c6477bdd57d5",
+      "from": {
+        "block": "b0",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b2",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СБ-3×185",
+      "length_m": 120.0,
+      "state": "connected"
+    },
+    {
+      "id": "2321c8c7-f65d-48bc-98bd-8516667daad0",
+      "from": {
+        "block": "b4",
+        "port": "OUT-1"
+      },
+      "to": {
+        "block": "b5",
+        "port": "IN-1"
+      },
+      "type": "cable",
+      "cable_mark": "СИП-3 3×120",
+      "length_m": 120.0,
+      "state": "connected"
+    }
+  ]
+}

@@ -9,10 +9,12 @@ from app.api.routers import (
     gis,
     health,
     inspections,
+    map_layers,
     me,
     media,
     moves,
     reports,
+    schema_blocks,
     sync,
 )
 
@@ -25,9 +27,11 @@ __all__ = [
     "gis",
     "health",
     "inspections",
+    "map_layers",
     "me",
     "media",
     "moves",
     "reports",
+    "schema_blocks",
     "sync",
 ]

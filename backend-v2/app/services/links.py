@@ -40,6 +40,8 @@ def _port_ref(port: AssetPort) -> PortRefOut:
         name=port.name,
         kind=port.kind,
         voltage_kv=float(port.nominal_voltage_kv) if port.nominal_voltage_kv else None,
+        schema_x=float(port.schema_x) if port.schema_x is not None else None,
+        schema_y=float(port.schema_y) if port.schema_y is not None else None,
     )
 
 
