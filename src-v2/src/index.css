@@ -260,3 +260,22 @@ body,
   .pb-nav { padding-bottom: 0; }
   .modal-safe { padding-bottom: 0; }
 }
+/* --- Обратная связь редактора схемы (E-4): подсказки и опасность --- */
+@keyframes schema-hint-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.schema-hint {
+  animation: schema-hint-in 0.16s ease-out;
+  pointer-events: none;
+}
+@keyframes schema-danger-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(244, 68, 56, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(244, 68, 56, 0); }
+}
+.schema-danger {
+  animation: schema-danger-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .schema-hint, .schema-danger { animation: none; }
+}

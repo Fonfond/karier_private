@@ -89,8 +89,12 @@ async def upload_layer(
     return gis.layer_out(layer)
 
 
-@router.get("/layers/{layer_id}/image", summary="Изображение подложки")
-def layer_image(layer_id: uuid.UUID, db: Session = Depends(get_db)) -> Response:
+@router.get("/layers/{layer_id}/image", summary="Изображение подложки (только авторизованным)")
+def layer_image(
+    layer_id: uuid.UUID,
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> Response:
     layer = db.get(MapLayer, layer_id)
     if layer is None:
         raise not_found("Подложка не найдена")
@@ -101,5 +105,6 @@ def layer_image(layer_id: uuid.UUID, db: Session = Depends(get_db)) -> Response:
     return Response(
         content=data,
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        # S-5: подложка — не публичный ресурс; кэш только в пределах сеанса клиента.
+        headers={"Cache-Control": "private, no-store"},
     )

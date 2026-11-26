@@ -1,0 +1,40 @@
+# Что не попадает в контекст сборки образа API.
+# Секреты, локальное окружение, кэши и данные стенда — только снаружи, через тома и .env.
+
+# секреты и локальная конфигурация
+.env
+.env.*
+*.pem
+*.key
+
+# локальные данные и артефакты стенда
+var/
+backups/
+*.dump
+*.log
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.map
+
+# python-окружения и кэши
+venv/
+.venv/
+venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# тесты и служебные скрипты стенда в образе не нужны
+tests/
+scripts/smoke-result.txt
+
+# git и сама упаковка
+.git
+.gitignore
+.github
+Dockerfile
+.dockerignore

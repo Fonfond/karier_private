@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.middleware import AuditMiddleware
 from app.api.routers import (
@@ -29,6 +32,14 @@ from app.api.routers import (
 )
 from app.core.config import settings
 from app.core.errors import ApiError, api_error_handler, problem_response
+
+# Windows-консоль по умолчанию в cp866: русские сообщения в логах превращались
+# в мусор и по ним нельзя было найти причину 422. Пишем журнал в UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - поток может быть уже перенаправлен
+        pass
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -83,6 +94,13 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
+    # S-5: CSP для ответов API (в dev и prod одинаково). Для SPA-страниц
+    # (Vite в dev, nginx в prod) тот же заголовок должен добавлять reverse-proxy —
+    # это часть конфигурации деплоя (Docker/nginx), а не кода приложения.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; object-src 'none'; frame-ancestors 'self'",
+    )
     # SAMEORIGIN, а не DENY: PDF-паспорт и фото открываются в iframe того же домена
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault(
@@ -95,19 +113,93 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+FIELD_LABELS = {
+    "name": "Название",
+    "type_code": "Тип",
+    "status": "Состояние",
+    "code": "Код",
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "lat": "Широта",
+    "lon": "Долгота",
+    "location_text": "Расположение",
+    "parent_id": "Родительский объект",
+    "attrs": "Атрибуты",
+    "lifecycle": "Жизненный цикл",
+    "is_mobile": "Признак мобильности",
+    "count": "Количество",
+    "start": "Стартовый номер",
+}
+
+# Русские подписи живут отдельно от машинных ключей: клиент сопоставляет ошибку
+# с полем формы по `fields` (name, type_code, x…), а `field_labels` — только
+# для человекочитаемого текста в `detail`.
+_MESSAGES_RU = (
+    ("json decode error", "не удалось разобрать JSON — обновите страницу и повторите"),
+    ("field required", "обязательное поле"),
+    ("at least 2 characters", "минимум 2 символа"),
+    ("at least", "слишком короткое значение"),
+    ("at most", "слишком длинное значение"),
+    ("input should be 'on'", "недопустимое состояние"),
+    ("valid number", "ожидается число"),
+    ("valid uuid", "некорректный идентификатор"),
+    ("valid boolean", "ожидается да/нет"),
+    ("valid string", "ожидается строка"),
+    ("valid integer", "ожидается целое число"),
+    ("valid list", "ожидается список"),
+    ("none is not an allowed value", "значение не может быть пустым"),
+)
+
+
+def _ru_validation_message(message: str) -> str:
+    lowered = message.lower()
+    for needle, translated in _MESSAGES_RU:
+        if needle in lowered:
+            return translated
+    return message
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):
-    fields = {}
+    fields: dict[str, str] = {}
+    field_labels: dict[str, str] = {}
     for error in exc.errors():
         loc = ".".join(str(part) for part in error.get("loc", []) if part != "body")
-        fields[loc or "body"] = error.get("msg", "Некорректное значение")
-    first = next(iter(fields.values()), "Проверьте введённые данные")
-    return problem_response(
+        key = loc or "body"
+        fields[key] = _ru_validation_message(error.get("msg", "Некорректное значение"))
+        field_labels[key] = FIELD_LABELS.get(key, key)
+
+    logger.warning(
+        "Отклонена валидация: %s %s fields=%s content_length=%s content_type=%s",
+        request.method,
+        request.url.path,
+        ", ".join(fields) or "—",
+        request.headers.get("content-length", "?"),
+        request.headers.get("content-type", "?"),
+    )
+
+    parts = [f"{field_labels[key]}: {message}" for key, message in fields.items()]
+    detail = parts[0] if parts else "Проверьте введённые данные"
+    if len(parts) > 1:
+        detail = f"{detail} (и ещё {len(parts) - 1})"
+    # `field_labels` — дополнение именно для ошибок валидации: общий
+    # problem_response() отдаёт только машинные `fields`. Тело берём у него же
+    # (единый формат problem+json) и добавляем подписи рядом, не подменяя ключи.
+    response = problem_response(
         request,
         status=422,
         code="validation.failed",
-        detail=first,
+        detail=detail,
         fields=fields,
+    )
+    body = json.loads(response.body)
+    body["field_labels"] = field_labels
+    return JSONResponse(
+        status_code=422,
+        content=body,
+        media_type="application/problem+json",
+        headers={"X-Request-ID": response.headers.get("X-Request-ID", "")},
     )
 
 

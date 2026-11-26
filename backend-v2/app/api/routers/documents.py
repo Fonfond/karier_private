@@ -79,11 +79,14 @@ def download_document(
         raise ApiError(403, "document.forbidden", "Ссылка не соответствует документу")
 
     path = documents_service.file_path(document)
+    # S-5: не отдаём небезопасные типы «активно». SVG (в т.ч. старые записи в БД)
+    # уходит потоком и как вложение, безопасные — inline.
+    inline = document.mime in documents_service.SAFE_INLINE_MIME
     return FileResponse(
         path=path,
-        media_type=document.mime,
+        media_type=document.mime if inline else "application/octet-stream",
         filename=document.file_name,
-        content_disposition_type="inline",
+        content_disposition_type="inline" if inline else "attachment",
     )
 
 

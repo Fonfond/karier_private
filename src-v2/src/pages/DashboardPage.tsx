@@ -207,7 +207,7 @@ export function DashboardPage() {
         </div>
 
         <div className="card">
-          <div className="text-[11px] uppercase tracking-wide text-ink3">Открытые дефекты</div>
+          <div className="text-[11px] uppercase tracking-wide text-ink3">Обнаруженные дефекты</div>
           <div className="mt-1 flex items-baseline gap-2">
             <span className="text-[28px] font-semibold">{data.defects.open}</span>
             {critical > 0 ? <Badge tone="bad">критичных: {critical}</Badge> : null}
@@ -227,7 +227,7 @@ export function DashboardPage() {
         </div>
 
         <div className="card">
-          <div className="text-[11px] uppercase tracking-wide text-ink3">Кукушки</div>
+          <div className="text-[11px] uppercase tracking-wide text-ink3">Мачты Освещения Мобильные</div>
           <div className="mt-1 flex items-baseline gap-2">
             <span className="text-[28px] font-semibold text-warm">{data.mobile.length}</span>
             <span className="text-[12px] text-ink3">мобильных</span>

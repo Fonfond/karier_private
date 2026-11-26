@@ -8,13 +8,17 @@
 
 from __future__ import annotations
 
+import faulthandler
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -74,6 +78,13 @@ if explicit_url and _database_name(explicit_url) != TEST_DB_NAME:
 
 os.environ["DATABASE_URL"] = test_database_url
 
+# --- V1b-1: длинный TTL access-токена на время тестов ------------------------
+# В проде токен живёт 15 минут. Полный прогон на медленной машине идёт дольше, и
+# сессионный `admin_headers` начинал отдавать 401: один зависший тест превращался
+# в каскад из 30 «ложных» падений (наблюдение V1b). В тестовом процессе живём с
+# длинным TTL; переменная действует только внутри pytest и приоритетнее .env.
+os.environ.setdefault("ACCESS_TOKEN_TTL_MIN", "720")
+
 if _database_name(test_database_url) != TEST_DB_NAME:
     raise RuntimeError(
         "Тесты разрешены только на базе '"
@@ -84,7 +95,6 @@ if _database_name(test_database_url) != TEST_DB_NAME:
 from app.core.config import settings  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.main import app  # noqa: E402
-from sqlalchemy import text  # noqa: E402
 
 if _database_name(settings.DATABASE_URL) != TEST_DB_NAME:
     raise RuntimeError(
@@ -92,6 +102,71 @@ if _database_name(settings.DATABASE_URL) != TEST_DB_NAME:
         f"'{_database_name(settings.DATABASE_URL) or settings.DATABASE_URL}'. "
         "Запуск тестов на рабочей базе запрещён."
     )
+
+# Токен должен переживать самый долгий прогон: иначе сессионный admin_headers
+# начнёт отдавать 401 и утянет за собой десятки тестов (V1b-1).
+if settings.ACCESS_TOKEN_TTL_MIN < 60:
+    raise RuntimeError(
+        "Для тестов нужен ACCESS_TOKEN_TTL_MIN >= 60 (сейчас "
+        f"{settings.ACCESS_TOKEN_TTL_MIN}): иначе сессионный токен истекает посреди "
+        "прогона и даёт каскад ложных 401. Уберите ACCESS_TOKEN_TTL_MIN из окружения."
+    )
+
+# V1b-2: сторож на тест. pytest-timeout в окружении нет, поэтому используем
+# faulthandler: по истечении лимита печатается стек всех потоков и процесс
+# завершается — прогон «падает» с понятным стеком, а не висит десятки минут.
+TEST_TIMEOUT_SECONDS = float(os.environ.get("TEST_TIMEOUT_SECONDS", "180"))
+
+# Таблицы, в которых тесты оставляют мусор. Порядок удаления важен:
+# сначала связи, потом объекты (каскад уносит порты и блоки), затем линии,
+# снимки, типы (на них RESTRICT) и сотрудники (каскад уносит credentials/mfa/sessions).
+CLEANUP_TABLES = (
+    "gis.links",
+    "gis.assets",
+    "gis.lines",
+    "gis.schema_snapshots",
+    "gis.asset_types",
+    "auth.employees",
+)
+
+
+def _snapshot_ids() -> dict[str, set]:
+    """Снимок PK до теста: всё, что было в БД раньше, уборка не затрагивает."""
+    db = SessionLocal()
+    try:
+        return {table: set(db.scalars(text(f"select id from {table}")).all()) for table in CLEANUP_TABLES}
+    finally:
+        db.close()
+
+
+def _delete_new_rows(keep: dict[str, set]) -> None:
+    """Удалить строки, появившиеся во время теста (идемпотентно, с пропуском RESTRICT)."""
+    db = SessionLocal()
+    try:
+        for table in CLEANUP_TABLES:
+            new_ids = list(set(db.scalars(text(f"select id from {table}")).all()) - keep[table])
+            for start in range(0, len(new_ids), 500):
+                chunk = new_ids[start:start + 500]
+                try:
+                    db.execute(
+                        text(f"delete from {table} where id in :ids").bindparams(
+                            bindparam("ids", expanding=True)
+                        ),
+                        {"ids": chunk},
+                    )
+                    db.commit()
+                except SQLAlchemyError as exc:
+                    # Например, новый тип объекта, на который успел сослаться seeded-объект
+                    # (gis.asset_types под RESTRICT). Не валим прогон из-за уборки, но
+                    # оставляем след: пропущенные строки видны в warning'ах pytest.
+                    db.rollback()
+                    warnings.warn(
+                        f"isolate_created_rows: не удалось убрать {table} "
+                        f"({len(chunk)} строк): {exc.__class__.__name__}",
+                        stacklevel=1,
+                    )
+    finally:
+        db.close()
 
 
 @pytest.fixture(autouse=True)
@@ -125,6 +200,30 @@ def heal_topology():
     finally:
         db.close()
     yield
+
+
+@pytest.fixture(autouse=True)
+def isolate_created_rows(heal_topology):
+    """Убрать за тестом: удаляем только строки, созданные внутри самого теста.
+
+    Снимок PK берётся в setup (после `heal_topology`, то есть после всех
+    session/seed-фикстур), поэтому seeded-данные и данные фикстур не трогаются:
+    удаляется ровно разница «после минус до». Так база не растёт от прогона к
+    прогону, и повторный запуск не упирается в уник-констрейнты (V1/S-9).
+    """
+    keep = _snapshot_ids()
+    yield
+    _delete_new_rows(keep)
+
+
+@pytest.fixture(autouse=True)
+def guard_test_timeout():
+    """V1b-2: зависший тест не должен блокировать прогон (лимит TEST_TIMEOUT_SECONDS)."""
+    faulthandler.dump_traceback_later(TEST_TIMEOUT_SECONDS, repeat=False, exit=True)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture(scope="session")

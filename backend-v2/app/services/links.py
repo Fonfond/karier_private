@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError, conflict, not_found
-from app.models import AssetPort, Line, Link
+from app.models import Asset, AssetPort, Line, Link
 from app.schemas.gis import (
     AssetRefOut,
     LineCreate,
@@ -120,6 +120,14 @@ def list_links(
 def get_link(db: Session, link_id: uuid.UUID) -> Link:
     link = db.get(Link, link_id)
     if link is None or link.deleted_at is not None:
+        raise not_found("Связь не найдена")
+    return link
+
+
+def get_link_any(db: Session, link_id: uuid.UUID) -> Link:
+    """Связь без фильтра архива — нужна для отмены удаления."""
+    link = db.get(Link, link_id)
+    if link is None:
         raise not_found("Связь не найдена")
     return link
 
@@ -237,6 +245,48 @@ def delete_link(db: Session, link: Link, *, actor) -> None:
     link.version = (link.version or 1) + 1
     db.commit()
     audit.add("link.deleted", entity="link", entity_id=link.id, detail=f"Удалена связь {label}")
+
+
+def restore_link(db: Session, link: Link, *, actor) -> LinkOut:
+    """Вернуть связь из архива (отмена удаления).
+
+    Восстановление возможно, только если оба объекта живы и пара портов снова
+    свободна — иначе связь вернулась бы «в никуда» или создала дубль.
+    """
+    if link.deleted_at is None:
+        raise conflict("Связь не в архиве", "link.not_archived")
+
+    from_port = db.get(AssetPort, link.from_port_id)
+    to_port = db.get(AssetPort, link.to_port_id)
+    if from_port is None or to_port is None:
+        raise conflict("Порты связи не найдены", "link.ports_missing")
+
+    for port in (from_port, to_port):
+        asset = db.get(Asset, port.asset_id)
+        if asset is None or asset.deleted_at is not None:
+            raise conflict("Объект связи находится в архиве", "link.asset_archived")
+
+    duplicate = db.scalar(
+        select(Link).where(
+            Link.from_port_id == link.from_port_id,
+            Link.to_port_id == link.to_port_id,
+            Link.deleted_at.is_(None),
+        )
+    )
+    if duplicate is not None:
+        raise conflict("Такая связь уже существует", "link.duplicate")
+
+    link.deleted_at = None
+    link.deleted_by = None
+    link.version = (link.version or 1) + 1
+    db.commit()
+    audit.add(
+        "link.restored",
+        entity="link",
+        entity_id=link.id,
+        detail=f"Восстановлена связь {link_label(link)}",
+    )
+    return link_out(link)
 
 
 # --- линии ----------------------------------------------------------------

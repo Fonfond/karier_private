@@ -1,6 +1,6 @@
 /** Клиент ГИС: реестр, топология, схема, переключения, документы. */
 
-import { apiRequest } from './api'
+import { apiRequest, requestBlob } from './api'
 
 export interface TypeRef {
   code: string
@@ -66,6 +66,8 @@ export interface AssetBrief {
 }
 
 export interface AssetOut extends AssetBrief {
+  schema_x?: number | null
+  schema_y?: number | null
   pit_id: string
   lifecycle: string
   z: number | null
@@ -90,6 +92,14 @@ export interface MapLayer {
   min_zoom: number
   max_zoom: number
   version: number
+}
+
+/**
+ * Подложка карты защищена авторизацией (S-5): качаем её тем же access-токеном
+ * и отдаём Leaflet blob-URL. Вызывающий обязан сделать URL.revokeObjectURL.
+ */
+export async function layerImageObjectUrl(imageUrl: string): Promise<string> {
+  return URL.createObjectURL(await requestBlob(imageUrl))
 }
 
 export interface PowerPathNode {
@@ -167,6 +177,9 @@ export interface GraphJumper {
 }
 
 export interface GraphBlock {
+  kind?: string | null
+  width?: number | null
+  height?: number | null
   asset_id: string
   code: string
   name: string
@@ -262,6 +275,26 @@ export interface ChildAsset {
   ports: AssetPort[]
 }
 
+export interface RelocateSchemaAssetIn {
+  target_asset_id: string | null
+  confirm?: boolean
+  x?: number | null
+  y?: number | null
+  local_x?: number | null
+  local_y?: number | null
+}
+
+export interface RelocateSchemaAssetOut {
+  asset: AssetOut
+  warnings: string[]
+  old_parent_id: string | null
+  old_block_id: string | null
+  old_local_x: number | null
+  old_local_y: number | null
+  old_schema_x: number | null
+  old_schema_y: number | null
+}
+
 export const gisApi = {
   types: () => apiRequest<AssetType[]>('/api/asset-types'),
 
@@ -320,6 +353,10 @@ export const gisApi = {
 
   remove: (id: string) => apiRequest<{ message: string }>(`/api/assets/${id}`, { method: 'DELETE' }),
 
+  // Отмена удаления: объект возвращается из архива вместе со своими связями
+  restoreAsset: (id: string) =>
+    apiRequest<AssetOut>(`/api/assets/${id}/restore`, { method: 'POST' }),
+
   setState: (id: string, payload: { status?: string; grounded?: boolean; reason?: string }) =>
     apiRequest<{ asset: AssetOut; energization_changed: boolean; affected_assets: number }>(
       `/api/assets/${id}/state`,
@@ -356,6 +393,10 @@ export const gisApi = {
 
   deleteLink: (id: string) =>
     apiRequest<{ message: string }>(`/api/links/${id}`, { method: 'DELETE' }),
+
+  // Отмена удаления связи: тот же id, те же порты
+  restoreLink: (id: string) =>
+    apiRequest<LinkOut>(`/api/links/${id}/restore`, { method: 'POST' }),
 
   lines: () => apiRequest<Array<{ id: string; code: string; name: string }>>('/api/lines'),
 
@@ -507,11 +548,98 @@ schemaLegend: () =>
       { method: 'POST', body: JSON.stringify({ from_cell_id: fromCellId, to_cell_id: toCellId, label }) },
     ),
 
-  addBlockCell: (assetId: string, label: string, role = 'outgoing') =>
+  addBlockCell: (
+    assetId: string,
+    label: string,
+    role = 'outgoing',
+    opts: { type_code?: string; x?: number; y?: number } = {},
+  ) =>
     apiRequest<{ id: string; code: string; name: string; role: string }>(
       `/api/schema/assets/${assetId}/cells`,
-      { method: 'POST', body: JSON.stringify({ label, role }) },
+      { method: 'POST', body: JSON.stringify({ label, role, ...opts }) },
     ),
+
+  // --- визуальная сборка схемы: контур, постановка из реестра --------------
+
+  createContour: (payload: {
+    name: string
+    type_code: string
+    x: number
+    y: number
+    width?: number
+    height?: number
+    comment?: string
+  }) =>
+    apiRequest<{ id: string; code: string; name: string; type_code: string; x: number; y: number; width: number; height: number }>(
+      '/api/schema/contours',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  placeOnSchema: (id: string, x: number, y: number) =>
+    apiRequest<AssetOut>(`/api/schema/assets/${id}/place`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Атомарно перенести объект/ячейку в другой блок/контур (или на схему). */
+  relocateAsset: (assetId: string, payload: RelocateSchemaAssetIn) =>
+    apiRequest<RelocateSchemaAssetOut>(`/api/schema/assets/${assetId}/relocate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  addBlockCellsBulk: (
+    assetId: string,
+    payload: {
+      count: number
+      start?: number
+      prefix?: string
+      suffix?: string
+      section_size?: number
+      section_prefix?: string
+      role?: string
+      type_code?: string
+    },
+  ) =>
+    apiRequest<{ parent_id: string; count: number; sections: string[]; items: Array<{ id: string; code: string; name: string; role: string }> }>(
+      `/api/schema/assets/${assetId}/cells/bulk`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  createCellCable: (
+    assetId: string,
+    payload: { to_asset_id: string; cable_mark?: string; length_m?: number; cross_section_mm2?: number; cores?: number; link_type?: string },
+  ) =>
+    apiRequest<LinkOut>(`/api/schema/assets/${assetId}/cables`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  addLineEquipment: (payload: { anchor_asset_id: string; type_code: string; name?: string; cable_mark?: string; link_type?: string }) =>
+    apiRequest<{ asset_id: string; code: string; name: string; type_code: string; link_id: string | null; schema_x: number | null; schema_y: number | null }>(
+      '/api/schema/line-equipment',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  unplaceFromSchema: (id: string) =>
+    apiRequest<AssetOut>(`/api/schema/assets/${id}/place`, { method: 'DELETE' }),
+
+  // --- снимки схемы (Q-6): черновик, список, публикация ---------------------
+
+  snapshots: (status?: SnapshotStatus) =>
+    apiRequest<{ items: SnapshotBrief[]; total: number; published_id: string | null }>(
+      `/api/topology/snapshots${status ? `?status=${status}` : ''}`,
+    ),
+
+  createSnapshot: (payload: { title: string; comment?: string }) =>
+    apiRequest<SnapshotDetail>('/api/topology/snapshots', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  snapshot: (id: string) => apiRequest<SnapshotDetail>(`/api/topology/snapshots/${id}`),
+
+  publishSnapshot: (id: string) =>
+    apiRequest<SnapshotDetail>(`/api/topology/snapshots/${id}/publish`, { method: 'POST' }),
 
 }
 
@@ -537,6 +665,14 @@ export const STATUS_LABEL: Record<string, string> = {
   decommissioned: 'списано',
 }
 
+// Цветовая схема питания (требование заказчика): под напряжением — красный,
+// отключено/без питания — зелёный. Отдельно от STATUS_COLOR, который описывает
+// эксплуатационный статус для карточек и списков.
+export const POWER_COLOR = {
+  on: '#F04438',
+  off: '#22C55E',
+} as const
+
 export const STATUS_COLOR: Record<string, string> = {
   on: '#2FBF71',
   off: '#6B7A8A',
@@ -550,4 +686,41 @@ export const DOC_TYPE_LABEL: Record<string, string> = {
   settings: 'Уставки',
   manual: 'Инструкция',
   other: 'Прочее',
+}
+
+// --- снимки схемы (Q-6) -----------------------------------------------------
+
+export type SnapshotStatus = 'draft' | 'published'
+
+export interface SnapshotCounts {
+  nodes: number
+  edges: number
+  blocks: number
+}
+
+export interface SnapshotBrief {
+  id: string
+  title: string
+  comment: string | null
+  status: SnapshotStatus
+  created_at: string
+  created_by: string | null
+  created_by_name: string | null
+  published_at: string | null
+  published_by: string | null
+  published_by_name: string | null
+  counts: SnapshotCounts
+}
+
+export interface SnapshotPayload {
+  schema_version: number
+  captured_at: string
+  pit: { id: string; code: string; name: string; crs_name: string }
+  frame: Record<string, unknown>
+  graph: TopologyGraph
+  counts: SnapshotCounts
+}
+
+export interface SnapshotDetail extends SnapshotBrief {
+  payload: SnapshotPayload
 }

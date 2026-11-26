@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
-import { Alert, Badge, Field, PageTitle } from '../components/ui'
+import { Alert, Badge, ConfirmDialog, Field, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetBrief, AssetType } from '../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
@@ -14,6 +14,7 @@ export function RegistryPage() {
   const navigate = useNavigate()
   const [items, setItems] = useState<AssetBrief[]>([])
   const [types, setTypes] = useState<AssetType[]>([])
+  const [mapBounds, setMapBounds] = useState<{ x: number; y: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
@@ -21,6 +22,8 @@ export function RegistryPage() {
   const [parentFilter, setParentFilter] = useState('')
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'code', dir: 1 })
   const [notice, setNotice] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<AssetBrief | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [selectMode, setSelectMode] = useState(false)
@@ -53,6 +56,12 @@ export function RegistryPage() {
   useEffect(() => {
     void load()
   }, [load])
+  useEffect(() => {
+    gisApi
+      .layer()
+      .then((layer) => setMapBounds({ x: layer.width_m, y: layer.height_m }))
+      .catch(() => setMapBounds(null))
+  }, [])
 
   const parents = useMemo(
     () =>
@@ -120,6 +129,30 @@ export function RegistryPage() {
     setSort((prev) => (prev.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: 1 }))
   }
 
+  const nameLength = form.name.trim().length
+  const nameTooLong = nameLength > 255
+  const locationTooLong = form.location_text.trim().length > 255
+  const hasX = Boolean(form.x.trim())
+  const hasY = Boolean(form.y.trim())
+  const coordsPartial = hasX !== hasY
+  const coordsBad =
+    (hasX && !Number.isFinite(Number(form.x.replace(',', '.')))) ||
+    (hasY && !Number.isFinite(Number(form.y.replace(',', '.'))))
+  const xNum = hasX ? Number(form.x.replace(',', '.')) : null
+  const yNum = hasY ? Number(form.y.replace(',', '.')) : null
+  const outOfBounds =
+    Boolean(mapBounds) &&
+    ((xNum !== null && Number.isFinite(xNum) && (xNum < 0 || xNum > mapBounds!.x)) ||
+      (yNum !== null && Number.isFinite(yNum) && (yNum < 0 || yNum > mapBounds!.y)))
+  const createBlocked =
+    busy ||
+    nameLength < 2 ||
+    nameTooLong ||
+    !form.type_code ||
+    locationTooLong ||
+    coordsPartial ||
+    coordsBad ||
+    outOfBounds
   const createAsset = async () => {
     setBusy(true)
     setError(null)
@@ -151,17 +184,18 @@ export function RegistryPage() {
     }
   }
 
-  const removeAsset = async (item: AssetBrief) => {
-    if (!window.confirm(`Удалить объект «${item.code} — ${item.name}»? История сохранится, объект исчезнет из реестра.`)) {
-      return
-    }
+  const deleteAsset = async (item: AssetBrief) => {
+    setDeleting(true)
     setError(null)
     try {
       await gisApi.remove(item.id)
       setNotice(`Объект ${item.code} удалён из реестра`)
+      setPendingDelete(null)
       await load()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось удалить объект')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -360,7 +394,9 @@ export function RegistryPage() {
                   <button
                     type="button"
                     className="btn-ghost admin-only h-11 px-3 text-[13px] text-warm"
-                    onClick={() => void removeAsset(item)}
+                    title="Удалить объект"
+                    aria-label={`Удалить объект ${item.code}`}
+                    onClick={() => setPendingDelete(item)}
                   >
                     🗑
                   </button>
@@ -448,7 +484,8 @@ export function RegistryPage() {
                           type="button"
                           className="btn-ghost admin-only h-8 px-2.5 text-[12px] text-warm"
                           title="Удалить объект"
-                          onClick={() => void removeAsset(item)}
+                          aria-label={`Удалить объект ${item.code}`}
+                          onClick={() => setPendingDelete(item)}
                         >
                           🗑
                         </button>
@@ -478,12 +515,18 @@ export function RegistryPage() {
                 Закрыть
               </button>
             </div>
+            {error ? (
+              <div className="mb-3">
+                <Alert kind="error">{error}</Alert>
+              </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <Field label="Название">
                   <input
                     className="input"
                     value={form.name}
+                    maxLength={255}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     placeholder="КТП-20 (новая)"
                   />
@@ -553,11 +596,34 @@ export function RegistryPage() {
               Без координат объект создастся сразу и попадёт в список «Не размещённые»; на карту его можно
               поставить позже кнопкой «Разместить».
             </p>
+            {nameTooLong ? (
+              <p className="mt-1 text-[11px] text-danger">Название: максимум 255 символов</p>
+            ) : null}
+            {locationTooLong ? (
+              <p className="mt-1 text-[11px] text-danger">Расположение: максимум 255 символов</p>
+            ) : null}
+            {coordsPartial ? (
+              <p className="mt-1 text-[11px] text-danger">Укажите обе координаты X и Y — или оставьте обе пустыми</p>
+            ) : null}
+            {coordsBad ? (
+              <p className="mt-1 text-[11px] text-danger">Координаты должны быть числами, например 1250,5</p>
+            ) : null}
+            {outOfBounds ? (
+              <p className="mt-1 text-[11px] text-danger">
+                Координаты вне карты: допустимо X 0…{Math.round(mapBounds?.x ?? 0)} м, Y 0…
+                {Math.round(mapBounds?.y ?? 0)} м. Это метры карьера, а не координаты СК-42.
+              </p>
+            ) : null}
+            {!outOfBounds && mapBounds ? (
+              <p className="mt-1 text-[11px] text-ink3">
+                Допустимые координаты: X 0…{Math.round(mapBounds.x)} м, Y 0…{Math.round(mapBounds.y)} м.
+              </p>
+            ) : null}
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 className="btn-primary px-5"
-                disabled={busy || form.name.trim().length < 2 || !form.type_code}
+                disabled={createBlocked}
                 onClick={() => void createAsset()}
               >
                 {busy ? 'Создаём…' : 'Создать объект'}
@@ -599,6 +665,20 @@ export function RegistryPage() {
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title={pendingDelete ? `Удалить объект «${pendingDelete.code}»?` : 'Удалить объект?'}
+        message={
+          pendingDelete
+            ? `${pendingDelete.name}. Объект исчезнет из реестра и с карты, история и журнал аудита сохранятся.`
+            : undefined
+        }
+        confirmLabel="Удалить"
+        busy={deleting}
+        onConfirm={() => (pendingDelete ? deleteAsset(pendingDelete) : undefined)}
+        onCancel={() => setPendingDelete(null)}
+      />
 
     </div>
   )

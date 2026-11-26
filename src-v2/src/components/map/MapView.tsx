@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
 import type { GraphEdge } from '../../lib/gis'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
-import { STATUS_COLOR } from '../../lib/gis'
+import { STATUS_COLOR, layerImageObjectUrl } from '../../lib/gis'
 
 interface MapViewProps {
   layer: MapLayer
@@ -117,6 +117,28 @@ export function MapView({
   )
   const historyPoints: Array<[number, number]> = (history ?? []).map((point) => [point.y, point.x])
 
+  // Подложка защищена авторизацией (S-5): тянем её с Bearer и держим blob-URL,
+  // показывая карту без подложки, пока картинка не загрузилась.
+  const [layerUrl, setLayerUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+    layerImageObjectUrl(layer.image_url)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        objectUrl = url
+        setLayerUrl(url)
+      })
+      .catch(() => setLayerUrl(null))
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [layer.image_url])
+
   return (
     <MapContainer
       crs={L.CRS.Simple}
@@ -131,7 +153,7 @@ export function MapView({
       zoomControl={false}
       className="h-full w-full bg-[#070C10]"
     >
-      <ImageOverlay url={layer.image_url} bounds={bounds} className="karier-layer" />
+      {layerUrl ? <ImageOverlay url={layerUrl} bounds={bounds} className="karier-layer" /> : null}
       <FitBounds bounds={bounds} />
       <ClickCatcher enabled={adding} onClick={onMapClick} />
 

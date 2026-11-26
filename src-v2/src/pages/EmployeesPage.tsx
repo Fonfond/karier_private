@@ -40,6 +40,14 @@ export function EmployeesPage() {
   const [editing, setEditing] = useState<Employee | null>(null)
   const [editForm, setEditForm] = useState({ full_name: '', position: '', role: 'operator', phone_e164: '' })
 
+  // Код первичной регистрации (S-5): показывается один раз и живёт только здесь.
+  const [otp, setOtp] = useState<{
+    code: string
+    tab_no: string
+    full_name: string
+    expires_in: number
+  } | null>(null)
+
   const openEditor = (employee: Employee) => {
     setEditing(employee)
     setEditForm({
@@ -154,7 +162,7 @@ export function EmployeesPage() {
     }
   }
 
-  const act = async (action: 'block' | 'unblock' | 'reset' | 'invite', employee: Employee) => {
+  const act = async (action: 'block' | 'unblock' | 'reset' | 'otp', employee: Employee) => {
     setError(null)
     setNotice(null)
     try {
@@ -164,11 +172,14 @@ export function EmployeesPage() {
         const data = await api.resetPassword(employee.id)
         setNotice(`Временный пароль для ${employee.tab_no}: ${data.temp_password}`)
       }
-      if (action === 'invite') {
-        const data = await api.resendInvite(employee.id)
-        setNotice(
-          `Код отправлен (${data.delivery})${data.debug_code ? `, код на стенде: ${data.debug_code}` : ''}`,
-        )
+      if (action === 'otp') {
+        const data = await api.issueOtp(employee.id)
+        setOtp({
+          code: data.code,
+          tab_no: data.tab_no,
+          full_name: employee.full_name,
+          expires_in: data.expires_in,
+        })
       }
       await load()
     } catch (err) {
@@ -366,10 +377,11 @@ export function EmployeesPage() {
                       {!employee.has_credentials ? (
                         <button
                           type="button"
-                          className="btn-ghost h-8 px-2.5 text-[12px]"
-                          onClick={() => void act('invite', employee)}
+                          className="btn-primary h-8 px-2.5 text-[12px]"
+                          title="Выдать код первичной регистрации: 10 минут, показывается один раз"
+                          onClick={() => void act('otp', employee)}
                         >
-                          Код
+                          Выдать код
                         </button>
                       ) : null}
                         </>
@@ -455,6 +467,70 @@ export function EmployeesPage() {
           </div>
         </div>
       ) : null}
+
+      {otp ? <OtpModal data={otp} onClose={() => setOtp(null)} /> : null}
+    </div>
+  )
+}
+
+function OtpModal({
+  data,
+  onClose,
+}: {
+  data: { code: string; tab_no: string; full_name: string; expires_in: number }
+  onClose: () => void
+}) {
+  const [left, setLeft] = useState(data.expires_in)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setLeft((value) => Math.max(0, value - 1)), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(data.code)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  const minutes = Math.floor(left / 60)
+  const seconds = String(left % 60).padStart(2, '0')
+
+  return (
+    <div className="fixed inset-0 z-[1500] flex items-center justify-center bg-black/60 p-3">
+      <div className="card w-full max-w-md p-5 text-[13px]">
+        <div className="text-[15px] font-semibold">Код первичной регистрации</div>
+        <div className="mt-1 text-[11px] text-ink3">
+          {data.full_name} · табельный {data.tab_no}
+        </div>
+        <div className="mt-4 rounded-lg border border-line bg-surface2 px-4 py-5 text-center">
+          <div className="font-mono text-[30px] tracking-[0.3em]">{data.code}</div>
+          <div className="mt-1 text-[11px] text-ink3">
+            {left > 0 ? `Действует ${minutes}:${seconds}` : 'Срок истёк — выдайте новый код'}
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] text-warm">
+          Код показывается один раз. Передайте его сотруднику лично или по защищённому каналу:
+          восстановить код из системы нельзя.
+        </p>
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            className="btn-primary px-4"
+            disabled={left === 0}
+            onClick={() => void copy()}
+          >
+            {copied ? 'Скопировано' : 'Скопировать'}
+          </button>
+          <button type="button" className="btn-ghost px-4" onClick={onClose}>
+            Закрыть
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

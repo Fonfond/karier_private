@@ -53,6 +53,9 @@ from app.schemas.gis import (
     SchemaFrameOut,
     SchemaLayoutIn,
     SchemaLayoutOut,
+    SnapshotCreate,
+    SnapshotListOut,
+    SnapshotOut,
     StateChangeIn,
     StateChangeOut,
     TopologyGraphOut,
@@ -66,6 +69,8 @@ from app.services import poles as poles_service
 from app.services import links as links_service
 from app.services import state as state_service
 from app.services import schema_pdf as schema_pdf_service
+from app.services import schema_graph
+from app.services import schema_snapshots as snapshots_service
 from app.services import topology
 
 router = APIRouter(tags=["gis"])
@@ -151,12 +156,24 @@ def list_assets(
     status: str | None = Query(default=None, max_length=24),
     is_mobile: bool | None = Query(default=None),
     parent_id: uuidlib.UUID | None = Query(default=None),
+    line_id: uuidlib.UUID | None = Query(
+        default=None, description="Фидер: id линии из /api/lines (gis.lines)"
+    ),
+    feeder: str | None = Query(
+        default=None, max_length=64, description="Фидер: код линии, например «ф.21К»"
+    ),
     limit: int = Query(default=500, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> AssetListOut:
     pit = gis.get_pit(db)
+    view = topology.feeder_view(db, pit.id)
+    line = topology.resolve_feeder(view, line_id=line_id, feeder=feeder)
+    filtered = line_id is not None or feeder is not None
+    if filtered and line is None:
+        # неизвестный фидер — пустой список (не 404), чтобы фильтр был безопасен для UI
+        return AssetListOut(items=[], total=0, feeder=None)
     rows, total = gis.list_assets(
         db,
         pit_id=pit.id,
@@ -165,10 +182,15 @@ def list_assets(
         status=status,
         is_mobile=is_mobile,
         parent_id=parent_id,
+        feeder_ids=view.ids_by_line.get(line.id) if line is not None else None,
         limit=limit,
         offset=offset,
     )
-    return AssetListOut(items=[gis.asset_brief(a) for a in rows], total=total)
+    return AssetListOut(
+        items=[gis.asset_brief(a, feeders=view.refs_by_asset.get(a.id, [])) for a in rows],
+        total=total,
+        feeder=view.ref(line),
+    )
 
 
 @router.post("/assets", response_model=AssetOut, status_code=201, summary="Создать объект")
@@ -190,7 +212,9 @@ def create_asset(
             "y": float(asset.y) if asset.y is not None else None,
         },
     )
-    return gis.asset_full(asset)
+    return gis.asset_full(
+        asset, feeders=topology.feeder_view(db, asset.pit_id).refs_by_asset.get(asset.id, [])
+    )
 
 
 @router.get("/assets/{asset_id}", response_model=AssetOut, summary="Карточка объекта")
@@ -199,7 +223,10 @@ def get_asset(
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> AssetOut:
-    return gis.asset_full(gis.get_asset(db, asset_id))
+    asset = gis.get_asset(db, asset_id)
+    return gis.asset_full(
+        asset, feeders=topology.feeder_view(db, asset.pit_id).refs_by_asset.get(asset.id, [])
+    )
 
 
 @router.get(
@@ -268,7 +295,9 @@ def patch_asset(
         detail=f"Изменён объект {updated.code}",
         payload={"before": before, "changes": payload.model_dump(exclude_unset=True, mode="json")},
     )
-    return gis.asset_full(updated)
+    return gis.asset_full(
+        updated, feeders=topology.feeder_view(db, updated.pit_id).refs_by_asset.get(updated.id, [])
+    )
 
 
 @router.post(
@@ -293,7 +322,10 @@ def change_asset_state(
     )
     updated = gis.get_asset(db, asset.id)
     return StateChangeOut(
-        asset=gis.asset_full(updated),
+        asset=gis.asset_full(
+            updated,
+            feeders=topology.feeder_view(db, updated.pit_id).refs_by_asset.get(updated.id, []),
+        ),
         energization_changed=result["energization_changed"],
         affected_assets=result["affected_assets"],
         switching_op_id=result["switching_op_id"],
@@ -313,6 +345,29 @@ def delete_asset(
         "asset.deleted", entity="asset", entity_id=asset_id, detail=f"Удалён объект {code} ({name})"
     )
     return {"message": "Объект удалён", "id": str(asset_id)}
+
+
+@router.post(
+    "/assets/{asset_id}/restore",
+    response_model=AssetOut,
+    summary="Вернуть объект из архива (отмена удаления)",
+)
+def restore_asset(
+    asset_id: uuidlib.UUID,
+    user: Employee = Depends(require_permission("asset.delete")),
+    db: Session = Depends(get_db),
+) -> AssetOut:
+    asset = gis.get_archived_asset(db, asset_id)
+    gis.restore_asset(db, asset, actor=user)
+    audit.add(
+        "asset.restored",
+        entity="asset",
+        entity_id=asset_id,
+        detail=f"Возвращён из архива объект {asset.code} ({asset.name})",
+    )
+    return gis.asset_full(
+        asset, feeders=topology.feeder_view(db, asset.pit_id).refs_by_asset.get(asset.id, [])
+    )
 
 
 # --- путь питания ----------------------------------------------------------
@@ -445,6 +500,20 @@ def delete_link(
     return {"message": "Связь удалена", "id": str(link_id)}
 
 
+@router.post(
+    "/links/{link_id}/restore",
+    response_model=LinkOut,
+    summary="Вернуть связь из архива (отмена удаления)",
+)
+def restore_link(
+    link_id: uuidlib.UUID,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> LinkOut:
+    link = links_service.get_link_any(db, link_id)
+    return links_service.restore_link(db, link, actor=user)
+
+
 # --- линии -----------------------------------------------------------------
 
 @router.get("/lines", response_model=list[LineOut], summary="Линии (фидеры)")
@@ -470,133 +539,128 @@ def create_line(
 
 @router.get("/topology/graph", response_model=TopologyGraphOut, summary="Граф для схемы")
 def topology_graph(
+    line_id: uuidlib.UUID | None = Query(
+        default=None, description="Фидер: id линии из /api/lines (gis.lines)"
+    ),
+    feeder: str | None = Query(
+        default=None, max_length=64, description="Фидер: код линии, например «ф.21К»"
+    ),
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> TopologyGraphOut:
+    """Живая схема. Сборка вынесена в сервис: тот же слепок делает снимок.
+
+    С `line_id`/`feeder` граф ограничен объектами одного фидера — объекты второго
+    карьера (другой фидер от той же ПС 35-6) в ответ не попадают. Блок остаётся,
+    если в фидер входит хотя бы одна его ячейка.
+    """
     pit = gis.get_pit(db)
-    data = topology.graph_payload(db, pit.id)
+    graph = schema_graph.build_graph_out(db, pit)
+    view = topology.feeder_view(db, pit.id)
+    line = topology.resolve_feeder(view, line_id=line_id, feeder=feeder)
+    filtered = line_id is not None or feeder is not None
 
-    blocks_map: dict = {}
-    for item in data["nodes"]:
-        asset = item["asset"]
-        if asset.schema_block_id is not None:
-            block = blocks_map.setdefault(
-                asset.schema_block_id,
-                {"parent": None, "children": []},
-            )
-            block["children"].append(
-                GraphBlockChildOut(
-                    id=asset.id,
-                    code=asset.code,
-                    name=asset.name,
-                    role=asset.schema_role,
-                    local_x=float(asset.schema_local_x) if asset.schema_local_x is not None else None,
-                    local_y=float(asset.schema_local_y) if asset.schema_local_y is not None else None,
-                    type_name=asset.asset_type.name if asset.asset_type else None,
-                    params=asset.attrs or {},
-                )
-            )
+    if filtered and line is None:
+        # неизвестный фидер — пустой граф (не 404), чтобы фильтр был безопасен для UI
+        return TopologyGraphOut(nodes=[], edges=[], blocks=[], feeder=None)
 
-    nodes = [
-        GraphNodeOut(
-            id=item["asset"].id,
-            code=item["asset"].code,
-            name=item["asset"].name,
-            type_code=item["asset"].asset_type.code,
-            type_name=item["asset"].asset_type.name,
-            type_icon=item["asset"].asset_type.icon,
-            type_color=item["asset"].asset_type.color,
-            category=item["asset"].asset_type.category,
-            schema_symbol=item["asset"].asset_type.schema_symbol,
-            status=item["asset"].status,
-            grounded=item["asset"].grounded,
-            energized=item["energized"],
-            is_source=item["is_source"],
-            parent_id=item["asset"].parent_asset_id,
-            schema_x=float(item["asset"].schema_x) if item["asset"].schema_x is not None else None,
-            schema_y=float(item["asset"].schema_y) if item["asset"].schema_y is not None else None,
-            ports=[
-                PortRefOut(
-                    id=p.id,
-                    code=p.code,
-                    name=p.name,
-                    kind=p.kind,
-                    voltage_kv=float(p.nominal_voltage_kv) if p.nominal_voltage_kv else None,
-                    schema_x=float(p.schema_x) if p.schema_x is not None else None,
-                    schema_y=float(p.schema_y) if p.schema_y is not None else None,
-                )
-                for p in item["asset"].ports
-            ],
-        )
-        for item in data["nodes"]
-        if item["asset"].schema_block_id is None
-    ]
-    edges = [
-        GraphEdgeOut(
-            id=item["link"].id,
-            from_asset_id=item["from_asset_id"],
-            to_asset_id=item["to_asset_id"],
-            label=links_service.link_label(item["link"]),
-            link_type=item["link"].link_type,
-            state=item["link"].state,
-            feed_role=item["link"].feed_role,
-            cable_mark=item["link"].cable_mark,
-            length_m=float(item["link"].length_m) if item["link"].length_m else None,
-            cross_section_mm2=(
-                float(item["link"].cross_section_mm2) if item["link"].cross_section_mm2 else None
-            ),
-            cores=item["link"].cores,
-            version=item["link"].version,
-        )
-        for item in data["edges"]
-    ]
+    if line is None:
+        # без фильтра поведение прежнее, но узлы получают признак фидера для группировки
+        nodes = [
+            node.model_copy(update={"feeders": view.refs_by_asset.get(node.id, [])})
+            for node in graph.nodes
+        ]
+        return TopologyGraphOut(nodes=nodes, edges=graph.edges, blocks=graph.blocks)
 
-    blocks = []
-    for block_id, bucket in blocks_map.items():
-        parent_asset = next(
-            (item["asset"] for item in data["nodes"] if item["asset"].id == block_id), None
-        )
-        if parent_asset is None:
+    allowed = set(view.ids_by_line.get(line.id, set()))
+    for block in graph.blocks:
+        if block.asset_id in allowed:
             continue
-        children_ids = {child.id for child in bucket["children"]}
-        port_owner: dict = {}
-        for item in data["nodes"]:
-            asset = item["asset"]
-            for port in asset.ports:
-                if asset.id in children_ids:
-                    port_owner[port.id] = asset.id
-        jumpers: list = []
-        for edge_item in data.get("edges", []):
-            link = edge_item["link"]
-            if getattr(link, "link_type", None) != "jumper":
-                continue
-            source = port_owner.get(link.from_port_id)
-            target = port_owner.get(link.to_port_id)
-            if source and target and source != target:
-                jumpers.append(
-                    GraphJumperOut(
-                        id=link.id,
-                        from_cell_id=source,
-                        to_cell_id=target,
-                        label=link.cable_mark,
-                    )
-                )
+        if any(child.id in allowed for child in block.children):
+            allowed.add(block.asset_id)  # блок показываем, если в фидере его ячейка
 
-        blocks.append(
-            GraphBlockOut(
-                asset_id=parent_asset.id,
-                code=parent_asset.code,
-                name=parent_asset.name,
-                block_code=(parent_asset.attrs or {}).get("block_code"),
-                schema_x=float(parent_asset.schema_x) if parent_asset.schema_x is not None else None,
-                schema_y=float(parent_asset.schema_y) if parent_asset.schema_y is not None else None,
-                collapsed=bool((parent_asset.attrs or {}).get("collapsed")),
-                jumpers=jumpers,
-                children=bucket["children"],
-            )
-        )
+    return TopologyGraphOut(
+        nodes=[
+            node.model_copy(update={"feeders": view.refs_by_asset.get(node.id, [])})
+            for node in graph.nodes
+            if node.id in allowed
+        ],
+        edges=[
+            edge
+            for edge in graph.edges
+            if edge.from_asset_id in allowed and edge.to_asset_id in allowed
+        ],
+        blocks=[block for block in graph.blocks if block.asset_id in allowed],
+        feeder=view.ref(line),
+    )
 
-    return TopologyGraphOut(nodes=nodes, edges=edges, blocks=blocks)
+
+# --- снимки схемы (Q-6: черновик и публикация) ------------------------------
+
+@router.get(
+    "/topology/snapshots",
+    response_model=SnapshotListOut,
+    summary="Снимки схемы (черновики и опубликованные версии)",
+)
+def list_schema_snapshots(
+    status: str | None = Query(default=None, pattern="^(draft|published)$"),
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> SnapshotListOut:
+    pit = gis.get_pit(db)
+    rows = snapshots_service.list_snapshots(db, pit, status=status)
+    return SnapshotListOut(
+        items=[snapshots_service.to_brief(db, row) for row in rows],
+        total=len(rows),
+        published_id=snapshots_service.latest_published_id(db, pit),
+    )
+
+
+@router.post(
+    "/topology/snapshots",
+    response_model=SnapshotOut,
+    status_code=201,
+    summary="Зафиксировать текущее состояние схемы (снимок-черновик)",
+)
+def create_schema_snapshot(
+    payload: SnapshotCreate,
+    user: Employee = Depends(require_permission("topology.edit")),
+    db: Session = Depends(get_db),
+) -> SnapshotOut:
+    pit = gis.get_pit(db)
+    snapshot = snapshots_service.create_snapshot(db, pit, payload, actor=user)
+    return snapshots_service.to_full(db, snapshot)
+
+
+@router.get(
+    "/topology/snapshots/{snapshot_id}",
+    response_model=SnapshotOut,
+    summary="Снимок схемы: слепок на дату",
+)
+def get_schema_snapshot(
+    snapshot_id: uuidlib.UUID,
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> SnapshotOut:
+    pit = gis.get_pit(db)
+    snapshot = snapshots_service.get_snapshot(db, pit, snapshot_id)
+    return snapshots_service.to_full(db, snapshot)
+
+
+@router.post(
+    "/topology/snapshots/{snapshot_id}/publish",
+    response_model=SnapshotOut,
+    summary="Опубликовать снимок схемы (только администратор)",
+)
+def publish_schema_snapshot(
+    snapshot_id: uuidlib.UUID,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> SnapshotOut:
+    pit = gis.get_pit(db)
+    snapshot = snapshots_service.get_snapshot(db, pit, snapshot_id)
+    published = snapshots_service.publish_snapshot(db, snapshot, actor=admin)
+    return snapshots_service.to_full(db, published)
 
 
 @router.put(

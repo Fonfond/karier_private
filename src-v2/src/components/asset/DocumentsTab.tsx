@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Alert, Badge } from '../ui'
+import { Alert, Badge, ConfirmDialog } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { DocumentOut } from '../../lib/gis'
 import { DOC_TYPE_LABEL, gisApi } from '../../lib/gis'
@@ -40,6 +40,8 @@ export function DocumentsTab({ assetId, canManage }: Props) {
   const [docType, setDocType] = useState('schematic')
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<DocumentOut | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const refreshOffline = useCallback(async () => {
@@ -80,6 +82,26 @@ export function DocumentsTab({ assetId, canManage }: Props) {
       setError(err instanceof ApiError ? err.message : 'Не удалось загрузить документ')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const deleteDocument = async (doc: DocumentOut) => {
+    setDeleting(true)
+    setError(null)
+    try {
+      await gisApi.deleteDocument(doc.id)
+      try {
+        await removeOfflineDoc(doc.id)
+      } catch {
+        /* офлайн-копии могло не быть — это не ошибка удаления */
+      }
+      setNotice(`«${doc.title}» удалён`)
+      setPendingDelete(null)
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось удалить документ')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -178,11 +200,7 @@ export function DocumentsTab({ assetId, canManage }: Props) {
                       <button
                         type="button"
                         className="btn-ghost h-8 px-2.5 text-[12px] text-bad"
-                        onClick={async () => {
-                          await gisApi.deleteDocument(doc.id)
-                          await removeOfflineDoc(doc.id)
-                          await load()
-                        }}
+                        onClick={() => setPendingDelete(doc)}
                       >
                         Удалить
                       </button>
@@ -270,6 +288,19 @@ export function DocumentsTab({ assetId, canManage }: Props) {
           </div>
         </div>
       ) : null}
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Удалить документ?"
+        message={
+          pendingDelete
+            ? `«${pendingDelete.title}» (${pendingDelete.file_name}) будет удалён с сервера и из офлайн-кэша устройства.`
+            : undefined
+        }
+        confirmLabel="Удалить"
+        busy={deleting}
+        onConfirm={() => (pendingDelete ? deleteDocument(pendingDelete) : undefined)}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

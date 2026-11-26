@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import ApiError, conflict
-from app.models import Asset, AssetPort, Link
+from app.models import Asset, AssetPort, Line, Link
+from app.schemas.gis import FeederRefOut
 from app.services.gis import get_pit
 
 CONDUCTING_STATUSES = {"on"}
@@ -65,6 +66,115 @@ def load_graph(db: Session, pit_id: uuid.UUID) -> GraphData:
         adjacency.setdefault(link.to_port_id, []).append((link, link.from_port_id))
 
     return GraphData(asset_map, port_map, by_asset, links, adjacency)
+
+
+# --- фидеры (отходящие линии) ----------------------------------------------
+
+@dataclass
+class FeederView:
+    """Принадлежность объектов фидерам карьера (линиям питания)."""
+
+    lines: dict[uuid.UUID, Line]
+    by_code: dict[str, Line]
+    ids_by_line: dict[uuid.UUID, set[uuid.UUID]]
+    refs_by_asset: dict[uuid.UUID, list[FeederRefOut]]
+
+    def ref(self, line: Line | None) -> FeederRefOut | None:
+        return feeder_ref(line) if line is not None else None
+
+
+def feeder_ref(line: Line) -> FeederRefOut:
+    return FeederRefOut(
+        id=line.id, code=line.code, name=line.name, kind=line.kind, state=line.state
+    )
+
+
+def feeder_asset_ids(graph: GraphData, line: Line) -> set[uuid.UUID]:
+    """Объекты фидера: начала связей линии + всё достижимое вниз по потоку.
+
+    Границы (см. docs/team/15-s8-feeders.md):
+      * идём только вниз по потоку (по `from_port` → `to_port`), не поднимаемся к источнику;
+      * не входим в связи, помеченные другой линией, — объекты второго карьера,
+        подключённые своим фидером, не смешиваются с первым;
+      * связи без линии (`line_id IS NULL`) считаются продолжением текущего фидера.
+    """
+    seeds: set[uuid.UUID] = set()
+    for link in graph.links:
+        if link.line_id != line.id:
+            continue
+        to_port = graph.ports.get(link.to_port_id)
+        if to_port is not None and to_port.asset_id in graph.assets:
+            seeds.add(to_port.asset_id)
+
+    reached = set(seeds)
+    queue: deque[uuid.UUID] = deque(seeds)
+    while queue:
+        asset_id = queue.popleft()
+        for port in graph.asset_ports.get(asset_id, []):
+            if port.kind not in ("out", "io"):
+                continue
+            for link, other_port_id in graph.adjacency.get(port.id, []):
+                if link.from_port_id != port.id:
+                    continue
+                if link.line_id is not None and link.line_id != line.id:
+                    continue
+                other_port = graph.ports.get(other_port_id)
+                if other_port is None:
+                    continue
+                other_asset_id = other_port.asset_id
+                if other_asset_id in reached or other_asset_id not in graph.assets:
+                    continue
+                reached.add(other_asset_id)
+                queue.append(other_asset_id)
+    return reached
+
+
+def feeder_view(db: Session, pit_id: uuid.UUID, *, graph: GraphData | None = None) -> FeederView:
+    """Собрать карту «объект → фидеры» по всем активным линиям карьера.
+
+    Результат кешируется на время запроса (`Session.info`): реестр, карточка и
+    граф в одном запросе не пересчитывают обход графа повторно.
+    """
+    cache: dict[uuid.UUID, FeederView] = db.info.setdefault("karier.feeder_view", {})
+    if pit_id in cache:
+        return cache[pit_id]
+    graph = graph or load_graph(db, pit_id)
+    lines = list(
+        db.scalars(
+            select(Line)
+            .where(Line.pit_id == pit_id, Line.deleted_at.is_(None))
+            .order_by(Line.code)
+        ).all()
+    )
+    ids_by_line: dict[uuid.UUID, set[uuid.UUID]] = {}
+    refs_by_asset: dict[uuid.UUID, list[FeederRefOut]] = {}
+    for line in lines:
+        ids = feeder_asset_ids(graph, line)
+        ids_by_line[line.id] = ids
+        ref = feeder_ref(line)
+        for asset_id in ids:
+            refs_by_asset.setdefault(asset_id, []).append(ref)
+    for refs in refs_by_asset.values():
+        refs.sort(key=lambda ref: ref.code)
+    view = FeederView(
+        lines={line.id: line for line in lines},
+        by_code={line.code.strip().lower(): line for line in lines},
+        ids_by_line=ids_by_line,
+        refs_by_asset=refs_by_asset,
+    )
+    cache[pit_id] = view
+    return view
+
+
+def resolve_feeder(
+    view: FeederView, *, line_id: uuid.UUID | None = None, feeder: str | None = None
+) -> Line | None:
+    """Найти линию по id (приоритет) или по коду. Неизвестная — None (пустой фильтр)."""
+    if line_id is not None:
+        return view.lines.get(line_id)
+    if feeder:
+        return view.by_code.get(feeder.strip().lower())
+    return None
 
 
 def is_conducting(asset: Asset) -> bool:

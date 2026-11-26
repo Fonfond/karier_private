@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Badge, Field } from '../ui'
+import { Alert, Badge, ConfirmDialog, Field } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { AssetOut, ChildAsset, PowerPath } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
@@ -19,6 +19,8 @@ interface Props {
   canSwitch: boolean
   canManageDocs: boolean
   onMove?: (asset: AssetOut) => void
+  /** Вызывается после успешного удаления: родитель закрывает карточку и обновляет список. */
+  onDeleted?: (assetId: string) => void
 }
 
 type Tab = 'passport' | 'photos' | 'docs' | 'history' | 'maintenance'
@@ -41,13 +43,15 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'history', label: 'История' },
 ]
 
-export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs, onMove }: Props) {
+export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs, onMove, onDeleted }: Props) {
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [path, setPath] = useState<PowerPath | null>(null)
   const [children, setChildren] = useState<ChildAsset[]>([])
   const [tab, setTab] = useState<Tab>('passport')
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
@@ -125,6 +129,20 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
       setEditError(err instanceof ApiError ? err.message : 'Не удалось сохранить карточку')
     } finally {
       setEditSaving(false)
+    }
+  }
+
+  const deleteAsset = async () => {
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await gisApi.remove(asset.id)
+      setConfirmDelete(false)
+      onDeleted?.(asset.id)
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Не удалось удалить объект')
+    } finally {
+      setDeleteBusy(false)
     }
   }
 
@@ -301,20 +319,18 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             {canManage ? (
               <button
                 type="button"
-                className={confirmDelete ? 'btn-danger h-10 px-3 text-[13px]' : 'btn-ghost h-10 px-3 text-[13px]'}
-                onClick={async () => {
-                  if (!confirmDelete) {
-                    setConfirmDelete(true)
-                    return
-                  }
-                  await gisApi.remove(asset.id)
-                  window.location.reload()
-                }}
+                className="btn-ghost h-10 px-3 text-[13px] text-bad"
+                onClick={() => setConfirmDelete(true)}
               >
-                {confirmDelete ? 'Точно удалить?' : 'Удалить'}
+                Удалить
               </button>
             ) : null}
           </div>
+          {deleteError ? (
+            <div className="pt-1">
+              <Alert kind="error">{deleteError}</Alert>
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -424,6 +440,16 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Удалить объект?"
+        message={`«${asset.name}» (${asset.code}) исчезнет из реестра и с карты. История, документы и журнал аудита сохранятся.`}
+        confirmLabel="Удалить"
+        busy={deleteBusy}
+        onConfirm={deleteAsset}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   )
 }

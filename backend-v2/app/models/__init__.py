@@ -14,7 +14,7 @@ from app.models.auth import (
 )
 from app.models.base import Base
 from app.models.documents import Document
-from app.models.gis import Asset, AssetPort, AssetType, MapLayer, Pit, SchemaBlock
+from app.models.gis import Asset, AssetPort, AssetType, MapLayer, Pit, SchemaBlock, SchemaSnapshot
 from app.models.ops import MaintenanceEntry, Defect, Inspection, InspectionItem, Media
 from app.models.sync import AssetMove, ChangeLog, Conflict, SyncOp
 from app.models.topology import Line, Link, SwitchingOp
@@ -33,6 +33,7 @@ __all__ = [
     "role_permissions",
     "Pit",
     "SchemaBlock",
+    "SchemaSnapshot",
     "MapLayer",
     "AssetType",
     "Asset",

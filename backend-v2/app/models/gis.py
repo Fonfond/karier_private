@@ -242,3 +242,30 @@ class SchemaBlock(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     asset_type = relationship("AssetType")
+
+
+class SchemaSnapshot(Base, TimestampMixin):
+    """Снимок однолинейной схемы: состояние топологии на дату.
+
+    `payload` — полный слепок: узлы, порты, связи, блоки, раскладка и штамп.
+    Опубликованный снимок неизменяем: публикация только фиксирует кто и когда,
+    живая схема продолжает меняться отдельно.
+    """
+
+    __tablename__ = "schema_snapshots"
+    __table_args__ = (
+        CheckConstraint("status in ('draft','published')", name="ck_schema_snapshots_status"),
+        Index("ix_schema_snapshots_pit_status", "pit_id", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    pit_id = Column(Uuid, ForeignKey(f"{SCHEMA}.pits.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(160), nullable=False)
+    comment = Column(Text)
+    status = Column(String(16), nullable=False, default="draft", server_default="draft")
+    payload = Column(JSONB, nullable=False, default=dict)
+
+    created_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+    published_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+    published_at = Column(DateTime(timezone=True))

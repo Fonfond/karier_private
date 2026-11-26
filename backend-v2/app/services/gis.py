@@ -13,13 +13,14 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.errors import ApiError, conflict, not_found
-from app.models import Asset, AssetPort, AssetType, MapLayer, Pit
+from app.models import Asset, AssetPort, AssetType, Link, MapLayer, Pit
 from app.schemas.gis import (
     AssetBriefOut,
     AssetCreate,
     AssetOut,
     AssetTypeCreate,
     AssetUpdate,
+    FeederRefOut,
     MapLayerOut,
     PortOut,
     PowerPathNode,
@@ -159,7 +160,7 @@ def type_ref(asset_type: AssetType) -> TypeRefOut:
     )
 
 
-def asset_brief(asset: Asset) -> AssetBriefOut:
+def asset_brief(asset: Asset, feeders: list[FeederRefOut] | None = None) -> AssetBriefOut:
     return AssetBriefOut(
         id=asset.id,
         code=asset.code,
@@ -173,12 +174,13 @@ def asset_brief(asset: Asset) -> AssetBriefOut:
         location_text=asset.location_text,
         parent_id=asset.parent_asset_id,
         grouped=asset.schema_block_id is not None,
+        feeders=list(feeders or []),
         version=asset.version,
         updated_at=asset.updated_at,
     )
 
 
-def asset_full(asset: Asset) -> AssetOut:
+def asset_full(asset: Asset, feeders: list[FeederRefOut] | None = None) -> AssetOut:
     return AssetOut(
         id=asset.id,
         pit_id=asset.pit_id,
@@ -211,6 +213,7 @@ def asset_full(asset: Asset) -> AssetOut:
             )
             for p in asset.ports
         ],
+        feeders=list(feeders or []),
         version=asset.version,
         updated_at=asset.updated_at,
     )
@@ -235,10 +238,16 @@ def list_assets(
     status: str | None = None,
     is_mobile: bool | None = None,
     parent_id: uuid.UUID | None = None,
+    feeder_ids: set[uuid.UUID] | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[Asset], int]:
     stmt = asset_query(pit_id)
+    if feeder_ids is not None:
+        # фильтр по фидеру: явный набор объектов линии (см. topology.feeder_asset_ids)
+        if not feeder_ids:
+            return [], 0
+        stmt = stmt.where(Asset.id.in_(feeder_ids))
     if q:
         needle = f"%{q.strip()}%"
         stmt = stmt.where(or_(Asset.name.ilike(needle), Asset.code.ilike(needle)))
@@ -493,9 +502,84 @@ def update_asset(db: Session, asset: Asset, payload: AssetUpdate, *, actor) -> A
 
 
 def soft_delete(db: Session, asset: Asset, *, actor) -> None:
-    asset.deleted_at = now()
+    timestamp = now()
+    asset.deleted_at = timestamp
     asset.deleted_by = actor.id
     asset.version = (asset.version or 1) + 1
+
+    # Связи, висящие на портах удаляемого объекта, тоже уходят в архив. Иначе они
+    # остаются «живыми» (deleted_at IS NULL): торчат в /api/links без второго конца,
+    # занимают уникальную пару портов и всплывают, если объект вернут из архива.
+    port_ids = [port.id for port in asset.ports]
+    if port_ids:
+        stale_links = db.scalars(
+            select(Link).where(
+                Link.deleted_at.is_(None),
+                or_(Link.from_port_id.in_(port_ids), Link.to_port_id.in_(port_ids)),
+            )
+        ).all()
+        for link in stale_links:
+            link.deleted_at = timestamp
+            link.deleted_by = actor.id
+            link.version = (link.version or 1) + 1
+
+    db.commit()
+
+
+def get_archived_asset(db: Session, asset_id: uuid.UUID) -> Asset:
+    """Объект из архива (deleted_at NOT NULL) — для отмены удаления."""
+    asset = db.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.deleted_at.is_not(None))
+        .options(selectinload(Asset.ports))
+    )
+    if asset is None:
+        raise not_found("Объект не найден в архиве")
+    return asset
+
+
+def restore_asset(db: Session, asset: Asset, *, actor) -> None:
+    """Вернуть объект из архива вместе со связями, ушедшими вместе с ним.
+
+    Связь восстанавливается, только если её второй конец жив: иначе в графе
+    появился бы висячий участок к архивному объекту. По той же причине нельзя
+    вернуть объект, чей родитель (блок, группа, контейнер) остался в архиве:
+    иначе в реестре появится иерархия со ссылкой на несуществующий узел.
+    """
+    if asset.parent_asset_id is not None:
+        parent = db.get(Asset, asset.parent_asset_id)
+        if parent is not None and parent.deleted_at is not None:
+            raise conflict(
+                "Родительский объект находится в архиве — сначала верните его",
+                "asset.parent_archived",
+            )
+
+    archived_at = asset.deleted_at
+    asset.deleted_at = None
+    asset.deleted_by = None
+    asset.version = (asset.version or 1) + 1
+
+    port_ids = [port.id for port in asset.ports]
+    if port_ids and archived_at is not None:
+        links = db.scalars(
+            select(Link).where(
+                Link.deleted_at == archived_at,
+                or_(Link.from_port_id.in_(port_ids), Link.to_port_id.in_(port_ids)),
+            )
+        ).all()
+        for link in links:
+            from_port = db.get(AssetPort, link.from_port_id)
+            to_port = db.get(AssetPort, link.to_port_id)
+            endpoints = [
+                db.get(Asset, port.asset_id) if port is not None else None
+                for port in (from_port, to_port)
+            ]
+            if any(endpoint is None or endpoint.deleted_at is not None for endpoint in endpoints):
+                continue
+            link.deleted_at = None
+            link.deleted_by = None
+            link.version = (link.version or 1) + 1
+
     db.commit()
 
 

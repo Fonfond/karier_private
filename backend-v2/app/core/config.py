@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_REGISTER_PER_HOUR: int = 20
 
+    # --- обратный прокси и клиентский IP ---
+    # Доверенные reverse-proxy: IP или CIDR через запятую. X-Forwarded-For
+    # принимается только от этих адресов; пустой список — заголовок игнорируется,
+    # клиентский IP берётся из TCP-соединения.
+    TRUSTED_PROXIES: str = ""
+
     # --- CORS (dev: фронт на 5174, API на 8001; в prod — один домен) ---
     CORS_ORIGINS: str = "http://localhost:5174,http://127.0.0.1:5174"
 
@@ -89,9 +95,11 @@ class Settings(BaseSettings):
     MEDIA_URL_TTL_MIN: int = 120
 
     # --- разработка ---
-    # Показывать OTP-код в ответе API (только для стенда без Telegram-бота).
-    EXPOSE_OTP_CODE: bool = True
-    # Печатать письма/коды в stdout вместо отправки.
+    # DEPRECATED (S-5): коды первичной регистрации больше не возвращаются в ответе
+    # API — их выдаёт администратор (POST /api/employees/{id}/otp). Флаг оставлен
+    # ради совместимости существующих .env; в prod обязан быть false (см. валидатор).
+    EXPOSE_OTP_CODE: bool = False
+    # Печатать письма/коды в stdout вместо отправки. Сами коды в журнал не пишутся.
     CONSOLE_NOTIFICATIONS: bool = True
 
     @model_validator(mode="after")
@@ -109,6 +117,10 @@ class Settings(BaseSettings):
                 "SECRET_KEY: не задан или короче 32 символов "
                 "(добавьте SECRET_KEY в backend-v2/.env)"
             )
+        if self.EXPOSE_OTP_CODE:
+            problems.append(
+                "EXPOSE_OTP_CODE: в prod коды не выводятся (флаг deprecated), установите false"
+            )
         if problems:
             raise ValueError(
                 "Некорректная конфигурация для ENV=prod: " + "; ".join(problems)
@@ -118,6 +130,11 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def trusted_proxies(self) -> list[str]:
+        """Список доверенных прокси (IP или CIDR) для X-Forwarded-For."""
+        return [item.strip() for item in self.TRUSTED_PROXIES.split(",") if item.strip()]
 
     @property
     def is_dev(self) -> bool:

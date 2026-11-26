@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base, TimestampMixin
-from app.models.gis import SCHEMA
+from app.models.gis import SCHEMA, SchemaSnapshot
 
 
 class Line(Base, TimestampMixin):
@@ -141,3 +141,15 @@ class SwitchingOp(Base):
     note = Column(Text)
 
     asset = relationship("Asset", lazy="joined")
+
+
+# --- снимки схемы: индекс и комментарий таблицы -----------------------------
+# Сама таблица `gis.schema_snapshots` объявлена в `app.models.gis`, а её индекс по
+# `created_at` и комментарий созданы миграцией 0014. Пока они не описаны в
+# метаданных, `alembic revision --autogenerate` предлагает их удалить/пересоздать
+# на каждом прогоне. Объявляем здесь — рядом с остальной топологией схемы.
+SCHEMA_SNAPSHOT_COMMENT = (
+    "Снимок схемы: состояние топологии на дату (черновик или опубликованная версия)"
+)
+SchemaSnapshot.__table__.comment = SCHEMA_SNAPSHOT_COMMENT
+Index("ix_schema_snapshots_created", SchemaSnapshot.__table__.c.created_at)

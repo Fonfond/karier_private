@@ -5,10 +5,22 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
+from app.core.security import create_access_token
 from app.db.session import SessionLocal
-from app.models import Asset, AssetMove, ChangeLog, Conflict, SyncOp
+from app.models import (
+    Asset,
+    AssetMove,
+    AssetType,
+    ChangeLog,
+    Conflict,
+    Defect,
+    Employee,
+    Pit,
+    Role,
+    SyncOp,
+)
 
 
 def _asset(client, headers, code: str) -> dict:
@@ -292,3 +304,258 @@ def test_conflict_rows_are_persisted(client, admin_headers):
         assert assets >= 27
     finally:
         db.close()
+
+
+# --- S-4: RBAC офлайн-операций и привязка entity к карьеру ------------------
+
+def _role_headers(role_code: str) -> tuple[dict, uuid.UUID]:
+    """Токен активного сотрудника с указанной ролью (без пароля/2FA)."""
+    db = _db()
+    try:
+        role = db.scalar(select(Role).where(Role.code == role_code))
+        assert role is not None, f"роль {role_code} не найдена"
+        employee = Employee(
+            id=uuid.uuid4(),
+            tab_no=f"T{uuid.uuid4().hex[:8].upper()}",
+            full_name=f"Тест S-4 {role_code}",
+            role_id=role.id,
+            status="active",
+            otp_channel="manual",
+        )
+        db.add(employee)
+        db.commit()
+        token = create_access_token(str(employee.id), role=role_code, session_id=str(uuid.uuid4()))
+        return {"Authorization": f"Bearer {token}"}, employee.id
+    finally:
+        db.close()
+
+
+def _drop_employee(employee_id: uuid.UUID) -> None:
+    db = _db()
+    try:
+        employee = db.get(Employee, employee_id)
+        if employee is not None:
+            db.delete(employee)
+            db.commit()
+    finally:
+        db.close()
+
+
+def _push(client, headers, ops):
+    return client.post(
+        "/api/sync/push",
+        headers=headers,
+        json={"device_id": "test-s4", "ops": ops},
+    )
+
+
+def _asset_op(entity_id: str, patch: dict, op: str = "update") -> dict:
+    return {
+        "op_id": str(uuid.uuid4()),
+        "entity": "asset",
+        "entity_id": entity_id,
+        "op": op,
+        "patch": patch,
+    }
+
+
+def _move_op(entity_id: str, x: float, y: float) -> dict:
+    return {
+        "op_id": str(uuid.uuid4()),
+        "entity": "move",
+        "entity_id": entity_id,
+        "op": "update",
+        "patch": {"x": x, "y": y},
+    }
+
+
+def _defect_op(asset_id: str, description: str) -> dict:
+    return {
+        "op_id": str(uuid.uuid4()),
+        "entity": "defect",
+        "entity_id": asset_id,
+        "op": "insert",
+        "patch": {"asset_id": asset_id, "description": description, "severity": "low"},
+    }
+
+
+def test_viewer_forbidden_status_patch(client, admin_headers):
+    """viewer без asset.status.edit: push status → 403 с кодом, объект не меняется."""
+    asset = _asset(client, admin_headers, "KTP-14")
+    headers, employee_id = _role_headers("viewer")
+    try:
+        response = _push(client, headers, [_asset_op(asset["id"], {"status": "off"})])
+        assert response.status_code == 403, response.text
+        assert response.json()["code"] == "perm.denied", response.text
+
+        after = client.get(f"/api/assets/{asset['id']}", headers=admin_headers).json()
+        assert after["status"] == asset["status"], "запрещённая операция не должна менять объект"
+    finally:
+        _drop_employee(employee_id)
+
+
+def test_viewer_and_contractor_forbidden_operations(client, admin_headers):
+    """viewer/contractor: move и patch координат запрещены; дефект — только без defect.manage."""
+    asset = _asset(client, admin_headers, "KTP-15")
+    for role in ("viewer", "contractor"):
+        headers, employee_id = _role_headers(role)
+        try:
+            status_push = _push(client, headers, [_asset_op(asset["id"], {"status": "off"})])
+            assert status_push.status_code == 403, (role, status_push.text)
+
+            move_push = _push(client, headers, [_move_op(asset["id"], 100, 100)])
+            assert move_push.status_code == 403, (role, move_push.text)
+
+            patch_push = _push(client, headers, [_asset_op(asset["id"], {"x": 100, "y": 100})])
+            assert patch_push.status_code == 403, (role, patch_push.text)
+        finally:
+            _drop_employee(employee_id)
+
+    headers, employee_id = _role_headers("viewer")
+    try:
+        defect_push = _push(client, headers, [_defect_op(asset["id"], "viewer не должен создавать")])
+        assert defect_push.status_code == 403, defect_push.text
+        assert defect_push.json()["code"] == "perm.denied"
+    finally:
+        _drop_employee(employee_id)
+
+
+def test_operator_cannot_change_name_without_asset_create(client, admin_headers):
+    """operator без asset.create: patch name/attrs → 403."""
+    asset = _asset(client, admin_headers, "KTP-14")
+    headers, employee_id = _role_headers("operator")
+    try:
+        for patch in ({"name": "Новое имя"}, {"attrs": {"note": "x"}}):
+            response = _push(client, headers, [_asset_op(asset["id"], patch)])
+            assert response.status_code == 403, response.text
+            assert response.json()["code"] == "perm.denied"
+    finally:
+        _drop_employee(employee_id)
+
+
+def test_operator_push_status_and_move_applied(client, admin_headers):
+    """operator с asset.status.edit/asset.move: валидные операции применяются (200)."""
+    asset = _asset(client, admin_headers, "KTP-15")
+    mobile = _asset(client, admin_headers, "DMO-1")
+    headers, employee_id = _role_headers("operator")
+    try:
+        new_status = "off" if asset["status"] != "off" else "on"
+        status_push = _push(client, headers, [_asset_op(asset["id"], {"status": new_status})])
+        assert status_push.status_code == 200, status_push.text
+        assert status_push.json()["results"][0]["status"] == "applied"
+        client.post(
+            f"/api/assets/{asset['id']}/state",
+            headers=admin_headers,
+            json={"status": asset["status"], "reason": "S-4: возврат статуса"},
+        )
+
+        move_push = _push(client, headers, [_move_op(mobile["id"], 310, 210)])
+        assert move_push.status_code == 200, move_push.text
+        assert move_push.json()["results"][0]["status"] in ("applied", "conflict_won")
+        after = client.get(f"/api/assets/{mobile['id']}", headers=admin_headers).json()
+        assert (after["x"], after["y"]) == (310.0, 210.0)
+    finally:
+        _drop_employee(employee_id)
+        client.post(
+            f"/api/assets/{mobile['id']}/move",
+            headers=admin_headers,
+            json={"x": mobile["x"], "y": mobile["y"], "note": "S-4: возврат координат"},
+        )
+
+
+def test_contractor_can_insert_defect(client, admin_headers):
+    """contractor с defect.manage: дефект из офлайн-очереди применяется."""
+    asset = _asset(client, admin_headers, "KTP-14")
+    headers, employee_id = _role_headers("contractor")
+    description = f"S-4 дефект {uuid.uuid4().hex[:8]}"
+    try:
+        response = _push(client, headers, [_defect_op(asset["id"], description)])
+        assert response.status_code == 200, response.text
+        assert response.json()["results"][0]["status"] == "applied"
+
+        db = _db()
+        try:
+            defect = db.scalar(select(Defect).where(Defect.description == description))
+            assert defect is not None, "дефект должен появиться в БД"
+            defect_id = defect.id
+        finally:
+            db.close()
+        client.delete(f"/api/defects/{defect_id}", headers=admin_headers)
+    finally:
+        _drop_employee(employee_id)
+
+
+def test_push_rejects_out_of_bounds_move_and_patch(client, admin_headers):
+    """Границы карты: и move, и patch x/y вне карты → rejected (не 500)."""
+    mobile = _asset(client, admin_headers, "DMO-1")
+
+    move_response = _push(client, admin_headers, [_move_op(mobile["id"], 5000, 5000)])
+    assert move_response.status_code == 200, move_response.text
+    move_result = move_response.json()["results"][0]
+    assert move_result["status"] == "rejected"
+    assert "вне карты" in (move_result["message"] or "").lower()
+
+    patch_response = _push(client, admin_headers, [_asset_op(mobile["id"], {"x": 5000})])
+    assert patch_response.status_code == 200, patch_response.text
+    patch_result = patch_response.json()["results"][0]
+    assert patch_result["status"] == "rejected"
+    assert "вне карты" in (patch_result["message"] or "").lower()
+
+    after = client.get(f"/api/assets/{mobile['id']}", headers=admin_headers).json()
+    assert (after["x"], after["y"]) == (mobile["x"], mobile["y"])
+
+
+def test_foreign_pit_entity_returns_404(client, admin_headers):
+    """entity_id чужого карьера (asset/move/defect) → 404 до каких-либо изменений."""
+    db = _db()
+    pit_id = uuid.uuid4()
+    foreign_id = uuid.uuid4()
+    try:
+        asset_type = db.scalar(select(AssetType).where(AssetType.is_active.is_(True)))
+        assert asset_type is not None
+        pit = Pit(
+            id=pit_id,
+            code=f"other-{uuid.uuid4().hex[:6]}",
+            name="Чужой карьер",
+            timezone="UTC",
+            crs_name="local",
+            is_active=False,
+            schema_frame={},
+        )
+        foreign = Asset(
+            id=foreign_id,
+            pit_id=pit_id,
+            asset_type_id=asset_type.id,
+            code=f"FOREIGN-{uuid.uuid4().hex[:6]}",
+            name="Чужой объект",
+            status="off",
+            lifecycle="installed",
+            grounded=False,
+            is_mobile=False,
+            attrs={},
+            version=1,
+        )
+        db.add(pit)
+        db.flush()  # без relationship порядок INSERT не гарантирован — карьер раньше объекта
+        db.add(foreign)
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        for op in (
+            _asset_op(str(foreign_id), {"status": "on"}),
+            _move_op(str(foreign_id), 10, 10),
+            _defect_op(str(foreign_id), "чужой дефект"),
+        ):
+            response = _push(client, admin_headers, [op])
+            assert response.status_code == 404, response.text
+            assert response.json()["code"] == "asset.not_found", response.text
+    finally:
+        db = _db()
+        try:
+            db.execute(text("delete from gis.assets where id = :id"), {"id": foreign_id})
+            db.execute(text("delete from gis.pits where id = :id"), {"id": pit_id})
+            db.commit()
+        finally:
+            db.close()

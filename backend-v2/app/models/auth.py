@@ -109,13 +109,27 @@ class Employee(Base, TimestampMixin):
     version = Column(Integer, nullable=False, default=1)
 
     role = relationship("Role", back_populates="employees", lazy="joined")
+    # Дочерние строки удаляются каскадом в БД (ON DELETE CASCADE). Без passive_deletes
+    # SQLAlchemy пытается обнулить их FK перед удалением родителя и падает на NOT NULL.
     credential = relationship(
-        "Credential", back_populates="employee", uselist=False, cascade="all, delete-orphan"
+        "Credential",
+        back_populates="employee",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     mfa_factors = relationship(
-        "MfaFactor", back_populates="employee", cascade="all, delete-orphan"
+        "MfaFactor",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
-    sessions = relationship("AuthSession", back_populates="employee")
+    sessions = relationship(
+        "AuthSession",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     @property
     def is_active(self) -> bool:

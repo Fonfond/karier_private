@@ -4,7 +4,7 @@ import { useAuth } from '../auth/AuthProvider'
 import { AssetSheet } from '../components/asset/AssetSheet'
 import { BottomSheet } from '../components/BottomSheet'
 import { MapView } from '../components/map/MapView'
-import { Alert, Badge } from '../components/ui'
+import { Alert, Badge, ConfirmDialog } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetBrief, AssetType, MapLayer, TopologyGraph } from '../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
@@ -90,6 +90,7 @@ export function MapPage() {
   const [dragFrom, setDragFrom] = useState<string | null>(null)
   const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; no: string; status: string; installed: string; length: string; state: string } | null>(null)
   const [linkSaving, setLinkSaving] = useState(false)
+  const [confirmRemoveLink, setConfirmRemoveLink] = useState(false)
 
   const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
   const [moveDraft, setMoveDraft] = useState<{ x: number; y: number } | null>(null)
@@ -831,9 +832,11 @@ export function MapPage() {
       ) : (
         <div className="pointer-events-none absolute bottom-4 left-3 z-[1000] hidden rounded-xl border border-line bg-bg/85 p-3 text-[11px] backdrop-blur sm:block">
           <div className="mb-1.5 text-ink3">Обозначения</div>
-          <div className="text-ink2">— сплошная: связь включена</div>
-          <div className="text-ink2">┄ пунктир: разомкнута</div>
-          <div className="text-ink2">⏚ заземлено · фиолетовая: перемычка</div>
+          <div className="text-ink2"><span style={{ color: '#F04438' }}>━━</span> красная сплошная — под напряжением</div>
+          <div className="text-ink2"><span style={{ color: '#22C55E' }}>┅┅</span> зелёная пунктирная — отключено / без питания</div>
+          <div className="text-ink2"><span className="tracking-[2px]">···</span> точки — перемычка между ячейками</div>
+          <div className="text-ink2">→ направление «выход → вход» · ⏚ заземлено</div>
+          <div className="text-ink2">фидер — линия от источника к приёмнику</div>
         </div>
       )}
 
@@ -898,10 +901,32 @@ export function MapPage() {
           </label>
           <div className="flex gap-2">
             <button type="button" className="btn-primary h-8 flex-1" disabled={linkSaving} onClick={() => void saveLinkEdit()}>Сохранить</button>
-            <button type="button" className="btn-ghost h-8 text-bad" disabled={linkSaving} onClick={() => void removeLink()}>🗑</button>
+            <button
+              type="button"
+              className="btn-ghost h-8 text-bad"
+              title="Удалить связь"
+              aria-label="Удалить связь"
+              disabled={linkSaving}
+              onClick={() => setConfirmRemoveLink(true)}
+            >
+              🗑
+            </button>
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmRemoveLink}
+        title="Удалить связь?"
+        message="Связь исчезнет с карты и из схемы. Объекты и их история сохранятся."
+        confirmLabel="Удалить"
+        busy={linkSaving}
+        onConfirm={async () => {
+          await removeLink()
+          setConfirmRemoveLink(false)
+        }}
+        onCancel={() => setConfirmRemoveLink(false)}
+      />
 
       {isAdmin && view === 'map' && !adding ? (
         <div className="absolute bottom-5 right-4 z-[1000] flex gap-2">
@@ -966,6 +991,11 @@ export function MapPage() {
           <AssetSheet
             assetId={selectedId}
             onOpenAsset={(id) => setSelectedId(id)}
+            onDeleted={() => {
+              setSelectedId(null)
+              setSheetOpen(false)
+              void refresh()
+            }}
             canManage={can('asset.create')}
             canSwitch={canSwitch}
             canManageDocs={canManageDocs}

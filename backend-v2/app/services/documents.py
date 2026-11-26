@@ -22,7 +22,6 @@ ALLOWED_MIME = {
     "image/jpeg",
     "image/png",
     "image/webp",
-    "image/svg+xml",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.ms-excel",
@@ -30,6 +29,25 @@ ALLOWED_MIME = {
     "text/plain",
     "application/zip",
 }
+# S-5: image/svg+xml убран намеренно — SVG умеет содержать активный код
+# (хранимый XSS при открытии файла в браузере).
+
+# Ожидаемые сигнатуры (magic bytes) для типов, у которых они есть.
+# DOCX/XLSX — это ZIP-контейнеры; DOC/XLS — OLE2.
+SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "application/pdf": (b"%PDF",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/webp": (b"RIFF",),
+    "application/zip": (b"PK\x03\x04",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (b"PK\x03\x04",),
+    "application/msword": (b"\xd0\xcf\x11\xe0",),
+    "application/vnd.ms-excel": (b"\xd0\xcf\x11\xe0",),
+}
+
+# Типы, которые безопасно отдавать браузеру как «активные» (inline).
+SAFE_INLINE_MIME = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
 
 DOC_TYPE_LABEL = {
     "schematic": "Электросхема",
@@ -37,6 +55,24 @@ DOC_TYPE_LABEL = {
     "manual": "Инструкция",
     "other": "Прочее",
 }
+
+
+def _read_head(upload: UploadFile, size: int = 1024) -> bytes:
+    """Первые байты файла (и вернуть указатель в начало)."""
+    head = upload.file.read(size) or b""
+    upload.file.seek(0)
+    return head
+
+
+def _reject_active_markup(head: bytes) -> None:
+    """Отклонить SVG/XML-разметку независимо от заявленного MIME (S-5)."""
+    lowered = head.lower().lstrip()
+    if b"<svg" in lowered or (lowered.startswith(b"<?xml") and b"<svg" in lowered):
+        raise ApiError(
+            415,
+            "document.svg_not_allowed",
+            "SVG не принимается: такой файл может содержать активный код",
+        )
 
 
 def storage_root() -> Path:
@@ -68,6 +104,19 @@ def save_document(
             "document.bad_type",
             "Такой тип файла не поддерживается. Разрешены PDF, изображения, Word, Excel, ZIP",
         )
+
+    # S-5: проверка содержимого, а не только заявленного MIME.
+    head = _read_head(upload)
+    _reject_active_markup(head)
+    expected = SIGNATURES.get(mime)
+    if expected and not any(head.startswith(signature) for signature in expected):
+        raise ApiError(
+            422,
+            "document.bad_content",
+            "Содержимое файла не совпадает с заявленным типом",
+        )
+    if mime == "image/webp" and head[8:12] != b"WEBP":
+        raise ApiError(422, "document.bad_content", "Файл не является изображением WebP")
 
     document_id = uuid.uuid4()
     suffix = Path(upload.filename or "").suffix.lower()[:10]

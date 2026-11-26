@@ -70,9 +70,20 @@ class EmployeeListOut(BaseModel):
 
 
 class InviteOut(BaseModel):
+    """Статус кода первичной регистрации: сам код в ответе больше не возвращается."""
+
     delivery: str
     expires_in: int
-    debug_code: str | None = None
+    issued: bool = True
+
+
+class OtpIssueOut(BaseModel):
+    """Одноразовый код первичной регистрации — возвращается ровно один раз."""
+
+    code: str
+    tab_no: str
+    expires_at: datetime
+    expires_in: int = Field(description="Срок жизни кода в секундах")
 
 
 class ResetPasswordOut(BaseModel):

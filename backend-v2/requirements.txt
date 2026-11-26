@@ -19,7 +19,13 @@ qrcode>=8.0,<9
 
 # тесты
 pytest==8.3.4
+pytest-cov==6.3.0
 httpx==0.28.1
 # MCP server for AI agents (compatible with FastAPI 0.115)
 mcp>=1.2,<2
 starlette==0.38.6
+
+# отчёты и изображения (XLSX/PDF-экспорт, паспорт объекта, подложки карты)
+openpyxl==3.1.5
+reportlab==5.1.0
+pillow==13.0.0

@@ -30,6 +30,21 @@ class TypeRefOut(BaseModel):
     color: str | None = None
 
 
+class FeederRefOut(BaseModel):
+    """Отходящая линия (фидер), к которой относится объект.
+
+    Объект принадлежит фидеру, если он достижим вниз по потоку от связей этой
+    линии (см. docs/team/15-s8-feeders.md). Один объект может входить в несколько
+    фидеров — например, секция с основным и резервным питанием.
+    """
+
+    id: uuid.UUID
+    code: str
+    name: str
+    kind: str
+    state: str
+
+
 class AssetOut(BaseModel):
     id: uuid.UUID
     pit_id: uuid.UUID
@@ -52,6 +67,7 @@ class AssetOut(BaseModel):
     parent_id: uuid.UUID | None = None
     parent_name: str | None = None
     ports: list[PortOut] = []
+    feeders: list[FeederRefOut] = []
     version: int
     updated_at: datetime
 
@@ -70,6 +86,7 @@ class AssetBriefOut(BaseModel):
     y: float | None = None
     location_text: str | None = None
     parent_id: uuid.UUID | None = None
+    feeders: list[FeederRefOut] = []
     version: int
     updated_at: datetime
 
@@ -77,6 +94,7 @@ class AssetBriefOut(BaseModel):
 class AssetListOut(BaseModel):
     items: list[AssetBriefOut]
     total: int
+    feeder: FeederRefOut | None = None
 
 
 class AssetCreate(BaseModel):
@@ -159,6 +177,9 @@ class AssetTypeCreate(BaseModel):
     required_attrs: list[str] = []
     is_mobile_default: bool = False
     has_maintenance: bool = False
+    # комплектность: тип содержит подтипы/ячейки (БКРУ, ПС) — Спринт 21+
+    is_composite: bool = False
+    composite_template: list[dict[str, Any]] = Field(default_factory=list)
     schema_symbol: str = Field(default="load", max_length=24)
     sort_order: int = 100
     description: str | None = None
@@ -409,6 +430,7 @@ class GraphNodeOut(BaseModel):
     schema_x: float | None = None
     schema_y: float | None = None
     ports: list[PortRefOut] = []
+    feeders: list[FeederRefOut] = []
 
 
 class GraphEdgeOut(BaseModel):
@@ -446,6 +468,9 @@ class GraphJumperOut(BaseModel):
 
 class GraphBlockOut(BaseModel):
     asset_id: uuid.UUID
+    kind: str | None = Field(default=None, description="block_code: bkru_standard, contour…")
+    width: float | None = Field(default=None, description="Ширина контура на схеме, px")
+    height: float | None = Field(default=None, description="Высота контура на схеме, px")
     code: str
     name: str
     block_code: str | None = None
@@ -460,6 +485,7 @@ class TopologyGraphOut(BaseModel):
     nodes: list[GraphNodeOut]
     edges: list[GraphEdgeOut]
     blocks: list[GraphBlockOut] = []
+    feeder: FeederRefOut | None = None
 
 
 class TopologyIssueOut(BaseModel):
@@ -510,8 +536,12 @@ class BlockInstantiateOut(BaseModel):
 class BlockCellIn(BaseModel):
     label: str = Field(min_length=1, max_length=128)
     role: Literal["cell", "incoming", "outgoing"] = "cell"
+    # "cell" — тип по умолчанию; если такого типа нет в справочнике, бэкенд
+    # подберёт активный аналог (см. schema_blocks._resolve_type)
     type_code: str = Field(default="cell", max_length=48)
     params: dict[str, Any] = {}
+    x: float | None = Field(default=None, description="Локальный X внутри блока")
+    y: float | None = Field(default=None, description="Локальный Y внутри блока")
 
 
 class BlockCellOut(BaseModel):
@@ -623,3 +653,118 @@ class CompositeOut(BaseModel):
     name: str
     code: str
     children: int = 0
+
+
+# --- снимки схемы (Q-6: черновик / публикация) ------------------------------
+
+SnapshotStatus = Literal["draft", "published"]
+
+
+class SnapshotCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=160, description="Название снимка")
+    comment: str | None = Field(default=None, max_length=2000, description="Комментарий энергетика")
+
+
+class SnapshotBriefOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    comment: str | None = None
+    status: SnapshotStatus
+    created_at: datetime
+    created_by: uuid.UUID | None = None
+    created_by_name: str | None = None
+    published_at: datetime | None = None
+    published_by: uuid.UUID | None = None
+    published_by_name: str | None = None
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class SnapshotOut(SnapshotBriefOut):
+    payload: dict[str, Any]
+
+
+class SnapshotListOut(BaseModel):
+    items: list[SnapshotBriefOut]
+    total: int
+    published_id: uuid.UUID | None = None
+
+class ContourIn(BaseModel):
+    """Прямоугольный контур/блок, нарисованный на схеме."""
+
+    name: str = Field(min_length=2, max_length=255)
+    type_code: str = Field(min_length=2, max_length=48)
+    x: float
+    y: float
+    width: float = Field(default=320, ge=80, le=4000)
+    height: float = Field(default=220, ge=80, le=4000)
+    comment: str | None = Field(default=None, max_length=255)
+
+
+class ContourOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+    type_code: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class PlaceAssetIn(BaseModel):
+    """Поставить существующий объект реестра на схему (без дублирования)."""
+
+    x: float
+    y: float
+
+class BulkCellsIn(BaseModel):
+    """Пакетное добавление ячеек: сквозная нумерация и разбиение на секции."""
+
+    count: int = Field(default=10, ge=1, le=200, description="Сколько ячеек создать")
+    start: int = Field(default=1, ge=0, le=9999, description="Стартовый номер (сквозная нумерация)")
+    prefix: str = Field(default="Яч. №", max_length=32)
+    suffix: str = Field(default="", max_length=16)
+    section_size: int = Field(default=0, ge=0, le=200, description="Ячеек в секции; 0 — без секций")
+    section_prefix: str = Field(default="Секция", max_length=32)
+    role: Literal["cell", "incoming", "outgoing"] = "outgoing"
+    type_code: str | None = Field(default=None, max_length=48)
+
+
+class BulkCellsOut(BaseModel):
+    parent_id: uuid.UUID
+    count: int
+    sections: list[str] = []
+    items: list[BlockCellOut] = []
+
+
+class CellCableIn(BaseModel):
+    """Отходящий кабель от ячейки до выбранного объекта (опора, разъединитель, КТП…)."""
+
+    to_asset_id: uuid.UUID
+    from_port_id: uuid.UUID | None = None
+    to_port_id: uuid.UUID | None = None
+    cable_mark: str | None = Field(default=None, max_length=64)
+    length_m: float | None = Field(default=None, ge=0)
+    cross_section_mm2: float | None = Field(default=None, ge=0)
+    cores: int | None = Field(default=None, ge=1, le=64)
+    link_type: Literal["cable", "overhead"] = "cable"
+
+
+class LineEquipmentIn(BaseModel):
+    """Оборудование линии (КТП, ЯКУ, разъединитель), присоединяемое к опоре/узлу."""
+
+    anchor_asset_id: uuid.UUID
+    type_code: str = Field(min_length=2, max_length=48)
+    name: str | None = Field(default=None, max_length=255)
+    cable_mark: str | None = Field(default=None, max_length=64)
+    link_type: Literal["cable", "overhead"] = "cable"
+
+
+class LineEquipmentOut(BaseModel):
+    asset_id: uuid.UUID
+    code: str
+    name: str
+    type_code: str
+    link_id: uuid.UUID | None = None
+    schema_x: float | None = None
+    schema_y: float | None = None

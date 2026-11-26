@@ -1,0 +1,21 @@
+# Контекст сборки веб-образа: только исходники фронтенда.
+node_modules/
+dist/
+coverage/
+htmlcov/
+*.log
+npm-debug.log*
+
+# секреты и локальная конфигурация
+.env
+.env.*
+
+# git и упаковка
+.git
+.gitignore
+Dockerfile
+.dockerignore
+
+# во фронтенд-образе не нужны sourcemap и локальные конфиги разработки
+*.map
+vite.test.config.mjs

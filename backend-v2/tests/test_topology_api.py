@@ -111,6 +111,107 @@ def test_topology_graph(client, admin_headers):
     assert any(edge["link_type"] == "jumper" for edge in body["edges"])
 
 
+# --- фидеры (S-8): разделение объектов по отходящим линиям ------------------
+
+def _line_by_code(client, headers, code: str) -> dict | None:
+    lines = client.get("/api/lines", headers=headers).json()
+    return next((line for line in lines if line["code"] == code), None)
+
+
+def test_assets_filter_by_feeder(client, admin_headers):
+    feeder = _line_by_code(client, admin_headers, "ф.21К")
+    assert feeder is not None, "в демо-данных должен быть фидер ф.21К"
+
+    filtered = client.get(
+        "/api/assets", headers=admin_headers, params={"feeder": feeder["code"], "limit": 1000}
+    )
+    assert filtered.status_code == 200, filtered.text
+    body = filtered.json()
+    assert body["feeder"]["id"] == feeder["id"]
+    assert body["feeder"]["code"] == feeder["code"]
+    assert body["total"] == len(body["items"]) and body["total"] > 0
+
+    codes = {item["code"] for item in body["items"]}
+    assert "KTP-14" in codes, "объект вниз по потоку от фидера должен попадать в выборку"
+    assert "POLE-3" not in codes, "объекты другого фидера (ВЛ-6кВ-4) не должны смешиваться"
+    for item in body["items"]:
+        assert any(ref["code"] == feeder["code"] for ref in item["feeders"])
+
+    # тот же результат по id линии
+    by_id = client.get(
+        "/api/assets", headers=admin_headers, params={"line_id": feeder["id"], "limit": 1000}
+    ).json()
+    assert {item["code"] for item in by_id["items"]} == codes
+
+
+def test_assets_filter_unknown_feeder_empty(client, admin_headers):
+    for params in ({"feeder": "нет-такой-линии"}, {"line_id": str(uuid.uuid4())}):
+        response = client.get("/api/assets", headers=admin_headers, params=params)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["feeder"] is None
+
+
+def test_assets_without_feeder_filter_keep_full_registry(client, admin_headers):
+    body = client.get("/api/assets", headers=admin_headers, params={"limit": 5}).json()
+    assert body["feeder"] is None
+
+    # оба фидера остаются в реестре; ищем по коду, не завися от размера страницы
+    ktp_page = client.get(
+        "/api/assets", headers=admin_headers, params={"q": "KTP-14", "limit": 50}
+    ).json()
+    ktp = next((item for item in ktp_page["items"] if item["code"] == "KTP-14"), None)
+    assert ktp is not None, "без фильтра объект первого фидера остаётся в реестре"
+    assert any(ref["code"] == "ф.21К" for ref in ktp["feeders"]), "признак фидера есть и без фильтра"
+
+    pole_page = client.get(
+        "/api/assets", headers=admin_headers, params={"q": "POLE-3", "limit": 50}
+    ).json()
+    assert any(item["code"] == "POLE-3" for item in pole_page["items"]), (
+        "без фильтра объект второго фидера тоже остаётся в реестре"
+    )
+
+
+def test_topology_graph_filter_by_feeder(client, admin_headers):
+    feeder = _line_by_code(client, admin_headers, "ф.21К")
+    assert feeder is not None
+
+    full = client.get("/api/topology/graph", headers=admin_headers).json()
+    assert {"POLE-3", "KTP-14"} <= {node["code"] for node in full["nodes"]}
+    assert full["feeder"] is None
+
+    filtered = client.get(
+        "/api/topology/graph", headers=admin_headers, params={"feeder": feeder["code"]}
+    )
+    assert filtered.status_code == 200, filtered.text
+    body = filtered.json()
+    assert body["feeder"]["id"] == feeder["id"]
+    codes = {node["code"] for node in body["nodes"]}
+    assert codes, "граф фидера не должен быть пустым"
+    assert "KTP-14" in codes
+    assert "POLE-3" not in codes, "объекты второго фидера не попадают в граф первого"
+
+    ktp = next(node for node in body["nodes"] if node["code"] == "KTP-14")
+    assert any(ref["code"] == feeder["code"] for ref in ktp["feeders"])
+
+    node_ids = {node["id"] for node in body["nodes"]}
+    child_ids = {child["id"] for block in body["blocks"] for child in block["children"]}
+    visible = node_ids | child_ids
+    for edge in body["edges"]:
+        assert edge["from_asset_id"] in visible
+        assert edge["to_asset_id"] in visible
+
+    unknown = client.get(
+        "/api/topology/graph", headers=admin_headers, params={"feeder": "нет-такой-линии"}
+    ).json()
+    assert unknown["nodes"] == []
+    assert unknown["edges"] == []
+    assert unknown["blocks"] == []
+    assert unknown["feeder"] is None
+
+
 def test_cycle_detected_in_topology_issues(client, admin_headers):
     """Обратная связь, вставленная в обход API, должна ловиться проверкой схемы."""
     db = _db()
@@ -141,15 +242,19 @@ def test_cycle_detected_in_topology_issues(client, admin_headers):
     finally:
         db.close()
 
-    issues = client.get("/api/topology/issues", headers=admin_headers).json()
-    assert any(issue["code"] == "topology.cycle" for issue in issues)
-
-    db = _db()
     try:
-        db.execute(text("delete from gis.links where id = :id"), {"id": str(link_id)})
-        db.commit()
+        issues = client.get("/api/topology/issues", headers=admin_headers).json()
+        assert any(issue["code"] == "topology.cycle" for issue in issues)
     finally:
-        db.close()
+        # Уборка в finally: иначе при падении ассерта связь остаётся живой и
+        # следующий прогон упирается в uq_links_pair_active (S-9). Delete по id
+        # идемпотентен: если строка уже удалена — это no-op.
+        db = _db()
+        try:
+            db.execute(text("delete from gis.links where id = :id"), {"id": str(link_id)})
+            db.commit()
+        finally:
+            db.close()
 
 
 def test_link_validation(client, admin_headers):
