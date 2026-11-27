@@ -1,20 +1,43 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildWatermarkLines, formatCoords, watermarkText } from './photo'
 
 const meta = { assetCode: 'KTP-14', authorName: 'Иванов Иван', authorTabNo: '000001' }
 
+// Ожидаемая строка даты считается тем же Intl-форматтером, что и в приложении:
+// так тест не зависит от часового пояса сервера (локально +08, в CI — UTC).
+const DATE_FMT = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+function expectedDateLine(date: Date): string {
+  return DATE_FMT.format(date).replace(',', '')
+}
+
 describe('водяной знак', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('содержит дату, координаты, автора и код объекта', () => {
-    const date = new Date('2026-11-03T09:15:00+08:00')
+    const instant = new Date('2026-11-03T09:15:00Z')
+    vi.useFakeTimers()
+    vi.setSystemTime(instant)
+
     const lines = buildWatermarkLines(
-      date,
+      instant,
       { lat: 56.1234567, lon: 101.7654321, accuracy: 8.4, source: 'exif' },
       meta,
     )
 
     expect(lines).toHaveLength(3)
-    expect(lines[0]).toContain('03.11.2026')
-    expect(lines[0]).toContain('09:15')
+    // Точное значение зависит от TZ, поэтому сверяем с тем же форматтером,
+    // а формат проверяем регуляркой — тест стабилен на UTC-раннере GitHub.
+    expect(lines[0]).toBe(expectedDateLine(instant))
+    expect(lines[0]).toMatch(/^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/)
     expect(lines[1]).toContain('56.123457')
     expect(lines[1]).toContain('101.765432')
     expect(lines[1]).toContain('±8')
