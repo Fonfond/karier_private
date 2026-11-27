@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -52,7 +53,13 @@ def test_photo_metadata_and_sha256(client, admin_headers):
     assert media["author_tab_no"] == "000001"
     assert media["author_name"]
     assert "KTP-14" in (media["watermark_applied"] or "")
-    assert media["captured_at"].startswith("2026-11-03T09:15")
+    # captured_at хранится в timestamptz и сериализуется в часовом поясе сессии:
+    # локально +08, в CI (UTC) — 01:15. Сравниваем момент времени, а не строку.
+    captured = datetime.fromisoformat(media["captured_at"].replace("Z", "+00:00"))
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=timezone.utc)
+    expected = datetime.fromisoformat("2026-11-03T09:15:00+08:00")
+    assert captured.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
     assert media["exif"]["Make"] == "Pixel"
     assert media["width"] == 1600 and media["height"] == 1200
 

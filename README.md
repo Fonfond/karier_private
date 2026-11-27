@@ -22,7 +22,7 @@
 ```powershell
 # PostgreSQL 16+ должен быть запущен
 $env:PGPASSWORD="..."
-psql -h 127.0.0.1 -U postgres -c "CREATE ROLE karier_user LOGIN PASSWORD 'karier';"
+psql -h 127.0.0.1 -U postgres -c "CREATE ROLE karier_user LOGIN PASSWORD '*****';"
 psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE karier_db OWNER karier_user;"
 ```
 
