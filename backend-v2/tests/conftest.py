@@ -226,6 +226,24 @@ def guard_test_timeout():
         faulthandler.cancel_dump_traceback_later()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Сброс in-memory лимитера между тестами.
+
+    На быстром раннере (GitHub Actions) десятки логинов укладываются в минуту и
+    упираются в RATE_LIMIT_LOGIN_PER_MINUTE=10 → каскад ложных 429. Локально прогон
+    медленнее, поэтому проблема не воспроизводилась. Лимитер — часть приложения,
+    его настройки не меняем: изолируем только состояние между тестами.
+    """
+    from app.core.rate_limit import limiter
+
+    limiter.reset()
+    try:
+        yield
+    finally:
+        limiter.reset()
+
+
 @pytest.fixture(scope="session")
 def client() -> TestClient:
     with TestClient(app) as test_client:
