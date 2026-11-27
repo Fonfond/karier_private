@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 
 import uuid
@@ -19,6 +20,7 @@ from app.schemas.gis import (
     AssetCreate,
     AssetOut,
     AssetTypeCreate,
+    AssetTypeFieldIn,
     AssetUpdate,
     FeederRefOut,
     MapLayerOut,
@@ -27,6 +29,7 @@ from app.schemas.gis import (
     PowerPathOut,
     TypeRefOut,
 )
+from app.services import asset_fields
 
 SYNTHETIC_SOURCE = {
     "code": "PS-356",
@@ -151,12 +154,15 @@ def create_map_layer(
 # --- сериализация ----------------------------------------------------------
 
 def type_ref(asset_type: AssetType) -> TypeRefOut:
+    equipment_class = asset_fields.effective_class(asset_type)
     return TypeRefOut(
         code=asset_type.code,
         name=asset_type.name,
         category=asset_type.category,
         icon=asset_type.icon,
         color=asset_type.color,
+        equipment_class=equipment_class,
+        group_code=asset_type.group_code or asset_fields.group_for_class(equipment_class),
     )
 
 
@@ -172,6 +178,10 @@ def asset_brief(asset: Asset, feeders: list[FeederRefOut] | None = None) -> Asse
         x=float(asset.x) if asset.x is not None else None,
         y=float(asset.y) if asset.y is not None else None,
         location_text=asset.location_text,
+        cell_kind=asset.cell_kind,
+        cell_no=asset.cell_no,
+        section_no=asset.section_no,
+        lifecycle_status=asset.lifecycle_status,
         parent_id=asset.parent_asset_id,
         grouped=asset.schema_block_id is not None,
         feeders=list(feeders or []),
@@ -198,8 +208,20 @@ def asset_full(asset: Asset, feeders: list[FeederRefOut] | None = None) -> Asset
         lon=float(asset.lon) if asset.lon is not None else None,
         schema_x=float(asset.schema_x) if asset.schema_x is not None else None,
         schema_y=float(asset.schema_y) if asset.schema_y is not None else None,
+        schema_local_x=(
+            float(asset.schema_local_x) if asset.schema_local_x is not None else None
+        ),
+        schema_local_y=(
+            float(asset.schema_local_y) if asset.schema_local_y is not None else None
+        ),
+        schema_width=float(asset.schema_width) if asset.schema_width is not None else None,
+        schema_height=float(asset.schema_height) if asset.schema_height is not None else None,
         location_text=asset.location_text,
         attrs=asset.attrs or {},
+        cell_kind=asset.cell_kind,
+        cell_no=asset.cell_no,
+        section_no=asset.section_no,
+        lifecycle_status=asset.lifecycle_status,
         parent_id=asset.parent_asset_id,
         parent_name=asset.parent.name if asset.parent else None,
         ports=[
@@ -292,18 +314,25 @@ def list_types(db: Session, *, include_inactive: bool = False) -> list[AssetType
     return list(db.scalars(stmt).unique())
 
 
-def type_out(db: Session, asset_type: AssetType) -> dict[str, Any]:
-    """Тип для админки: с родителем и числом объектов."""
+def type_out(db: Session, asset_type: AssetType, *, with_fields: bool = False) -> dict[str, Any]:
+    """Тип для админки: с родителем и числом объектов.
+
+    ``with_fields=True`` добавляет поля паспорта (динамическая форма реестра);
+    по умолчанию их нет, чтобы старые клиенты не получали лишний payload.
+    """
     assets_count = db.scalar(
         select(func.count(Asset.id)).where(
             Asset.asset_type_id == asset_type.id, Asset.deleted_at.is_(None)
         )
     ) or 0
-    return {
+    equipment_class = asset_fields.effective_class(asset_type)
+    data: dict[str, Any] = {
         "id": asset_type.id,
         "code": asset_type.code,
         "name": asset_type.name,
         "category": asset_type.category,
+        "equipment_class": equipment_class,
+        "group_code": asset_type.group_code or asset_fields.group_for_class(equipment_class),
         "schema_symbol": asset_type.schema_symbol,
         "icon": asset_type.icon,
         "color": asset_type.color,
@@ -321,29 +350,25 @@ def type_out(db: Session, asset_type: AssetType) -> dict[str, Any]:
         "parent_name": asset_type.parent.name if asset_type.parent else None,
         "assets_count": int(assets_count),
     }
+    if with_fields:
+        data["fields"] = asset_fields.public_fields(asset_type)
+    return data
 
 
 # --- валидация -------------------------------------------------------------
 
-def validate_attrs(asset_type: AssetType, attrs: dict[str, Any]) -> dict[str, str]:
-    """Проверить атрибуты по required_attrs и типам из attr_schema."""
-    errors: dict[str, str] = {}
-    schema = asset_type.attr_schema or {}
-    for field in asset_type.required_attrs or []:
-        if attrs.get(field) in (None, ""):
-            errors[field] = "Обязательное поле"
+def validate_attrs(
+    asset_type: AssetType, attrs: dict[str, Any], *, check_required: bool = True
+) -> dict[str, str]:
+    """Legacy-проверка по required_attrs/attr_schema (совместимость).
 
-    for field, value in attrs.items():
-        rule = schema.get(field)
-        if not rule or value in (None, ""):
-            continue
-        expected = rule.get("type")
-        if expected == "number" and not isinstance(value, (int, float)):
-            errors[field] = "Ожидается число"
-        elif expected == "integer" and not isinstance(value, int):
-            errors[field] = "Ожидается целое число"
-        elif expected == "boolean" and not isinstance(value, bool):
-            errors[field] = "Ожидается да/нет"
+    Основной путь этапа 1 — :func:`app.services.asset_fields.validate_asset_fields`
+    (поля gis.asset_type_fields). Функция оставлена для внешнего кода и как
+    аварийный путь, если таблица полей недоступна.
+    """
+    errors, _labels = asset_fields.validate_asset_fields(
+        asset_type, attrs, check_required=check_required
+    )
     return errors
 
 
@@ -396,13 +421,36 @@ def create_ports(db: Session, asset: Asset, asset_type: AssetType) -> None:
         )
 
 
-def create_asset(db: Session, payload: AssetCreate, *, actor) -> Asset:
+def create_asset(
+    db: Session,
+    payload: AssetCreate,
+    *,
+    actor,
+    validate_attributes: bool = True,
+    commit: bool = True,
+) -> Asset:
+    """Создать объект реестра вместе с портами типа.
+
+    ``commit=False`` — для составных операций (блок + ячейки одним вызовом
+    ``POST /api/schema/composite``): строки только ``flush``-ятся, фиксирует их
+    вызывающий код одной транзакцией. Поведение по умолчанию не изменилось.
+    """
     pit = get_pit(db)
     asset_type = get_type(db, payload.type_code)
 
-    errors = validate_attrs(asset_type, payload.attrs)
-    if errors:
-        raise ApiError(422, "validation.failed", "Проверьте атрибуты объекта", fields=errors)
+    # Для ячеек схемы (дочерних объектов блока) атрибуты типа не обязательны:
+    # ячейка — визуальный элемент, её электрические параметры заполняются позже
+    # в карточке. Иначе тип-аналог с required_attrs ломает создание пачки ячеек.
+    if validate_attributes:
+        errors, labels = asset_fields.validate_asset_fields(asset_type, payload.attrs)
+        if errors:
+            raise ApiError(
+                422,
+                "validation.failed",
+                asset_fields.validation_detail(labels, errors),
+                fields=errors,
+                field_labels=labels,
+            )
     check_bounds(db, pit.id, payload.x, payload.y)
 
     code = (payload.code or "").strip() or generate_code(db, pit.id, asset_type)
@@ -435,6 +483,11 @@ def create_asset(db: Session, payload: AssetCreate, *, actor) -> Asset:
         lat=payload.lat,
         lon=payload.lon,
         attrs=payload.attrs or {},
+        cell_kind=payload.cell_kind,
+        cell_no=payload.cell_no,
+        section_no=payload.section_no,
+        lifecycle_status=payload.lifecycle_status
+        or ("installed" if asset_fields.effective_class(asset_type) == "cable" else None),
         created_by=actor.id,
         updated_by=actor.id,
         version=1,
@@ -442,6 +495,9 @@ def create_asset(db: Session, payload: AssetCreate, *, actor) -> Asset:
     db.add(asset)
     db.flush()
     create_ports(db, asset, asset_type)
+    if not commit:
+        db.flush()
+        return asset
     db.commit()
     db.refresh(asset)
     return get_asset(db, asset.id)
@@ -465,9 +521,17 @@ def update_asset(db: Session, asset: Asset, payload: AssetUpdate, *, actor) -> A
         )
 
     if "attrs" in data and data["attrs"] is not None:
-        errors = validate_attrs(asset.asset_type, data["attrs"])
+        errors, labels = asset_fields.validate_asset_fields(
+            asset.asset_type, data["attrs"], check_required=asset.schema_block_id is None
+        )
         if errors:
-            raise ApiError(422, "validation.failed", "Проверьте атрибуты объекта", fields=errors)
+            raise ApiError(
+                422,
+                "validation.failed",
+                asset_fields.validation_detail(labels, errors),
+                fields=errors,
+                field_labels=labels,
+            )
         asset.attrs = data.pop("attrs")
 
     if "parent_id" in data:
@@ -693,11 +757,16 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
         parent = db.get(AssetType, payload.parent_id)
         if parent is None:
             raise ApiError(400, "asset_type.parent_not_found", "Родительский тип не найден")
+    equipment_class = payload.equipment_class or asset_fields.infer_equipment_class(
+        code, payload.name, payload.category
+    )
     asset_type = AssetType(
         id=uuid.uuid4(),
         code=code,
         name=payload.name,
         category=payload.category,
+        equipment_class=equipment_class,
+        group_code=payload.group_code or asset_fields.group_for_class(equipment_class),
         schema_symbol=payload.schema_symbol or "load",
         icon=payload.icon or "●",
         color=payload.color or "#4C9AFF",
@@ -715,6 +784,12 @@ def create_type(db: Session, payload: AssetTypeCreate) -> AssetType:
     )
     db.add(asset_type)
     db.flush()
+    if payload.fields:
+        # Админ задал поля конструктором: они источник правды, legacy-схема
+        # пересобирается из них (двойная запись для старых клиентов).
+        asset_fields.replace_fields(db, asset_type, payload.fields)
+    else:
+        asset_fields.sync_from_schema(db, asset_type)
     if payload.parent_id is not None:
         parent = db.get(AssetType, payload.parent_id)
         if parent is not None:
@@ -772,6 +847,19 @@ def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
     elif parent_marker:
         asset_type.parent_id = None
 
+    # поля конструктора: если переданы — они источник правды для attr_schema
+    fields_payload = payload.pop("fields", None)
+    fields_changed = fields_payload is not None
+
+    if payload.get("equipment_class"):
+        equipment_class = payload.pop("equipment_class")
+        changed = equipment_class != asset_type.equipment_class
+        asset_type.equipment_class = equipment_class
+        if changed and "group_code" not in payload:
+            asset_type.group_code = asset_fields.group_for_class(equipment_class)
+    if "group_code" in payload:
+        asset_type.group_code = payload.pop("group_code")
+
     for field in (
         "name",
         "category",
@@ -791,6 +879,16 @@ def update_type(db: Session, asset_type: AssetType, data: Any) -> AssetType:
     ):
         if field in payload and payload[field] is not None:
             setattr(asset_type, field, payload[field])
+
+    if fields_changed:
+        asset_fields.replace_fields(
+            db,
+            asset_type,
+            [AssetTypeFieldIn(**item) if isinstance(item, dict) else item for item in fields_payload],
+        )
+    elif "attr_schema" in payload or "required_attrs" in payload:
+        asset_fields.sync_from_schema(db, asset_type)
+
     sync_composite_template(db, asset_type)
     db.commit()
     db.refresh(asset_type)
@@ -823,6 +921,114 @@ def deactivate_type(db: Session, asset_type: AssetType) -> None:
     db.commit()
 
 
+# --- раскладка схемы (этап 3: автосейв, размеры блоков, координаты ячеек) ----
+
+#: Минимальный размер блока на схеме, px. Меньше — NodeResizer и подписи блока
+#: перестают помещаться; больше ``MAX_SCHEMA_BLOCK_SIZE`` — почти наверняка
+#: опечатка или ошибка клиента, а не реальный ресайз.
+MIN_SCHEMA_BLOCK_WIDTH = 120.0
+MIN_SCHEMA_BLOCK_HEIGHT = 80.0
+MAX_SCHEMA_BLOCK_SIZE = 10_000.0
+
+
+def is_schema_block(asset: Asset) -> bool:
+    """Блок схемы — корневой объект с ``block_code`` или ролью ``block``.
+
+    Та же логика, что ``schema_blocks.is_container`` (ПС/БКРУ/КТП/контур), но
+    без импорта сервиса блоков: он сам импортирует этот модуль (цикл).
+    """
+    if asset.schema_block_id is not None:
+        return False
+    return asset.schema_role == "block" or bool((asset.attrs or {}).get("block_code"))
+
+
+def block_size(asset: Asset) -> tuple[float | None, float | None]:
+    """Размер блока: колонки этапа 3, иначе старые ``attrs.contour_w/contour_h``.
+
+    Fallback нужен и после миграции: объекты, созданные старым кодом/импортом,
+    могут не иметь новых колонок, пока их не пересохранили.
+    """
+    attrs = asset.attrs or {}
+    width = asset.schema_width
+    height = asset.schema_height
+    if width is None:
+        width = attrs.get("contour_w")
+    if height is None:
+        height = attrs.get("contour_h")
+    try:
+        width_value = float(width) if width is not None else None
+    except (TypeError, ValueError):
+        width_value = None
+    try:
+        height_value = float(height) if height is not None else None
+    except (TypeError, ValueError):
+        height_value = None
+    return width_value, height_value
+
+
+def _layout_number(value: Any, *, field: str, label: str) -> float:
+    """Привести координату/размер к конечному числу или отказать 422."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ApiError(
+            422,
+            "layout.invalid_number",
+            f"{label} ({field}): ожидается число",
+            fields={field: "ожидается число"},
+        ) from None
+    if not math.isfinite(number):
+        raise ApiError(
+            422,
+            "layout.invalid_number",
+            f"{label} ({field}): ожидается конечное число",
+            fields={field: "ожидается конечное число"},
+        )
+    return number
+
+
+def _check_cell_bound(
+    *,
+    asset: Asset,
+    parent: Asset | None,
+    value: float,
+    limit: float | None,
+    axis: str,
+    field: str,
+    current: float | None = None,
+) -> None:
+    """Ячейка должна лежать внутри прямоугольника своего блока (0…width/height).
+
+    Исключение — «уже сохранённое» значение (``current``): старые раскладки
+    этапа 2 ставили ячейки шире клиентского дефолта блока, и автосейв, который
+    присылает состояние целиком, не должен вечно получать 422 за координаты,
+    которые сервер сам же и записал. Валидируются именно **изменения**: новое
+    вне-граничное значение отклоняется, неизменное — принимается как есть.
+    """
+    if current is not None and abs(current - value) <= 1e-6:
+        return
+    if value < 0:
+        block_name = parent.name if parent is not None else "блок"
+        raise ApiError(
+            422,
+            "layout.out_of_bounds",
+            f"Ячейка {asset.code}: {axis} {value:g} px отрицательная — "
+            f"координаты внутри блока «{block_name}» начинаются с 0",
+            fields={field: "0…ширина/высота блока"},
+        )
+    if limit is None:
+        return
+    if value > limit:
+        block_name = parent.name if parent is not None else "блок"
+        raise ApiError(
+            422,
+            "layout.out_of_bounds",
+            f"Ячейка {asset.code}: {axis} {value:g} px выходит за границы блока "
+            f"«{block_name}» (допустимо 0…{limit:g} px)",
+            fields={field: f"0…{limit:g}"},
+        )
+
+
 def set_schema_layout(
     db: Session,
     pit_id: uuid.UUID,
@@ -830,47 +1036,283 @@ def set_schema_layout(
     actor: Any,
     ports: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Сохранить ручные координаты узлов и позиции портов однолинейной схемы."""
-    updated = 0
-    skipped: list[uuid.UUID] = []
-    for item in items:
-        asset = db.scalar(
+    """Сохранить ручную раскладку схемы точечными UPDATE.
+
+    Этап 3: помимо абсолютных координат узла (``x``/``y``) принимает размер блока
+    (``width``/``height``) и координаты ячейки внутри блока (``local_x``/
+    ``local_y`` — существующие колонки ``gis.assets.schema_local_x/y``).
+
+    Запрос вызывается автосейвом каждые ~2 с, поэтому:
+      * объекты читаются одним запросом по списку id, а не «весь граф»;
+      * UPDATE идут только по изменившимся строкам (SQLAlchemy dirty tracking),
+        версии/``updated_at`` нетронутых объектов не меняются;
+      * валидация выполняется ДО первой записи: частично некорректный payload
+        отклоняется целиком (422) и раскладка остаётся прежней.
+    """
+    requested = [dict(item) for item in items]
+    port_items = [dict(item) for item in (ports or [])]
+
+    assets: dict[uuid.UUID, Asset] = {}
+    asset_ids = {item["asset_id"] for item in requested}
+    if asset_ids:
+        rows = db.scalars(
             select(Asset).where(
-                Asset.id == item["asset_id"], Asset.pit_id == pit_id, Asset.deleted_at.is_(None)
+                Asset.id.in_(asset_ids),
+                Asset.pit_id == pit_id,
+                Asset.deleted_at.is_(None),
             )
+        ).unique().all()
+        assets = {row.id: row for row in rows}
+
+    # Родители ячеек — одним запросом: нужны границы блока для валидации.
+    # Родитель может быть в другом карьере/архиве — тогда просто нет границ.
+    parent_ids = {
+        asset.schema_block_id
+        for asset in assets.values()
+        if asset.schema_block_id is not None and asset.schema_block_id not in assets
+    }
+    parents: dict[uuid.UUID, Asset] = {}
+    if parent_ids:
+        rows = db.scalars(
+            select(Asset).where(
+                Asset.id.in_(parent_ids),
+                Asset.pit_id == pit_id,
+                Asset.deleted_at.is_(None),
+            )
+        ).unique().all()
+        parents = {row.id: row for row in rows}
+    blocks_by_id: dict[uuid.UUID, Asset] = {**parents, **assets}
+
+    # Размеры блоков: сперва из БД, затем накладываем новые размеры из payload —
+    # тогда в одном запросе можно и увеличить блок, и подвинуть его ячейки.
+    sizes: dict[uuid.UUID, tuple[float | None, float | None]] = {
+        block_id: block_size(asset) for block_id, asset in blocks_by_id.items()
+    }
+    for item in requested:
+        asset = assets.get(item["asset_id"])
+        if asset is None or not is_schema_block(asset):
+            continue
+        width = item.get("width")
+        height = item.get("height")
+        if width is None and height is None:
+            continue
+        current_width, current_height = sizes.get(asset.id, (None, None))
+        sizes[asset.id] = (
+            float(width) if width is not None else current_width,
+            float(height) if height is not None else current_height,
         )
+
+    # --- валидация (ничего не пишем, пока не проверено всё) ------------------
+    plan: list[tuple[Asset, dict[str, Any], str]] = []
+    skipped: list[uuid.UUID] = []
+    for item in requested:
+        asset = assets.get(item["asset_id"])
         if asset is None:
             skipped.append(item["asset_id"])
             continue
-        asset.schema_x = item["x"]
-        asset.schema_y = item["y"]
-        updated += 1
+
+        is_block = is_schema_block(asset)
+        values: dict[str, Any] = {}
+        kind = "node"
+
+        x, y = item.get("x"), item.get("y")
+        if x is not None:
+            values["schema_x"] = _layout_number(x, field="x", label=f"Объект {asset.code}")
+        if y is not None:
+            values["schema_y"] = _layout_number(y, field="y", label=f"Объект {asset.code}")
+
+        width, height = item.get("width"), item.get("height")
+        if width is not None or height is not None:
+            if not is_block:
+                raise ApiError(
+                    422,
+                    "layout.not_block",
+                    f"Объект {asset.code}: размер задаётся только для блока схемы "
+                    "(ПС/БКРУ/КТП/контур)",
+                    fields={"width": "только для блока", "height": "только для блока"},
+                )
+            if width is not None:
+                width_value = _layout_number(
+                    width, field="width", label=f"Блок {asset.code}"
+                )
+                if width_value < MIN_SCHEMA_BLOCK_WIDTH:
+                    raise ApiError(
+                        422,
+                        "layout.size_too_small",
+                        f"Блок {asset.code}: ширина {width_value:g} px меньше минимума "
+                        f"{MIN_SCHEMA_BLOCK_WIDTH:g} px",
+                        fields={"width": f"не меньше {MIN_SCHEMA_BLOCK_WIDTH:g}"},
+                    )
+                if width_value > MAX_SCHEMA_BLOCK_SIZE:
+                    raise ApiError(
+                        422,
+                        "layout.size_too_large",
+                        f"Блок {asset.code}: ширина {width_value:g} px больше предела "
+                        f"{MAX_SCHEMA_BLOCK_SIZE:g} px",
+                        fields={"width": f"не больше {MAX_SCHEMA_BLOCK_SIZE:g}"},
+                    )
+                values["schema_width"] = width_value
+            if height is not None:
+                height_value = _layout_number(
+                    height, field="height", label=f"Блок {asset.code}"
+                )
+                if height_value < MIN_SCHEMA_BLOCK_HEIGHT:
+                    raise ApiError(
+                        422,
+                        "layout.size_too_small",
+                        f"Блок {asset.code}: высота {height_value:g} px меньше минимума "
+                        f"{MIN_SCHEMA_BLOCK_HEIGHT:g} px",
+                        fields={"height": f"не меньше {MIN_SCHEMA_BLOCK_HEIGHT:g}"},
+                    )
+                if height_value > MAX_SCHEMA_BLOCK_SIZE:
+                    raise ApiError(
+                        422,
+                        "layout.size_too_large",
+                        f"Блок {asset.code}: высота {height_value:g} px больше предела "
+                        f"{MAX_SCHEMA_BLOCK_SIZE:g} px",
+                        fields={"height": f"не больше {MAX_SCHEMA_BLOCK_SIZE:g}"},
+                    )
+                values["schema_height"] = height_value
+            kind = "block"
+
+        local_x, local_y = item.get("local_x"), item.get("local_y")
+        if local_x is not None or local_y is not None:
+            if is_block:
+                raise ApiError(
+                    422,
+                    "layout.not_cell",
+                    f"Объект {asset.code}: локальные координаты задаются только для "
+                    "ячейки внутри блока — у самого блока есть только x/y",
+                    fields={
+                        "local_x": "только для ячейки",
+                        "local_y": "только для ячейки",
+                    },
+                )
+            parent = (
+                blocks_by_id.get(asset.schema_block_id)
+                if asset.schema_block_id is not None
+                else None
+            )
+            block_width, block_height = (
+                sizes.get(parent.id, (None, None)) if parent is not None else (None, None)
+            )
+            if local_x is not None:
+                local_x_value = _layout_number(
+                    local_x, field="local_x", label=f"Ячейка {asset.code}"
+                )
+                _check_cell_bound(
+                    asset=asset,
+                    parent=parent,
+                    value=local_x_value,
+                    limit=block_width,
+                    axis="X",
+                    field="local_x",
+                    current=(
+                        float(asset.schema_local_x)
+                        if asset.schema_local_x is not None
+                        else None
+                    ),
+                )
+                values["schema_local_x"] = local_x_value
+            if local_y is not None:
+                local_y_value = _layout_number(
+                    local_y, field="local_y", label=f"Ячейка {asset.code}"
+                )
+                _check_cell_bound(
+                    asset=asset,
+                    parent=parent,
+                    value=local_y_value,
+                    limit=block_height,
+                    axis="Y",
+                    field="local_y",
+                    current=(
+                        float(asset.schema_local_y)
+                        if asset.schema_local_y is not None
+                        else None
+                    ),
+                )
+                values["schema_local_y"] = local_y_value
+            if kind != "block":
+                kind = "cell"
+
+        if values:
+            plan.append((asset, values, kind))
+
+    # --- порты: старый контракт (доли 0…1), неизвестные — молча пропускаем ---
+    wanted_port_ids = {item["port_id"] for item in port_items}
+    port_map: dict[uuid.UUID, AssetPort] = {}
+    if wanted_port_ids:
+        rows = db.scalars(
+            select(AssetPort)
+            .join(Asset, AssetPort.asset_id == Asset.id)
+            .where(
+                AssetPort.id.in_(wanted_port_ids),
+                Asset.pit_id == pit_id,
+                Asset.deleted_at.is_(None),
+            )
+        ).unique().all()
+        port_map = {row.id: row for row in rows}
 
     updated_ports = 0
-    for item in ports or []:
-        port = db.get(AssetPort, item["port_id"])
-        if port is None or port.asset is None or port.asset.pit_id != pit_id:
+    for item in port_items:
+        port = port_map.get(item["port_id"])
+        if port is None:
             continue
         port.schema_x = max(0.0, min(1.0, float(item["x"])))
         port.schema_y = max(0.0, min(1.0, float(item["y"])))
         updated_ports += 1
 
-    db.commit()
-    if updated or updated_ports:
-        from app.services import audit
+    if not plan and updated_ports == 0:
+        # Нечего сохранять: не открываем транзакцию записи вовсе.
+        return {
+            "updated": 0,
+            "updated_ports": 0,
+            "updated_blocks": 0,
+            "updated_cells": 0,
+            "skipped": skipped,
+        }
 
-        audit.add(
-            "schema.layout_saved",
-            entity="pit",
-            entity_id=pit_id,
-            detail=f"Сохранена ручная раскладка схемы: узлов {updated}, портов {updated_ports}",
-            payload={
-                "updated": updated,
-                "updated_ports": updated_ports,
-                "skipped": [str(x) for x in skipped],
-            },
-        )
-    return {"updated": updated, "updated_ports": updated_ports, "skipped": skipped}
+    # --- запись: только затронутые строки --------------------------------
+    updated_blocks = updated_cells = 0
+    for asset, values, kind in plan:
+        for field, value in values.items():
+            setattr(asset, field, value)
+        if kind == "block":
+            updated_blocks += 1
+        elif kind == "cell":
+            updated_cells += 1
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    updated = len(plan)
+    from app.services import audit
+
+    audit.add(
+        "schema.layout_saved",
+        entity="pit",
+        entity_id=pit_id,
+        detail=(
+            f"Сохранена ручная раскладка схемы: узлов {updated}, "
+            f"портов {updated_ports} (блоков {updated_blocks}, ячеек {updated_cells})"
+        ),
+        payload={
+            "updated": updated,
+            "updated_ports": updated_ports,
+            "updated_blocks": updated_blocks,
+            "updated_cells": updated_cells,
+            "skipped": [str(x) for x in skipped],
+        },
+    )
+    return {
+        "updated": updated,
+        "updated_ports": updated_ports,
+        "updated_blocks": updated_blocks,
+        "updated_cells": updated_cells,
+        "skipped": skipped,
+    }
 
 
 def request_meta(request: Request) -> dict[str, str]:

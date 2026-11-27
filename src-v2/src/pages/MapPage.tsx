@@ -6,8 +6,10 @@ import { BottomSheet } from '../components/BottomSheet'
 import { MapView } from '../components/map/MapView'
 import { Alert, Badge, ConfirmDialog } from '../components/ui'
 import { ApiError } from '../lib/api'
-import type { AssetBrief, AssetType, MapLayer, TopologyGraph } from '../lib/gis'
-import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
+import type { AssetBrief, AssetType, ChildAsset, MapLayer, TopologyGraph } from '../lib/gis'
+import { POWER_COLOR, gisApi } from '../lib/gis'
+import { applyPowerState, powerStateOf } from '../lib/power'
+import type { PowerStateUpdate } from '../lib/power'
 import { enqueue } from '../lib/outbox'
 import { syncOutbox } from '../lib/sync'
 import { syncApi } from '../lib/syncApi'
@@ -83,6 +85,9 @@ export function MapPage() {
   const [connectTo, setConnectTo] = useState<PortChoice | null>(null)
   const [connectAssetId, setConnectAssetId] = useState<string | null>(null)
   const [connectPorts, setConnectPorts] = useState<Array<{ id: string; code: string; kind: string; voltage: number | null }>>([])
+  const [connectChildren, setConnectChildren] = useState<ChildAsset[]>([])
+  const [connectChild, setConnectChild] = useState<{ id: string; name: string } | null>(null)
+  const [connectBlockId, setConnectBlockId] = useState<string | null>(null)
   const [linkMark, setLinkMark] = useState('')
   const [linkLength, setLinkLength] = useState('')
   const [linkType, setLinkType] = useState('cable')
@@ -170,15 +175,60 @@ export function MapPage() {
     await loadGraph()
   }, [load, loadGraph, view])
 
+  /**
+   * F1: успешное переключение из карточки объекта.
+   *
+   * 1. Сразу правим локальный реестр `assets` — SchemaView строит `assetStates`
+   *    из него и перекрашивает ячейку (красный ↔ зелёный) без перезагрузки.
+   * 2. Тихо перечитываем граф, чтобы обновились статусы одиночных узлов
+   *    (например, разъединителя КТП, если он вне блока). Камеру не сбрасываем:
+   *    SchemaView делает fitView только при первом открытии схемы.
+   */
+  const handleStateChanged = useCallback(
+    (update: PowerStateUpdate) => {
+      // точечный override — работает даже для только что созданных ячеек
+      setPowerOverrides((prev) => ({
+        ...prev,
+        [update.id]: { status: update.status, grounded: update.grounded },
+      }))
+      setAssets((prev) => applyPowerState(prev, update))
+      void loadGraph()
+    },
+    [loadGraph],
+  )
+
   const filtered = useMemo(() => {
     const visible = assets.filter((asset) => !asset.grouped)
     if (!category) return visible
     return visible.filter((asset) => asset.type.category === category)
   }, [assets, category])
 
+  /**
+   * Статусы ячеек для блоков схемы. Граф отдаёт состав блока без статуса, а реестр
+   * (`assets`) уже загружен — берём оттуда, чтобы не делать запрос на каждую ячейку.
+   *
+   * `powerOverrides` — точечные результаты переключений (F1). Они нужны для ячеек,
+   * которых ещё нет в загруженном реестре: например, блок только что создан
+   * мастером «По шаблону», и карточка ячейки открыта до перезагрузки списка.
+   */
+  const [powerOverrides, setPowerOverrides] = useState<Record<string, { status: string; grounded: boolean }>>({})
+
+  const assetStates = useMemo(() => {
+    const result: Record<string, { status: string; grounded: boolean }> = { ...powerOverrides }
+    for (const asset of assets) {
+      if (asset.cell_kind) result[asset.id] = { status: asset.status, grounded: asset.grounded }
+    }
+    return result
+  }, [assets, powerOverrides])
+
   const openAsset = (id: string) => {
     if (movingAsset) return
-    if (linkMode) return
+    if (linkMode) {
+      // В режиме связи клик по объекту открывает выбор порта/ячейки,
+      // а не карточку: для комплекса сначала выбирается ячейка.
+      void openConnectPicker(id)
+      return
+    }
     if (connecting) {
       void openConnectPicker(id)
       return
@@ -211,7 +261,10 @@ export function MapPage() {
 
   const openConnectPicker = async (id: string) => {
     try {
-      const detail = await gisApi.asset(id)
+      const [detail, children] = await Promise.all([
+        gisApi.asset(id),
+        gisApi.children(id).catch(() => [] as ChildAsset[]),
+      ])
       const ports = detail.ports
         .filter((port) => (connectStep === 'from' ? port.kind !== 'in' : port.kind !== 'out'))
         .map((port) => ({
@@ -220,12 +273,29 @@ export function MapPage() {
           kind: port.kind,
           voltage: port.nominal_voltage_kv,
         }))
+      setConnectBlockId(id)
+      setConnectChildren(children)
+      setConnectChild(null)
       setConnectAssetId(id)
       setConnectPorts(ports)
       setSheetOpen(true)
     } catch {
       setError('Не удалось получить порты объекта')
     }
+  }
+
+  const pickChildPorts = (child: ChildAsset) => {
+    const ports = child.ports
+      .filter((port) => (connectStep === 'from' ? port.kind !== 'in' : port.kind !== 'out'))
+      .map((port) => ({
+        id: port.id,
+        code: port.code,
+        kind: port.kind,
+        voltage: port.nominal_voltage_kv,
+      }))
+    setConnectAssetId(child.id)
+    setConnectChild({ id: child.id, name: child.name })
+    setConnectPorts(ports)
   }
 
   const pickPort = async (portId: string, portCode: string) => {
@@ -291,6 +361,21 @@ export function MapPage() {
     setDragFrom(null)
     try {
       let [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+      // Если комплекс содержит ячейки — не соединяем «комплекс целиком»,
+      // а предлагаем выбрать конкретную ячейку (её порт).
+      const [sourceKids, targetKids] = await Promise.all([
+        gisApi.children(sourceId).catch(() => [] as ChildAsset[]),
+        gisApi.children(id).catch(() => [] as ChildAsset[]),
+      ])
+      if (sourceKids.length > 0 || targetKids.length > 0) {
+        setConnecting(true)
+        setConnectStep('from')
+        setConnectFrom(null)
+        setConnectTo(null)
+        setError(null)
+        void openConnectPicker(sourceKids.length > 0 ? sourceId : id)
+        return
+      }
       let fromPort = source.ports.find((port) => port.kind !== 'in')
       let toPort = target.ports.find((port) => port.kind !== 'out')
       if (!fromPort || !toPort) {
@@ -700,6 +785,8 @@ export function MapPage() {
             selectedId={selectedId}
             onSelect={openAsset}
             canEdit={can('settings.edit')}
+            canSwitch={canSwitch}
+            assetStates={assetStates}
             onGraphChanged={() => void loadGraph()}
           />
         </Suspense>
@@ -824,16 +911,24 @@ export function MapPage() {
           <div className="mb-1.5 text-ink3">Состояние</div>
           {['on', 'off', 'standby', 'maintenance'].map((status) => (
             <div key={status} className="flex items-center gap-2 py-0.5 text-ink2">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: STATUS_COLOR[status] }} />
-              {STATUS_LABEL[status]}
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: powerStateOf(status, false).color }} />
+              {powerStateOf(status, false).label}
             </div>
           ))}
+          <div className="mt-1 text-ink3">
+            <span style={{ color: POWER_COLOR.on }}>●</span> под напряжением ·{' '}
+            <span style={{ color: POWER_COLOR.off }}>●</span> обесточено · ⏚ заземлено
+          </div>
         </div>
       ) : (
         <div className="pointer-events-none absolute bottom-4 left-3 z-[1000] hidden rounded-xl border border-line bg-bg/85 p-3 text-[11px] backdrop-blur sm:block">
           <div className="mb-1.5 text-ink3">Обозначения</div>
-          <div className="text-ink2"><span style={{ color: '#F04438' }}>━━</span> красная сплошная — под напряжением</div>
-          <div className="text-ink2"><span style={{ color: '#22C55E' }}>┅┅</span> зелёная пунктирная — отключено / без питания</div>
+          <div className="text-ink2"><span style={{ color: POWER_COLOR.on }}>━━</span> красная сплошная — под напряжением</div>
+          <div className="text-ink2"><span style={{ color: POWER_COLOR.off }}>┅┅</span> зелёная пунктирная — отключено / без питания</div>
+          <div className="text-ink2">
+            <span style={{ color: POWER_COLOR.on }}>⚡</span> ячейка включена - под напряжением ·{' '}
+            <span style={{ color: POWER_COLOR.off }}>○</span> отключена/заземлена - обесточено
+          </div>
           <div className="text-ink2"><span className="tracking-[2px]">···</span> точки — перемычка между ячейками</div>
           <div className="text-ink2">→ направление «выход → вход» · ⏚ заземлено</div>
           <div className="text-ink2">фидер — линия от источника к приёмнику</div>
@@ -999,6 +1094,7 @@ export function MapPage() {
             canManage={can('asset.create')}
             canSwitch={canSwitch}
             canManageDocs={canManageDocs}
+            onStateChanged={handleStateChanged}
             onMove={
               can('asset.move')
                 ? (asset) => {
@@ -1069,12 +1165,48 @@ export function MapPage() {
         open={sheetOpen && Boolean(connectAssetId)}
         onClose={() => setSheetOpen(false)}
         title={
-          connectAsset
-            ? `${connectAsset.code} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
-            : 'Порт'
+          connectChild
+            ? `${connectChild.name} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
+            : connectAsset
+              ? `${connectAsset.code} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
+              : 'Порт'
         }
       >
         <div className="space-y-3">
+          {connectChild ? (
+            <div className="flex items-center justify-between rounded-lg border border-accent/40 bg-surface2 px-2 py-1 text-[12px]">
+              <span>
+                Ячейка: <b>{connectChild.name}</b>
+              </span>
+              <button
+                type="button"
+                className="btn-ghost h-7 px-2 text-[11px]"
+                onClick={() => {
+                  if (connectBlockId) void openConnectPicker(connectBlockId)
+                }}
+              >
+                ← к комплексу
+              </button>
+            </div>
+          ) : connectChildren.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-ink3">
+                От какой ячейки комплекса?
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {connectChildren.map((child) => (
+                  <button
+                    key={child.id}
+                    type="button"
+                    className="rounded-lg border border-line bg-surface2 px-2 py-1 text-[12px] hover:border-accent"
+                    onClick={() => pickChildPorts(child)}
+                  >
+                    {child.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <p className="hint">
             {connectStep === 'from'
               ? 'Порт, от которого идёт питание (OUT или двунаправленный).'

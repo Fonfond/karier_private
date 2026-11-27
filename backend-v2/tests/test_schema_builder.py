@@ -544,3 +544,111 @@ def _operator_headers(client, operator_secret: str) -> dict:
             continue
         assert verify.status_code == 200, verify.text
     raise AssertionError("не удалось войти оператором")
+
+
+def test_bulk_cells_skip_required_attrs_of_cell_type(client, admin_headers):
+    """Пачка ячеек создаётся, даже если тип-аналог ячейки требует атрибуты.
+
+    Регрессия рабочей БД: типа `cell` там нет, резолвер выбирает «Ячейка …»
+    с required_attrs, и создание падало 422 «Проверьте атрибуты объекта».
+    При этом создание такого же объекта через реестр обязано требовать атрибуты.
+    """
+    suffix = uuid.uuid4().hex[:6].upper()
+    type_code = f"t_cell_{suffix.lower()}"
+    created_type = client.post(
+        "/api/asset-types",
+        headers=admin_headers,
+        json={
+            "code": type_code,
+            "name": f"Тестовая ячейка {suffix}",
+            "category": "equipment",
+            "required_attrs": ["power_kw"],
+            "attr_schema": {"power_kw": {"type": "number"}},
+        },
+    )
+    assert created_type.status_code == 201, created_type.text
+    type_id = created_type.json()["id"]
+
+    contour = _make_contour(client, admin_headers, "Контур с типом-ячейкой")
+    try:
+        response = client.post(
+            f"/api/schema/assets/{contour['id']}/cells/bulk",
+            headers=admin_headers,
+            json={"count": 2, "start": 1, "prefix": "Яч. №", "type_code": type_code},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["count"] == 2
+
+        # Правка ячейки (имя) не должна требовать паспортных атрибутов типа.
+        cell_id = response.json()["items"][0]["id"]
+        patched = client.patch(
+            f"/api/assets/{cell_id}", headers=admin_headers, json={"name": "Яч. №1 (правка)"}
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["name"] == "Яч. №1 (правка)"
+
+        registry = client.post(
+            "/api/assets",
+            headers=admin_headers,
+            json={"name": "Объект без атрибутов", "type_code": type_code},
+        )
+        assert registry.status_code == 422, registry.text
+        assert "power_kw" in registry.json()["fields"]
+    finally:
+        for child in client.get(
+            f"/api/assets/{contour['id']}/children", headers=admin_headers
+        ).json():
+            client.delete(
+                f"/api/schema/assets/{contour['id']}/cells/{child['id']}", headers=admin_headers
+            )
+        client.delete(f"/api/assets/{contour['id']}", headers=admin_headers)
+        client.delete(f"/api/asset-types/{type_id}", headers=admin_headers)
+
+def test_line_chain_between_cells_with_poles(client, admin_headers):
+    """Линия между ячейками: N опор + связи цепочкой с общим line_id."""
+    contour = _make_contour(client, admin_headers, "Контур для линии")
+    try:
+        first = client.post(
+            f"/api/schema/assets/{contour['id']}/cells",
+            headers=admin_headers,
+            json={"label": "Яч. №7", "role": "outgoing"},
+        ).json()
+        second = client.post(
+            f"/api/schema/assets/{contour['id']}/cells",
+            headers=admin_headers,
+            json={"label": "Яч. №6", "role": "incoming"},
+        ).json()
+
+        response = client.post(
+            "/api/schema/lines/chain",
+            headers=admin_headers,
+            json={
+                "from_asset_id": first["id"],
+                "to_asset_id": second["id"],
+                "poles": 3,
+                "prefix": "Опора",
+                "link_type": "overhead",
+                "cable_mark": "АС-35",
+                "line_name": "ВЛ-6 кВ тест",
+            },
+        )
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert len(body["poles"]) == 3
+        assert len(body["link_ids"]) == 4  # ячейка→3 опоры→ячейка
+
+        lines = client.get("/api/lines", headers=admin_headers).json()
+        assert any(line["id"] == body["line_id"] for line in lines)
+
+        links = client.get(
+            "/api/links", headers=admin_headers, params={"asset_id": first["id"]}
+        ).json()["items"]
+        assert any((link.get("line") or {}).get("id") == body["line_id"] for link in links)
+        assert any(link["cable_mark"] == "АС-35" for link in links)
+    finally:
+        data = client.get(f"/api/assets/{contour['id']}/children", headers=admin_headers).json()
+        for child in data:
+            client.delete(
+                f"/api/schema/assets/{contour['id']}/cells/{child['id']}", headers=admin_headers
+            )
+        client.delete(f"/api/assets/{contour['id']}", headers=admin_headers)

@@ -279,3 +279,44 @@ body,
 @media (prefers-reduced-motion: reduce) {
   .schema-hint, .schema-danger { animation: none; }
 }
+
+/* --- этап 3: порты ячеек внутри блока и индикатор автосейва --------------- */
+
+/* Порты ячеек: маленькие кружки на краях ячейки. В обычном режиме приглушены,
+   в режиме редактирования — рабочие порты для линий. */
+.schema-cell-handle {
+  width: 7px !important;
+  height: 7px !important;
+  border: 1px solid #0b1014 !important;
+  background: #4c9aff !important;
+  opacity: 0.3;
+  transition: opacity 120ms ease, width 120ms ease, height 120ms ease;
+}
+
+.schema-cell-handle--edit {
+  opacity: 1;
+  cursor: crosshair;
+}
+
+.schema-cell-handle--edit:hover {
+  width: 10px !important;
+  height: 10px !important;
+}
+
+/* Спиннер индикатора «Сохранение…»: цвет наследуется от плашки. */
+.schema-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: schema-spin 0.7s linear infinite;
+}
+
+@keyframes schema-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schema-spinner { animation: none; }
+}

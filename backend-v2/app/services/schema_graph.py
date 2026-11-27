@@ -19,6 +19,7 @@ from app.schemas.gis import (
     PortRefOut,
     TopologyGraphOut,
 )
+from app.services import gis as gis_service
 from app.services import links as links_service
 from app.services import topology
 
@@ -140,20 +141,18 @@ def build_graph_out(db: Session, pit: Pit) -> TopologyGraphOut:
                     )
                 )
 
+        block_width, block_height = gis_service.block_size(parent_asset)
         blocks.append(
             GraphBlockOut(
                 asset_id=parent_asset.id,
                 kind=(parent_asset.attrs or {}).get("block_code"),
-                width=(
-                    float(parent_asset.attrs["contour_w"])
-                    if (parent_asset.attrs or {}).get("contour_w") is not None
-                    else None
-                ),
-                height=(
-                    float(parent_asset.attrs["contour_h"])
-                    if (parent_asset.attrs or {}).get("contour_h") is not None
-                    else None
-                ),
+                # width/height — исторические поля ответа: этап 3 пишет размер в
+                # gis.assets.schema_width/schema_height и отдаёт его же в обоих
+                # видах (старый клиент читает width, новый — schema_width).
+                width=block_width,
+                height=block_height,
+                schema_width=block_width,
+                schema_height=block_height,
                 code=parent_asset.code,
                 name=parent_asset.name,
                 block_code=(parent_asset.attrs or {}).get("block_code"),

@@ -10,7 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import current_user, require_admin
 from app.db.session import get_db
-from app.models import Employee
+from app.models import Asset, Employee
+from app.schemas.equipment import (
+    CompositeBlockOut,
+    CompositeCreateIn,
+    CompositeCreateOut,
+    CompositeCellOut,
+    CompositeSectionOut,
+    DisconnectorOut,
+)
 from app.schemas.gis import (
     BlockCellIn,
     BlockCellOut,
@@ -28,10 +36,15 @@ from app.schemas.gis import (
     CellCableIn,
     LineEquipmentIn,
     LineEquipmentOut,
+    LineChainIn,
+    LineChainOut,
+    LineChainPoleOut,
     LinkOut,
     SchemaBlockOut,
 )
 from app.services import gis
+from app.services import composite as composite_service
+from app.services import equipment_templates
 from app.services import schema_blocks as blocks_service
 
 router = APIRouter(prefix="/schema", tags=["schema-blocks"])
@@ -374,4 +387,142 @@ def add_line_equipment(
         link_id=link.id,
         schema_x=float(asset.schema_x) if asset.schema_x is not None else None,
         schema_y=float(asset.schema_y) if asset.schema_y is not None else None,
+    )
+
+@router.post(
+    "/lines/chain",
+    response_model=LineChainOut,
+    status_code=201,
+    summary="Линия между ячейками через опоры (ВЛ/кабель)",
+)
+def create_line_chain(
+    payload: LineChainIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> LineChainOut:
+    from_asset = gis.get_asset(db, payload.from_asset_id)
+    to_asset = gis.get_asset(db, payload.to_asset_id)
+    result = blocks_service.create_line_chain(
+        db,
+        from_asset,
+        to_asset,
+        admin,
+        poles=payload.poles,
+        prefix=payload.prefix,
+        link_type=payload.link_type,
+        cable_mark=payload.cable_mark,
+        line_name=payload.line_name,
+        line_code=payload.line_code,
+        voltage_kv=payload.voltage_kv,
+    )
+    line = result["line"]
+    return LineChainOut(
+        line_id=line.id,
+        line_code=line.code,
+        line_name=line.name,
+        poles=[
+            LineChainPoleOut(id=pole.id, code=pole.code, name=pole.name)
+            for pole in result["poles"]
+        ],
+        link_ids=[link.id for link in result["links"]],
+    )
+
+
+# --- этап 2: составные устройства одним вызовом ------------------------------
+
+
+def _composite_cell(cell: Asset) -> CompositeCellOut:
+    attrs = cell.attrs or {}
+    voltage = attrs.get("voltage_kv")
+    try:
+        voltage_value = round(float(voltage), 3) if voltage is not None else None
+    except (TypeError, ValueError):
+        voltage_value = None
+    return CompositeCellOut(
+        id=cell.id,
+        code=cell.code,
+        name=cell.name,
+        type_code=cell.asset_type.code if cell.asset_type else attrs.get("cell_type", ""),
+        cell_kind=cell.cell_kind or "out",
+        cell_no=cell.cell_no or 0,
+        section_no=cell.section_no or 1,
+        status=cell.status,
+        grounded=bool(cell.grounded),
+        voltage_kv=voltage_value,
+        local_x=float(cell.schema_local_x) if cell.schema_local_x is not None else None,
+        local_y=float(cell.schema_local_y) if cell.schema_local_y is not None else None,
+    )
+
+
+@router.post(
+    "/composite",
+    response_model=CompositeCreateOut,
+    status_code=201,
+    summary="Создать составное устройство (БКРУ / ПС 35/6 / КТП) одной транзакцией",
+)
+def create_composite(
+    payload: CompositeCreateIn,
+    admin: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> CompositeCreateOut:
+    result = composite_service.compose(
+        db,
+        admin,
+        type_code=payload.type_code,
+        name=payload.name,
+        x=payload.x,
+        y=payload.y,
+        cells_per_section=payload.cells_per_section,
+        code=payload.code,
+    )
+    parent: Asset = result["parent"]
+    cells = [_composite_cell(cell) for cell in result["cells"]]
+    by_id = {item.id: item for item in cells}
+    sections = [
+        CompositeSectionOut(
+            section_no=section["section_no"],
+            label=section["label"],
+            voltage_kv=section["voltage_kv"],
+            cells=[by_id[cell.id] for cell in section["cells"] if cell.id in by_id],
+        )
+        for section in result["sections"]
+    ]
+    disconnector = result["disconnector"]
+    parsed = result["template"]
+    schema_x = float(parent.schema_x) if parent.schema_x is not None else payload.x
+    schema_y = float(parent.schema_y) if parent.schema_y is not None else payload.y
+    disconnector_out = (
+        DisconnectorOut(
+            id=disconnector.id,
+            code=disconnector.code,
+            name=disconnector.name,
+            type_code=disconnector.asset_type.code,
+            cell_kind=disconnector.cell_kind or "in",
+            status=disconnector.status,
+            grounded=bool(disconnector.grounded),
+        )
+        if disconnector is not None
+        else None
+    )
+    return CompositeCreateOut(
+        id=parent.id,
+        code=parent.code,
+        name=parent.name,
+        type_code=parent.asset_type.code,
+        schema_x=schema_x,
+        schema_y=schema_y,
+        template_version=equipment_templates.TEMPLATE_VERSION if parsed.is_v2 else 1,
+        children=result["children"],
+        block=CompositeBlockOut(
+            id=parent.id,
+            code=parent.code,
+            name=parent.name,
+            type_code=parent.asset_type.code,
+            schema_x=schema_x,
+            schema_y=schema_y,
+        ),
+        sections=sections,
+        cells=cells,
+        disconnector=disconnector_out,
+        disconnector_id=disconnector_out.id if disconnector_out is not None else None,
     )

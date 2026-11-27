@@ -11,6 +11,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 AssetStatus = Literal["on", "off", "standby", "maintenance", "decommissioned"]
 AssetLifecycle = Literal["planned", "installed", "reserve", "written_off"]
 PortKind = Literal["in", "out", "io"]
+EquipmentClass = Literal[
+    "distribution",
+    "transformer_assembly",
+    "switching",
+    "cell",
+    "cable",
+    "mobile",
+    "line",
+    "source",
+    "equipment",
+]
+CellKind = Literal["in", "out", "sectional"]
+CableLifecycleStatus = Literal["installed", "reserve", "repair"]
+FieldDataType = Literal["number", "integer", "text", "boolean", "date", "select"]
 
 
 class PortOut(BaseModel):
@@ -28,6 +42,9 @@ class TypeRefOut(BaseModel):
     category: str
     icon: str | None = None
     color: str | None = None
+    # класс оборудования и вкладка реестра (этап 1 модели «Карьер»)
+    equipment_class: str = "equipment"
+    group_code: str | None = None
 
 
 class FeederRefOut(BaseModel):
@@ -62,8 +79,18 @@ class AssetOut(BaseModel):
     lon: float | None = None
     schema_x: float | None = None
     schema_y: float | None = None
+    # ячейка внутри блока схемы: локальные координаты и размер блока (этап 3)
+    schema_local_x: float | None = None
+    schema_local_y: float | None = None
+    schema_width: float | None = None
+    schema_height: float | None = None
     location_text: str | None = None
     attrs: dict[str, Any] = {}
+    # ячейка ПС/БКРУ и кабельный учёт (этап 1 модели, nullable)
+    cell_kind: CellKind | None = None
+    cell_no: int | None = None
+    section_no: int | None = None
+    lifecycle_status: CableLifecycleStatus | None = None
     parent_id: uuid.UUID | None = None
     parent_name: str | None = None
     ports: list[PortOut] = []
@@ -85,7 +112,10 @@ class AssetBriefOut(BaseModel):
     x: float | None = None
     y: float | None = None
     location_text: str | None = None
-    parent_id: uuid.UUID | None = None
+    cell_kind: CellKind | None = None
+    cell_no: int | None = None
+    section_no: int | None = None
+    lifecycle_status: CableLifecycleStatus | None = None
     feeders: list[FeederRefOut] = []
     version: int
     updated_at: datetime
@@ -114,6 +144,12 @@ class AssetCreate(BaseModel):
     parent_id: uuid.UUID | None = None
     is_mobile: bool | None = Field(default=None, description="По умолчанию берётся из типа")
     attrs: dict[str, Any] = {}
+    # ячейка ПС/БКРУ: ввод/отходящая/секционная и её номер
+    cell_kind: CellKind | None = None
+    cell_no: int | None = Field(default=None, ge=0, le=9999)
+    section_no: int | None = Field(default=None, ge=0, le=99)
+    # кабель: состояние изделия (по умолчанию для класса cable — installed)
+    lifecycle_status: CableLifecycleStatus | None = None
 
     @field_validator("name", "type_code")
     @classmethod
@@ -135,9 +171,46 @@ class AssetUpdate(BaseModel):
     parent_id: uuid.UUID | None = None
     is_mobile: bool | None = None
     attrs: dict[str, Any] | None = None
+    cell_kind: CellKind | None = None
+    cell_no: int | None = Field(default=None, ge=0, le=9999)
+    section_no: int | None = Field(default=None, ge=0, le=99)
+    lifecycle_status: CableLifecycleStatus | None = None
     expected_version: int | None = Field(
         default=None, description="Оптимистическая блокировка: если версия не совпала — 409"
     )
+
+
+class AssetTypeFieldOut(BaseModel):
+    """Поле паспорта типа: из него фронтенд строит input динамической формы."""
+
+    id: uuid.UUID
+    code: str
+    label: str
+    unit: str | None = None
+    data_type: str = "text"
+    required: bool = False
+    default_value: Any | None = None
+    options: list[Any] = []
+    min: float | None = None
+    max: float | None = None
+    group_label: str | None = None
+    sort_order: int = 0
+
+
+class AssetTypeFieldIn(BaseModel):
+    """Описание поля при создании/правке типа (админ-конструктор)."""
+
+    code: str = Field(min_length=1, max_length=48)
+    label: str = Field(min_length=1, max_length=128)
+    unit: str | None = Field(default=None, max_length=32)
+    data_type: FieldDataType = "text"
+    required: bool = False
+    default_value: Any | None = None
+    options: list[Any] = []
+    min: float | None = None
+    max: float | None = None
+    group_label: str | None = Field(default=None, max_length=64)
+    sort_order: int = 0
 
 
 class AssetTypeOut(BaseModel):
@@ -147,9 +220,10 @@ class AssetTypeOut(BaseModel):
     code: str
     name: str
     category: str
+    equipment_class: str = "equipment"
+    group_code: str | None = None
     has_maintenance: bool = False
     schema_symbol: str = "load"
-    has_maintenance: bool = False
     is_composite: bool = False
     composite_template: list[dict[str, Any]] = []
     icon: str | None = None
@@ -157,6 +231,8 @@ class AssetTypeOut(BaseModel):
     port_template: dict[str, Any] = {}
     attr_schema: dict[str, Any] = {}
     required_attrs: list[str] = []
+    # заполняется только при GET /api/asset-types?with_fields=1 (или в админ-ответах)
+    fields: list[AssetTypeFieldOut] = []
     is_mobile_default: bool = False
     sort_order: int = 100
     is_active: bool = True
@@ -170,11 +246,17 @@ class AssetTypeCreate(BaseModel):
     code: str | None = Field(default=None, max_length=48)
     name: str = Field(min_length=2, max_length=128)
     category: Literal["source", "line", "equipment", "mobile", "lighting", "aux", "pole"] = "equipment"
+    equipment_class: EquipmentClass | None = Field(
+        default=None, description="Если не задан — выводится из category"
+    )
+    group_code: str | None = Field(default=None, max_length=32)
     icon: str | None = Field(default=None, max_length=16)
     color: str | None = Field(default=None, max_length=16)
     port_template: dict[str, Any] = {}
     attr_schema: dict[str, Any] = {}
     required_attrs: list[str] = []
+    # конструктор полей: если передан — attr_schema/required_attrs выводятся из него
+    fields: list[AssetTypeFieldIn] = Field(default_factory=list)
     is_mobile_default: bool = False
     has_maintenance: bool = False
     # комплектность: тип содержит подтипы/ячейки (БКРУ, ПС) — Спринт 21+
@@ -189,11 +271,14 @@ class AssetTypeCreate(BaseModel):
 class AssetTypeUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=128)
     category: Literal["source", "line", "equipment", "mobile", "lighting", "aux", "pole"] | None = None
+    equipment_class: EquipmentClass | None = None
+    group_code: str | None = Field(default=None, max_length=32)
     icon: str | None = Field(default=None, max_length=16)
     color: str | None = Field(default=None, max_length=16)
     port_template: dict[str, Any] | None = None
     attr_schema: dict[str, Any] | None = None
     required_attrs: list[str] | None = None
+    fields: list[AssetTypeFieldIn] | None = None
     is_mobile_default: bool | None = None
     has_maintenance: bool | None = None
     is_composite: bool | None = None
@@ -207,9 +292,29 @@ class AssetTypeUpdate(BaseModel):
 
 
 class SchemaLayoutItem(BaseModel):
+    """Одна запись раскладки: узел на холсте, блок или ячейка внутри блока.
+
+    Все поля координат/размера необязательны: автосейв присылает только то, что
+    действительно изменилось (перетащили ячейку — придут ``local_x``/``local_y``,
+    потянули за угол блока — ``width``/``height``). Старый клиент присылает
+    ``x``/``y`` как раньше — это по-прежнему работает.
+    """
+
     asset_id: uuid.UUID
-    x: float
-    y: float
+    x: float | None = Field(default=None, description="Абсолютный X узла на холсте, px")
+    y: float | None = Field(default=None, description="Абсолютный Y узла на холсте, px")
+    width: float | None = Field(
+        default=None, description="Ширина блока схемы, px (только для блока)"
+    )
+    height: float | None = Field(
+        default=None, description="Высота блока схемы, px (только для блока)"
+    )
+    local_x: float | None = Field(
+        default=None, description="X ячейки внутри своего блока, px (0…width блока)"
+    )
+    local_y: float | None = Field(
+        default=None, description="Y ячейки внутри своего блока, px (0…height блока)"
+    )
 
 
 class SchemaPortItem(BaseModel):
@@ -226,6 +331,8 @@ class SchemaLayoutIn(BaseModel):
 class SchemaLayoutOut(BaseModel):
     updated: int
     updated_ports: int = 0
+    updated_blocks: int = 0
+    updated_cells: int = 0
     skipped: list[uuid.UUID] = []
 
 
@@ -384,6 +491,9 @@ class LinkOut(BaseModel):
     cross_section_mm2: float | None = None
     cores: int | None = None
     line: LineOut | None = None
+    # этап 2: кабель-объект реестра, установленный на участок (nullable)
+    cable_asset_id: uuid.UUID | None = None
+    cable_asset: AssetRefOut | None = None
     label: str
     version: int
     warnings: list[str] = []
@@ -471,6 +581,14 @@ class GraphBlockOut(BaseModel):
     kind: str | None = Field(default=None, description="block_code: bkru_standard, contour…")
     width: float | None = Field(default=None, description="Ширина контура на схеме, px")
     height: float | None = Field(default=None, description="Высота контура на схеме, px")
+    # этап 3: размер блока как отдельные поля БД (width/height оставлены для
+    # обратной совместимости и содержат то же значение)
+    schema_width: float | None = Field(
+        default=None, description="gis.assets.schema_width: ширина блока, px"
+    )
+    schema_height: float | None = Field(
+        default=None, description="gis.assets.schema_height: высота блока, px"
+    )
     code: str
     name: str
     block_code: str | None = None
@@ -768,3 +886,30 @@ class LineEquipmentOut(BaseModel):
     link_id: uuid.UUID | None = None
     schema_x: float | None = None
     schema_y: float | None = None
+
+class LineChainIn(BaseModel):
+    """Линия между двумя ячейками через опоры: ВЛ или кабель."""
+
+    from_asset_id: uuid.UUID
+    to_asset_id: uuid.UUID
+    poles: int = Field(default=5, ge=0, le=200, description="Сколько опор поставить между ячейками")
+    prefix: str = Field(default="Опора", max_length=32)
+    link_type: Literal["overhead", "cable"] = "overhead"
+    cable_mark: str | None = Field(default=None, max_length=64)
+    line_name: str | None = Field(default=None, max_length=255)
+    line_code: str | None = Field(default=None, max_length=64)
+    voltage_kv: float | None = Field(default=None, ge=0)
+
+
+class LineChainPoleOut(BaseModel):
+    id: uuid.UUID
+    code: str
+    name: str
+
+
+class LineChainOut(BaseModel):
+    line_id: uuid.UUID
+    line_code: str
+    line_name: str
+    poles: list[LineChainPoleOut] = []
+    link_ids: list[uuid.UUID] = []

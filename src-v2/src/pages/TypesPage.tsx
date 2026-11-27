@@ -3,6 +3,7 @@ import { Alert, Badge, Field, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetType } from '../lib/gis'
 import { gisApi } from '../lib/gis'
+import { parseCompositeTemplate } from '../lib/equipmentTemplates'
 
 const CATEGORIES = [
   { value: 'source', label: 'Источник питания' },
@@ -49,6 +50,8 @@ interface Draft {
   has_maintenance: boolean
   is_composite: boolean
   composite: Record<string, number>
+  /** Шаблон состава v2 (этап 2): форма не перезаписывает его legacy-списком. */
+  templateV2: boolean
   icon: string
   color: string
   parent_id: string
@@ -70,6 +73,7 @@ const EMPTY: Draft = {
   has_maintenance: false,
   is_composite: false,
   composite: {},
+  templateV2: false,
   icon: '🔧',
   color: '#4C9AFF',
   parent_id: '',
@@ -85,6 +89,8 @@ const EMPTY: Draft = {
 function draftFrom(type: AssetType): Draft {
   const ports = type.port_template?.ports ?? []
   const firstVoltage = ports.find((port) => port.voltage_kv !== undefined)?.voltage_kv
+  const template = parseCompositeTemplate(type.composite_template)
+  const rawTemplate = Array.isArray(type.composite_template) ? type.composite_template : []
   return {
     id: type.id,
     code: type.code,
@@ -93,7 +99,13 @@ function draftFrom(type: AssetType): Draft {
     schema_symbol: type.schema_symbol ?? 'load',
     has_maintenance: type.has_maintenance ?? false,
     is_composite: type.is_composite ?? false,
-    composite: Object.fromEntries((type.composite_template ?? []).map((item) => [String(item.type_code), Number(item.count) || 1])),
+    // legacy v1: {type_code, count}. Элементы v2 (мета/секции) игнорируются.
+    composite: Object.fromEntries(
+      rawTemplate
+        .filter((item) => item && typeof item === 'object' && item.type_code)
+        .map((item) => [String(item.type_code), Number(item.count) || 1]),
+    ),
+    templateV2: template.isV2 && (template.sections.length > 0 || template.disconnector !== null),
     icon: type.icon ?? '🔧',
     color: type.color ?? '#4C9AFF',
     parent_id: type.parent_id ?? '',
@@ -153,20 +165,6 @@ function Editor({
         schema_symbol: form.schema_symbol,
         has_maintenance: form.has_maintenance,
         is_composite: form.is_composite || types.some((item) => item.parent_id === form.id),
-        composite_template: Object.entries({
-          ...Object.fromEntries(
-            types
-              .filter((item) => item.parent_id === form.id)
-              .map((item) => [item.code, form.composite[item.code] ?? 1]),
-          ),
-          ...form.composite,
-        })
-          .filter(([, count]) => Number(count) > 0)
-          .map(([typeCode, count]) => ({
-            type_code: typeCode,
-            count: Number(count),
-            label: types.find((item) => item.code === typeCode)?.name ?? typeCode,
-          })),
         icon: form.icon || '●',
         color: form.color,
         description: form.description.trim() || null,
@@ -180,6 +178,24 @@ function Editor({
         ),
         required_attrs: form.attrs.filter((key) => key === 'power_kw'),
         is_mobile_default: form.mobile,
+      }
+      // Шаблон этапа 2 (БКРУ/ПС/КТП) — массив с секциями: legacy-форма его не
+      // перезаписывает, иначе состав секций потеряется при сохранении типа.
+      if (!form.templateV2) {
+        payload.composite_template = Object.entries({
+          ...Object.fromEntries(
+            types
+              .filter((item) => item.parent_id === form.id)
+              .map((item) => [item.code, form.composite[item.code] ?? 1]),
+          ),
+          ...form.composite,
+        })
+          .filter(([, count]) => Number(count) > 0)
+          .map(([typeCode, count]) => ({
+            type_code: typeCode,
+            count: Number(count),
+            label: types.find((item) => item.code === typeCode)?.name ?? typeCode,
+          }))
       }
       if (form.parent_id) payload.parent_id = form.parent_id
       else payload.clear_parent = true
@@ -255,6 +271,13 @@ function Editor({
                 />
                 одно оборудование с ячейками
               </label>
+              {form.templateV2 ? (
+                <p className="rounded border border-line bg-surface2/60 px-2 py-1 text-[11px] text-ink3">
+                  Состав задан шаблоном этапа 2 (БКРУ — 6 ячеек, ПС 35/6 — по 17 на секцию, КТП —
+                  вводной разъединитель). Форма его не перезаписывает; создание — в редакторе схемы,
+                  кнопка «По шаблону».
+                </p>
+              ) : null}
               {form.is_composite || types.some((item) => item.parent_id === form.id) ? (
                 form.id ? (
                   <div className="space-y-1">

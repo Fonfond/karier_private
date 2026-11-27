@@ -4,12 +4,14 @@ import {
   Controls,
   Handle,
   MarkerType,
+  NodeResizer,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
   useReactFlow,
+  useUpdateNodeInternals,
   type Connection,
   type Edge,
   type Node,
@@ -19,20 +21,72 @@ import {
 } from '@xyflow/react'
 import dagre from 'dagre'
 import '@xyflow/react/dist/style.css'
-import type { AssetPort, GraphNode, TopologyGraph } from '../../lib/gis'
+import type {
+  AssetPort,
+  CompositeCreateResult,
+  GraphBlock,
+  GraphBlockChild,
+  GraphNode,
+  SchemaLayoutItem,
+  SchemaLayoutPortItem,
+  TopologyGraph,
+} from '../../lib/gis'
+import {
+  AUTOSAVE_DEBOUNCE_MS,
+  AUTOSAVE_RETRY_MS,
+  BLOCK_DEFAULT_WIDTH,
+  BLOCK_MIN_HEIGHT,
+  BLOCK_MIN_WIDTH,
+  BLOCK_PADDING,
+  CELL_GAP,
+  CELL_MIN_WIDTH,
+  LAYOUT_CHUNK_SIZE,
+  blockLayoutItems,
+  blockSizeOf,
+  cellHandleId,
+  cellWidthForBlock,
+  chunkItems,
+  clampCellBox,
+  explicitCellLayout,
+  nextSavePhase,
+  parseCellHandle,
+  saveIndicator,
+  type CellLocal,
+  type SavePhase,
+} from '../../lib/schemaStage3'
 import { downloadDxf } from '../../lib/dxf'
 import { GostSymbol, SchemaFrameOverlay } from './GostSymbols'
 import { SnapshotsPanel } from './SnapshotsPanel'
 import { AddToSchemaPanel } from './AddToSchemaPanel'
 import { BulkCellsDialog } from './BulkCellsDialog'
-import type { SchemaBlock, SchemaFrame, GraphBlock } from '../../lib/gis'
-import { POWER_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
+import { CompositeTemplateDialog } from './CompositeTemplateDialog'
+import type { SchemaBlock, SchemaFrame } from '../../lib/gis'
+import { POWER_COLOR, gisApi } from '../../lib/gis'
+import { powerStateOf, powerSummary, toggleAriaLabel, voltageText } from '../../lib/power'
+import { cellKindOf, cellKindTitle, cellNumberFromName, cellsLabel, elementsLabel } from '../../lib/equipmentTemplates'
 import { ApiError } from '../../lib/api'
 import { ConfirmDialog } from '../ui'
 
 const NODE_W = 210
 const NODE_H = 84
 const GRID = 20
+
+/** Оперативное состояние элемента блока (ячейки/разъединителя) на схеме. */
+export interface CellPowerState {
+  status: string
+  grounded: boolean
+  voltage_kv?: number | null
+}
+
+/** Этап 3: ячейка внутри блока — координаты относительно контента блока и её размер. */
+type CellLayoutBox = { x: number; y: number; width: number; height: number }
+type CellLayoutMap = Record<string, CellLayoutBox>
+
+/** Снимок раскладки блока для автосейва: где стоят ячейки и каков контент блока. */
+interface BlockCellsSnapshot {
+  layout: CellLayoutMap
+  bounds: { width: number; height: number }
+}
 
 type AssetNodeData = {
   node: GraphNode
@@ -57,6 +111,16 @@ type AssetNodeData = {
   cableMode?: boolean
   onCellCable?: (blockId: string, cellId: string, name: string) => void
   cableFromCellId?: string | null
+  /** Этап 2: переключение ячеек/разъединителей (право `asset.status.edit`). */
+  canSwitch?: boolean
+  /** Статусы элементов блока: `children` графа не несут статус — подмешиваем из API. */
+  cellStates?: Record<string, CellPowerState>
+  onToggleCell?: (cellId: string, next: 'on' | 'off') => void
+  onToggleNode?: (assetId: string, next: 'on' | 'off') => void
+  /** Этап 3: ячейки измерились/подвинулись — блок отдаёт раскладку автосейву. */
+  onCellsMeasured?: (blockId: string, layout: CellLayoutMap, bounds: { width: number; height: number }) => void
+  onCellDragEnd?: (blockId: string, cellId: string, x: number, y: number) => void
+  onBlockResizeEnd?: (blockId: string, width: number, height: number) => void
 }
 
 function portLabel(port: AssetPort): string {
@@ -134,17 +198,229 @@ function NodeHandles({ color = 'accent', dimmed = false }: { color?: string; dim
   )
 }
 
+/**
+ * Ячейки блока в порядке секций/номеров. F1: после перезагрузки графа порядок
+ * children может измениться; для составных устройств (ПС/БКРУ/КТП) подписи секций
+ * «прыгают» и разбивают блок. Legacy-блоки оставляем в исходном порядке.
+ */
+function sortedBlockCells(block: GraphBlock): GraphBlockChild[] {
+  const rawCells = block.children.filter((child) => child.role !== 'busbar')
+  const compositeCells = rawCells.some(
+    (cell) => cell.params?.composite === true || cell.params?.cell_kind != null,
+  )
+  if (!compositeCells) return rawCells
+  return rawCells
+    .map((cell, index) => ({ cell, index }))
+    .sort((a, b) => {
+      const sectionA = Number(a.cell.params?.section_no ?? 0)
+      const sectionB = Number(b.cell.params?.section_no ?? 0)
+      if (sectionA !== sectionB) return sectionA - sectionB
+      const numberA = cellNumberFromName(a.cell.name) ?? 0
+      const numberB = cellNumberFromName(b.cell.name) ?? 0
+      if (numberA !== numberB) return numberA - numberB
+      return a.index - b.index
+    })
+    .map((item) => item.cell)
+}
 
-function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
+
+function AssetNodeImpl(props: NodeProps<Node<AssetNodeData>>) {
+  const { data, selected, id: nodeId } = props
   const { node, editable, portDrag, portPositions, onPortMove } = data
   const blockBox = useRef<HTMLDivElement | null>(null)
   const cellRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  /** Контент блока: здесь лежат ячейки — он же «родитель» для ограничения перетаскивания. */
+  const cellBodyRef = useRef<HTMLDivElement | null>(null)
   const [jumperLines, setJumperLines] = useState<
     { id: string; x1: number; y1: number; x2: number; y2: number; label: string | null }[]
   >([])
+  /** Этап 3: живой размер блока — NodeResizer меняет его на каждом шаге перетаскивания. */
+  const [liveSize, setLiveSize] = useState<{ width?: number; height?: number } | null>(null)
+  /**
+   * Ресайз перестраивает содержимое: ячейки раскладываются сеткой под новую ширину.
+   * Ручные позиции (`draggedCells`) при этом сбрасываются — иначе после растяжения
+   * блока весь текст оставался бы в узком столбце слева.
+   */
+  const [reflowLayout, setReflowLayout] = useState(false)
+  /** Этап 3: измеренные позиции ячеек (px от левого верхнего угла контента блока). */
+  const [measuredCells, setMeasuredCells] = useState<CellLayoutMap>({})
+  /** Этап 3: позиции после перетаскивания — приоритетнее сохранённых в БД. */
+  const [draggedCells, setDraggedCells] = useState<Record<string, CellLocal>>({})
+  const [dragCellId, setDragCellId] = useState<string | null>(null)
+  const [cellBodySize, setCellBodySize] = useState({ width: 0, height: 0 })
+  const cellDrag = useRef<{
+    cellId: string
+    startX: number
+    startY: number
+    origin: CellLocal
+    width: number
+    height: number
+    live: CellLocal
+  } | null>(null)
+  const updateNodeInternals = useUpdateNodeInternals()
   // под напряжением — красный, обесточено/отключено — зелёный
   const powerColor = node.energized || node.status === 'on' ? POWER_COLOR.on : POWER_COLOR.off
   const dim = !node.energized
+  const nodePower = powerStateOf(node.status, node.grounded)
+  // Разъединитель может стоять на схеме отдельным узлом (в КТП он внутри блока).
+  const switchableNode = node.schema_symbol === 'disconnector' || node.type_code === 'razedinitel'
+  const stateVoltage = nodePower.energized ? 'под напряжением' : 'обесточено'
+
+  const block = data.block ?? null
+  const collapsed = Boolean(block?.collapsed)
+  const busbars = useMemo(
+    () => (block ? block.children.filter((child) => child.role === 'busbar') : []),
+    [block],
+  )
+  const cells = useMemo(() => (block ? sortedBlockCells(block) : []), [block])
+  const savedLayout = useMemo(() => (block ? explicitCellLayout(block) : null), [block])
+  const graphSize = useMemo(() => (block ? blockSizeOf(block) : null), [block])
+  // Размер блока: живой ресайз → сохранённый в БД → дефолт. NodeProps.width для
+  // этого не годится: React Flow отдаёт туда measured (0 до первого измерения),
+  // из-за чего содержимое «схлопывалось» бы в 0 px.
+  const size = liveSize ?? graphSize
+  const blockWidth = size?.width != null && size.width > 0 ? size.width : BLOCK_DEFAULT_WIDTH
+  const blockHeight = size?.height != null && size.height > 0 ? size.height : undefined
+  // Граф перечитали (другое действие) — подхватываем сохранённый размер, но не
+  // сбрасываем его во время самого ресайза: там liveSize свежее.
+  useEffect(() => {
+    setLiveSize(graphSize)
+  }, [graphSize])
+  // Новая версия блока из графа — сохранённая раскладка снова главная.
+  useEffect(() => {
+    setReflowLayout(false)
+  }, [block])
+
+  /** Базовая позиция ячейки: перетаскивание → БД → измеренная сетка. */
+  const cellBaseline = (cellId: string) =>
+    draggedCells[cellId] ??
+    (reflowLayout ? measuredCells[cellId] : savedLayout?.[cellId] ?? measuredCells[cellId])
+
+  const cellWidth = cellWidthForBlock(blockWidth)
+  /** Итоговая раскладка ячеек: перетаскивание → БД → измеренная сетка. */
+  const cellLayout = useMemo(() => {
+    if (!block || collapsed || cells.length === 0) return null
+    const bounds = {
+      width: cellBodySize.width || Math.max(cellWidth, blockWidth - BLOCK_PADDING * 2),
+      height: cellBodySize.height || 0,
+    }
+    const result: CellLayoutMap = {}
+    for (const cell of cells) {
+      const base = cellBaseline(cell.id)
+      if (!base) return null
+      const width = measuredCells[cell.id]?.width ?? cellWidth
+      const height = measuredCells[cell.id]?.height ?? 0
+      const clamped = bounds.height > 0 ? clampCellBox({ ...base, width, height }, bounds) : { x: base.x, y: base.y }
+      result[cell.id] = { x: clamped.x, y: clamped.y, width, height }
+    }
+    return result
+  }, [block, collapsed, cells, draggedCells, savedLayout, measuredCells, cellBodySize, cellWidth, blockWidth, reflowLayout])
+
+  // Ячейки, которые ещё не имеют координат (блок без этапа 3 или новая ячейка),
+  // измеряем по текущей сетке: так переход в режим редактирования не «дёргает» вёрстку.
+  useLayoutEffect(() => {
+    if (!block || collapsed || !editable || cells.length === 0) return
+    if (cells.every((cell) => cellBaseline(cell.id))) return
+    const body = cellBodyRef.current
+    if (!body) return
+    const next: CellLayoutMap = {}
+    for (const cell of cells) {
+      const element = cellRefs.current[cell.id]
+      if (!element) continue
+      next[cell.id] = {
+        x: Math.round(element.offsetLeft),
+        y: Math.round(element.offsetTop),
+        width: Math.round(element.offsetWidth),
+        height: Math.round(element.offsetHeight),
+      }
+    }
+    if (Object.keys(next).length === 0) return
+    setMeasuredCells((prev) => ({ ...prev, ...next }))
+  }, [block, collapsed, editable, cells, draggedCells, savedLayout, measuredCells, reflowLayout])
+
+  // Границы «родителя» для extent: размер контента блока (шапка и шины не в счёт).
+  useLayoutEffect(() => {
+    if (!block || collapsed) return
+    const body = cellBodyRef.current
+    if (!body) return
+    const update = () => {
+      const next = { width: body.clientWidth, height: body.clientHeight }
+      setCellBodySize((prev) =>
+        prev.width === next.width && prev.height === next.height ? prev : next,
+      )
+    }
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [block, collapsed, cells.length, blockWidth, blockHeight])
+
+  // Порты ячеек меняют положение вместе с раскладкой — React Flow должен
+  // пересчитать границы handles, иначе линия к ячейке «отстаёт».
+  useEffect(() => {
+    if (!block) return
+    updateNodeInternals(nodeId)
+  }, [block, cellLayout, collapsed, nodeId, updateNodeInternals])
+
+  // Снимок раскладки для автосейва: какие ячейки где и каков контент блока.
+  useLayoutEffect(() => {
+    if (!block || collapsed || !cellLayout) return
+    data.onCellsMeasured?.(block.asset_id, cellLayout, {
+      width: cellBodySize.width,
+      height: cellBodySize.height,
+    })
+  }, [block, collapsed, cellLayout, cellBodySize, data])
+
+  const startCellDrag = (cellId: string, event: React.PointerEvent<HTMLButtonElement>) => {
+    const layout = cellLayout?.[cellId]
+    if (!layout || !block) return
+    event.stopPropagation()
+    event.preventDefault()
+    const element = cellRefs.current[cellId]
+    cellDrag.current = {
+      cellId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origin: { x: layout.x, y: layout.y },
+      width: layout.width,
+      height: layout.height || element?.offsetHeight || 44,
+      live: { x: layout.x, y: layout.y },
+    }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    setDragCellId(cellId)
+  }
+
+  const moveCellDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = cellDrag.current
+    if (!drag) return
+    event.stopPropagation()
+    const bounds = { width: cellBodySize.width, height: cellBodySize.height }
+    if (!bounds.width || !bounds.height) return
+    const next = clampCellBox(
+      {
+        x: drag.origin.x + (event.clientX - drag.startX),
+        y: drag.origin.y + (event.clientY - drag.startY),
+        width: drag.width,
+        height: drag.height,
+      },
+      bounds,
+    )
+    drag.live = next
+    setDraggedCells((prev) => ({ ...prev, [drag.cellId]: next }))
+  }
+
+  const stopCellDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = cellDrag.current
+    if (!drag || !block) return
+    event.stopPropagation()
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
+    cellDrag.current = null
+    setDragCellId(null)
+    setDraggedCells((prev) => ({ ...prev, [drag.cellId]: drag.live }))
+    data.onCellDragEnd?.(block.asset_id, drag.cellId, Math.round(drag.live.x), Math.round(drag.live.y))
+  }
+
 
   useLayoutEffect(() => {
     if (!data.block || data.block.collapsed) {
@@ -190,21 +466,39 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
   }, [data.block])
 
 
-  if (data.block) {
-    const block = data.block
-    const busbars = block.children.filter((child) => child.role === 'busbar')
-    const cells = block.children.filter((child) => child.role !== 'busbar')
+  if (block) {
     const jumperCells = new Set<string>()
     for (const jumper of block.jumpers ?? []) {
       jumperCells.add(jumper.from_cell_id)
       jumperCells.add(jumper.to_cell_id)
     }
+    // Сводка по электробезопасности: включённые (красные) / обесточенные (зелёные).
+    const blockPower = powerSummary(
+      cells.map((cell) => ({
+        status: data.cellStates?.[cell.id]?.status ?? 'off',
+        grounded: data.cellStates?.[cell.id]?.grounded ?? false,
+      })),
+    )
     const roleColor = (role: string | null) => {
       if (role === 'incoming') return 'border-warm/50 text-warm'
       if (role === 'outgoing') return 'border-accent/50 text-accent'
       if (role === 'section') return 'border-[#C4A1FF]/50 text-[#C4A1FF]'
       return 'border-line text-ink2'
     }
+    // Свободная раскладка: позиции ячеек известны (БД этапа 3 или измеренная сетка).
+    // Иначе — привычная сетка, которая перестраивается при ресайзе.
+    const freeform = cellLayout != null
+    const sectionLabels = Array.from(
+      new Set(
+        cells
+          .map((cell) => (cell.params?.section as string | undefined) ?? null)
+          .filter((label): label is string => Boolean(label)),
+      ),
+    )
+    const freeformHeight =
+      freeform && cellLayout
+        ? Math.max(40, ...Object.values(cellLayout).map((box) => box.y + (box.height || 44))) + 8
+        : undefined
 
     if (block.collapsed) {
       return (
@@ -217,7 +511,12 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
             <span className="grid h-8 w-8 place-items-center rounded-lg bg-accent/15 text-[13px]">▣</span>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[12px] font-semibold text-ink">{block.name}</div>
-              <div className="text-[10px] text-ink3">{cells.length + busbars.length} элементов</div>
+              <div className="text-[10px] text-ink3">{elementsLabel(cells.length + busbars.length)}</div>
+              {cells.length > 0 ? (
+                <div className="truncate text-[10px]" style={{ color: blockPower.energized > 0 ? POWER_COLOR.on : POWER_COLOR.off }}>
+                  {blockPower.energized > 0 ? '⚡' : '○'} {blockPower.text}
+                </div>
+              ) : null}
             </div>
             <button
               type="button"
@@ -239,23 +538,65 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
     return (
       <div
         ref={blockBox}
-        className={`relative w-[320px] max-w-[calc(100vw-28px)] rounded-xl border-2 ${
+        data-testid={`schema-block-${block.asset_id}`}
+        data-block-width={Math.round(blockWidth)}
+        data-block-height={blockHeight != null ? Math.round(blockHeight) : undefined}
+        data-block-layout={freeform ? 'freeform' : 'grid'}
+        className={`relative flex flex-col rounded-xl border-2 ${
           block.kind === 'contour'
             ? 'border-dashed border-accent/35 bg-surface1/70'
             : 'border-accent/45 bg-surface1/95'
         } ${selected ? 'ring-2 ring-accent' : ''}`}
-        style={
-          block.kind === 'contour'
-            ? { width: block.width ?? 320, minHeight: block.height ?? 220 }
-            : undefined
-        }
+        style={{ width: blockWidth, height: blockHeight ?? undefined }}
       >
-        <div className="flex items-start justify-between gap-2 border-b border-line px-2.5 py-2">
+        {/* Этап 3: угловые маркеры ресайза — встроенный NodeResizer из @xyflow/react 12. */}
+        {editable ? (
+          <NodeResizer
+            nodeId={nodeId}
+            isVisible
+            minWidth={BLOCK_MIN_WIDTH}
+            minHeight={BLOCK_MIN_HEIGHT}
+            maxWidth={4000}
+            maxHeight={4000}
+            onResize={(_, params) =>
+              setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) })
+            }
+            onResizeEnd={(_, params) => {
+              setLiveSize({ width: Math.round(params.width), height: Math.round(params.height) })
+              // Содержимое перестраивается под новый размер: ячейки снова
+              // раскладываются сеткой, а не остаются в старом узком столбце.
+              setDraggedCells({})
+              setMeasuredCells({})
+              setReflowLayout(true)
+              data.onBlockResizeEnd?.(block.asset_id, Math.round(params.width), Math.round(params.height))
+            }}
+            lineClassName="!border-accent/70"
+            handleClassName="!h-2.5 !w-2.5 !rounded-sm !border !border-surface1 !bg-accent"
+          />
+        ) : null}
+        <div className="flex shrink-0 items-start justify-between gap-2 border-b border-line px-2.5 py-2">
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold leading-tight text-ink">{block.name}</div>
             <div className="mt-0.5 text-[10px] text-ink3">
-              {cells.length} ячеек · {busbars.length} секции
+              {cellsLabel(cells.length)} · {busbars.length} шин
             </div>
+            {cells.length > 0 ? (
+              <div
+                className="mt-0.5 truncate text-[10px]"
+                style={{ color: blockPower.energized > 0 ? POWER_COLOR.on : POWER_COLOR.off }}
+                title={`Электробезопасность: ${blockPower.text}`}
+              >
+                {blockPower.energized > 0 ? '⚡' : '○'} {blockPower.text}
+              </div>
+            ) : null}
+            {freeform && sectionLabels.length > 0 ? (
+              <div
+                className="mt-0.5 truncate text-[9px] text-ink3"
+                title={`Секции: ${sectionLabels.join(', ')}`}
+              >
+                Секции: {sectionLabels.join(' · ')}
+              </div>
+            ) : null}
           </div>
           <div className="flex items-center gap-1">
             {data.editable && data.onAddCell ? (
@@ -286,7 +627,7 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           </div>
         </div>
 
-        <div className="space-y-2 px-2.5 py-2">
+        <div className="shrink-0 space-y-2 px-2.5 py-2">
           {busbars.map((bus) => (
             <div key={bus.id}>
               <div className="text-[9px] uppercase tracking-wide text-ink3">{bus.name}</div>
@@ -295,32 +636,105 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
           ))}
         </div>
 
-        <div className="grid grid-cols-1 gap-1 px-2.5 pb-2 min-[400px]:grid-cols-2">
+        {/* Контент блока: в обычном режиме — адаптивная сетка, в свободной
+            раскладке — ячейки по сохранённым координатам (и перетаскивание внутри). */}
+        <div className={`min-w-0 px-2.5 pb-2 ${blockHeight != null ? 'min-h-0 flex-1 overflow-auto' : ''}`}>
+          <div
+            ref={cellBodyRef}
+            data-testid={`schema-block-body-${block.asset_id}`}
+            className={`relative ${freeform ? '' : 'grid'}`}
+            style={
+              freeform
+                ? { minHeight: freeformHeight }
+                : { display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${CELL_MIN_WIDTH}px, 1fr))`, gap: CELL_GAP }
+            }
+          >
           {cells.map((cell, cellIndex) => {
             const section = (cell.params?.section as string | undefined) ?? null
             const previousSection =
               cellIndex > 0 ? ((cells[cellIndex - 1].params?.section as string | undefined) ?? null) : null
-            const showSection = Boolean(section) && section !== previousSection
+            const showSection = !freeform && Boolean(section) && section !== previousSection
+            const sectionVoltage = cell.params?.voltage_kv
+            // Этап 3: позиция ячейки внутри блока (перетаскивание/БД/измерение).
+            const box = freeform ? cellLayout?.[cell.id] : undefined
+            // Этап 2: вид ячейки (вводная/отходящая/секционная), её номер и питание
+            const kind = cellKindOf(cell.params, cell.role)
+            const number = cellNumberFromName(cell.name)
+            const state = data.cellStates?.[cell.id]
+            const power = powerStateOf(state?.status ?? 'off', state?.grounded ?? false)
+            const isDisconnector = cell.params?.disconnector === true
+            const kindColor =
+              kind === 'in' ? '#F5A524' : kind === 'out' ? '#4C9AFF' : kind === 'sectional' ? '#C4A1FF' : undefined
+            const nextState: 'on' | 'off' = power.energized ? 'off' : 'on'
             return (
             <Fragment key={cell.id}>
               {showSection ? (
                 <div className="col-span-full mt-1 flex items-center gap-2 text-[9px] uppercase tracking-wide text-ink3">
                   <span className="h-px flex-1 bg-line" />
-                  {section}
+                  <span className="whitespace-nowrap">
+                    {section}
+                    {sectionVoltage != null ? ` · ${sectionVoltage} кВ` : ''}
+                  </span>
                   <span className="h-px flex-1 bg-line" />
                 </div>
               ) : null}
             <div
               key={cell.id}
               ref={(el) => { cellRefs.current[cell.id] = el }}
-              className={`group flex items-center gap-1 rounded-md border bg-surface2/40 px-1.5 py-1 ${roleColor(
+              data-cell-id={cell.id}
+              data-cell-kind={kind ?? undefined}
+              data-cell-number={number ?? undefined}
+              data-power={power.kind}
+              className={`group relative flex items-start gap-1 rounded-md border border-line bg-surface2/40 px-1.5 py-1 ${roleColor(
                 cell.role,
-              )} ${data.jumperFirstId === cell.id ? 'ring-2 ring-accent' : ''}`}
+              )} ${data.jumperFirstId === cell.id ? 'ring-2 ring-accent' : ''} ${
+                dragCellId === cell.id ? 'z-[6] shadow-lg ring-2 ring-accent' : ''
+              }`}
+              style={{
+                borderLeft: `3px solid ${power.color}`,
+                ...(box
+                  ? { position: 'absolute', left: box.x, top: box.y, width: box.width }
+                  : undefined),
+              }}
+              title={`${cell.name}${kind ? ` · ${cellKindTitle(kind)}` : ''} — ${power.title}`}
             >
+              {/* Этап 3: у ячейки свои порты — линию можно вести прямо к ней. */}
+              <Handle
+                id={cellHandleId(cell.id, 'in')}
+                type="target"
+                position={Position.Left}
+                isConnectable={editable && !portDrag}
+                className={`schema-cell-handle ${editable ? 'schema-cell-handle--edit' : ''}`}
+                title={`Ввод ячейки «${cell.name}» — сюда приходит линия`}
+              />
+              <Handle
+                id={cellHandleId(cell.id, 'out')}
+                type="source"
+                position={Position.Right}
+                isConnectable={editable && !portDrag}
+                className={`schema-cell-handle ${editable ? 'schema-cell-handle--edit' : ''}`}
+                title={`Выход ячейки «${cell.name}» — отсюда идёт линия`}
+              />
+              {editable ? (
+                <button
+                  type="button"
+                  className="nodrag absolute bottom-0.5 right-0.5 z-[3] grid h-3.5 w-3.5 cursor-move touch-none place-items-center rounded border border-accent/50 bg-surface1/85 text-[8px] leading-none text-accent hover:bg-accent/15"
+                  data-testid={`cell-drag-${cell.id}`}
+                  title="Перетащить ячейку внутри блока (за рамки блока не выйдет)"
+                  aria-label={`Перетащить ячейку «${cell.name}» внутри блока`}
+                  onPointerDown={(event) => startCellDrag(cell.id, event)}
+                  onPointerMove={moveCellDrag}
+                  onPointerUp={stopCellDrag}
+                  onPointerCancel={stopCellDrag}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  ⠿
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="min-w-0 flex-1 text-left"
-                title={`${cell.name} · ${cell.type_name ?? ''}`}
+                title={`${cell.name} · ${cell.type_name ?? ''} — ${power.title}`}
                 onClick={(event) => {
                   event.stopPropagation()
                   if (data.jumperMode && data.onCellPick) {
@@ -334,16 +748,60 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
                   }
                 }}
               >
+                <div className="flex items-center gap-1">
+                  {number != null ? (
+                    <span className="rounded bg-surface1 px-1 font-mono text-[8px] text-ink2">№{number}</span>
+                  ) : null}
+                  {kind ? (
+                    <span
+                      className="truncate text-[8px] uppercase tracking-wide"
+                      style={kindColor ? { color: kindColor } : undefined}
+                    >
+                      {isDisconnector ? 'разъединитель' : cellKindTitle(kind)}
+                    </span>
+                  ) : null}
+                </div>
                 <div className="truncate text-[10px] leading-tight">{cell.name}</div>
                 {typeof cell.params?.cable === 'string' ? (
                   <div className="truncate text-[8px] text-ink3">{cell.params.cable}</div>
                 ) : null}
+                <div
+                  className="mt-0.5 flex items-center gap-1 text-[8px]"
+                  style={{ color: power.color }}
+                  aria-label={`Состояние: ${power.label}`}
+                >
+                  <span aria-hidden="true">{power.icon}</span>
+                  <span className="truncate">{power.label}</span>
+                </div>
                 {jumperCells.has(cell.id) ? (
                   <div className="mt-0.5 inline-flex items-center gap-0.5 rounded bg-[#C4A1FF]/20 px-1 text-[8px] text-[#C4A1FF]">
                     ⇄ перемычка
                   </div>
                 ) : null}
               </button>
+              {data.canSwitch && data.onToggleCell ? (
+                <button
+                  type="button"
+                  data-testid={`toggle-cell-${cell.id}`}
+                  className="mt-0.5 h-5 shrink-0 rounded border px-1 text-[9px] font-semibold"
+                  style={{
+                    color: power.energized ? POWER_COLOR.off : POWER_COLOR.on,
+                    borderColor: power.energized ? POWER_COLOR.off : POWER_COLOR.on,
+                  }}
+                  title={
+                    nextState === 'on'
+                      ? `Включить «${cell.name}» — появится напряжение`
+                      : `Отключить «${cell.name}» — объект будет обесточен`
+                  }
+                  aria-label={toggleAriaLabel(nextState, cell.name, power)}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    data.onToggleCell?.(cell.id, nextState)
+                  }}
+                >
+                  {power.energized ? 'Откл' : 'Вкл'}
+                </button>
+              ) : null}
               {data.editable && data.onMoveCell ? (
                 <button
                   type="button"
@@ -374,6 +832,7 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
             </Fragment>
             )
           })}
+          </div>
         </div>
 
         {jumperLines.length > 0 ? (
@@ -451,11 +910,42 @@ function AssetNodeImpl({ data, selected }: NodeProps<Node<AssetNodeData>>) {
         </div>
       </div>
       <div className="mt-1 flex items-center gap-1.5 text-[10px]">
-        <span style={{ color: powerColor }}>●</span>
-        <span className="text-ink2">{STATUS_LABEL[node.status] ?? node.status}</span>
+        <span style={{ color: powerColor }}>{nodePower.icon}</span>
+        <span className="text-ink2" style={{ color: powerColor }}>
+          {powerStateOf(node.status, node.grounded).label}
+        </span>
         {node.grounded ? <span className="text-ground">⏚</span> : null}
         {node.is_source ? <span className="ml-auto text-warm">источник</span> : null}
       </div>
+
+      {switchableNode && data.canSwitch && data.onToggleNode ? (
+        <button
+          type="button"
+          data-testid={`toggle-node-${node.id}`}
+          className="mt-1 h-6 w-full rounded border text-[10px] font-semibold"
+          style={{
+            color: powerColor === POWER_COLOR.on ? POWER_COLOR.off : POWER_COLOR.on,
+            borderColor: powerColor === POWER_COLOR.on ? POWER_COLOR.off : POWER_COLOR.on,
+          }}
+          title={
+            powerColor === POWER_COLOR.on
+              ? `Отключить «${node.name}» — объект будет обесточен`
+              : `Включить «${node.name}» — появится напряжение`
+          }
+          aria-label={toggleAriaLabel(
+            powerColor === POWER_COLOR.on ? 'off' : 'on',
+            node.name,
+            powerStateOf(node.status, node.grounded),
+          )}
+          onClick={(event) => {
+            event.stopPropagation()
+            data.onToggleNode?.(node.id, powerColor === POWER_COLOR.on ? 'off' : 'on')
+          }}
+        >
+          {powerColor === POWER_COLOR.on ? 'Отключить' : 'Включить'}
+          {stateVoltage ? ` · ${stateVoltage}` : ''}
+        </button>
+      ) : null}
 
       {node.ports.map((port) => {
         const position = portPositions[port.id] ?? { x: 0.5, y: 0.5 }
@@ -528,6 +1018,10 @@ export function areNodePropsEqual(
     a.cellLinkFirstId === b.cellLinkFirstId &&
     a.cableMode === b.cableMode &&
     a.cableFromCellId === b.cableFromCellId &&
+    a.canSwitch === b.canSwitch &&
+    a.cellStates === b.cellStates &&
+    a.onToggleCell === b.onToggleCell &&
+    a.onToggleNode === b.onToggleNode &&
     a.activeConnection === b.activeConnection &&
     a.onPortMove === b.onPortMove &&
     a.onSelectChild === b.onSelectChild &&
@@ -538,7 +1032,10 @@ export function areNodePropsEqual(
     a.onToggleCollapse === b.onToggleCollapse &&
     a.onCellPick === b.onCellPick &&
     a.onCellLink === b.onCellLink &&
-    a.onCellCable === b.onCellCable
+    a.onCellCable === b.onCellCable &&
+    a.onCellsMeasured === b.onCellsMeasured &&
+    a.onCellDragEnd === b.onCellDragEnd &&
+    a.onBlockResizeEnd === b.onBlockResizeEnd
   )
 }
 
@@ -605,10 +1102,46 @@ export function nodePositions(graph: TopologyGraph): Record<string, XYPosition> 
   return result
 }
 
+/** Ячейка → её блок. По этой карте линия к ячейке рисуется к порту внутри блока. */
+export function cellBlockMap(
+  graph: TopologyGraph,
+): Record<string, { blockId: string; collapsed: boolean }> {
+  const result: Record<string, { blockId: string; collapsed: boolean }> = {}
+  for (const block of graph.blocks) {
+    for (const child of block.children) {
+      result[child.id] = { blockId: block.asset_id, collapsed: Boolean(block.collapsed) }
+    }
+  }
+  return result
+}
+
+type EdgeEndpoint = { nodeId: string; cellId?: string }
+
+/**
+ * Связи для React Flow. Этап 3: связь с ячейкой внутри блока рисуется к её порту
+ * (handle `cell:<id>:in|out`) на узле блока — иначе линия «висела» бы в пустоте,
+ * ведь ячейки не являются отдельными узлами холста. Перемычки внутри блока
+ * не дублируем: они рисуются SVG-линиями внутри блока.
+ */
 export function buildEdges(graph: TopologyGraph, positions: Record<string, XYPosition>): Edge[] {
-  return graph.edges.map((edge) => {
-    const from = positions[edge.from_asset_id]
-    const to = positions[edge.to_asset_id]
+  const owners = cellBlockMap(graph)
+  const endpoint = (assetId: string): EdgeEndpoint | null => {
+    if (positions[assetId]) return { nodeId: assetId }
+    const owner = owners[assetId]
+    if (owner && !owner.collapsed) return { nodeId: owner.blockId, cellId: assetId }
+    return null
+  }
+  const edges: Edge[] = []
+  for (const edge of graph.edges) {
+    if (edge.link_type === 'jumper') continue
+    const source = endpoint(edge.from_asset_id)
+    const target = endpoint(edge.to_asset_id)
+    if (!source || !target) continue
+    // Блок и его собственная ячейка (или две ячейки одного блока) — петля:
+    // такие связи показывает карточка/перемычки, на холст их не выносим.
+    if (source.nodeId === target.nodeId) continue
+    const from = positions[source.nodeId]
+    const to = positions[target.nodeId]
     let sourceHandle = 'r-out'
     let targetHandle = 'l-in'
     if (from && to) {
@@ -627,16 +1160,18 @@ export function buildEdges(graph: TopologyGraph, positions: Record<string, XYPos
         targetHandle = 'r-in'
       }
     }
+    // Порт ячейки важнее направления узла: линия должна прийти ровно в ячейку.
+    if (source.cellId) sourceHandle = cellHandleId(source.cellId, 'out')
+    if (target.cellId) targetHandle = cellHandleId(target.cellId, 'in')
     const open = edge.state !== 'connected'
     const jumper = edge.link_type === 'jumper'
-    return {
+    edges.push({
       id: edge.id,
       type: 'smoothstep',
-      pathOptions: { borderRadius: 8 },
       sourceHandle,
       targetHandle,
-      source: edge.from_asset_id,
-      target: edge.to_asset_id,
+      source: source.nodeId,
+      target: target.nodeId,
       label: edge.label,
       animated: false,
       style: {
@@ -654,8 +1189,9 @@ export function buildEdges(graph: TopologyGraph, positions: Record<string, XYPos
         height: 14,
         color: open ? '#6B7A8A' : '#4C9AFF',
       },
-    }
-  })
+    })
+  }
+  return edges
 }
 
 /** Флаги режимов, которые видны узлу; обновляются точечно, без пересборки графа. */
@@ -764,12 +1300,17 @@ function Flow({
   selectedId,
   onSelect,
   canEdit,
+  canSwitch,
+  assetStates,
   onGraphChanged,
 }: {
   graph: TopologyGraph
   selectedId: string | null
   onSelect: (id: string) => void
   canEdit: boolean
+  canSwitch: boolean
+  /** Статусы объектов из реестра (MapPage уже загрузил все объекты). */
+  assetStates: Record<string, CellPowerState>
   onGraphChanged: () => void
 }) {
   const { fitView } = useReactFlow()
@@ -824,9 +1365,22 @@ function Flow({
   const [poleForm, setPoleForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.' })
   const [snapshotsOpen, setSnapshotsOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
+  const [templateOpen, setTemplateOpen] = useState(false)
+  /**
+   * Локальные состояния после переключения. Базовые статусы приходят из реестра
+   * (`assetStates`): `GET /api/assets` уже загружен MapPage, поэтому на блок не
+   * нужно по запросу на каждого ребёнка — иначе 500 запросов на схему.
+   */
+  const [cellStates, setCellStates] = useState<Record<string, CellPowerState>>({})
+  const toggleBusyRef = useRef<Set<string>>(new Set())
+  const mergedCellStates = useMemo(
+    () => ({ ...assetStates, ...cellStates }),
+    [assetStates, cellStates],
+  )
   const [bulkParent, setBulkParent] = useState<{ id: string; name: string } | null>(null)
   const [cableMode, setCableMode] = useState(false)
   const [cableFrom, setCableFrom] = useState<{ cellId: string; name: string; blockId: string } | null>(null)
+  const [chainMode, setChainMode] = useState(false)
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const { screenToFlowPosition } = useReactFlow()
 
@@ -877,6 +1431,243 @@ function Flow({
     setDirty(true)
   }, [setNodes])
 
+  // --- этап 3: автосейв раскладки -------------------------------------------
+  // Что сохранять: перемещённые узлы (x/y), размеры блоков (width/height) и
+  // локальные координаты ячеек (local_x/local_y). Данные копятся в ref-наборах,
+  // затем debounce 2 с отправляет только изменённое (put идемпотентен).
+  const nodesRef = useRef<Node<AssetNodeData>[]>([])
+  useEffect(() => {
+    nodesRef.current = nodes
+  }, [nodes])
+  /** Размеры, полученные от NodeResizer — чтобы не потерять их до ответа сервера. */
+  const savedBlockSizesRef = useRef<Record<string, { width: number; height: number }>>({})
+  /** Снимки раскладки блоков из узлов (ячейки + границы контента). */
+  const blockCellsRef = useRef<Record<string, BlockCellsSnapshot>>({})
+  /** Позиции ячеек после перетаскивания (приоритетнее БД до перезагрузки графа). */
+  const cellOverridesRef = useRef<Record<string, CellLocal>>({})
+  const pendingRef = useRef<{ nodes: Set<string>; blocks: Set<string>; all: boolean }>({
+    nodes: new Set<string>(),
+    blocks: new Set<string>(),
+    all: false,
+  })
+  const [savePhase, setSavePhase] = useState<SavePhase>('idle')
+  const saveTimerRef = useRef<number | null>(null)
+  const retryTimerRef = useRef<number | null>(null)
+  const saveBusyRef = useRef(false)
+  const pendingSaveRef = useRef(false)
+  const flushSaveRef = useRef<(manual?: boolean) => Promise<void>>(() => Promise.resolve())
+
+  const collectPortItems = (): SchemaLayoutPortItem[] =>
+    nodesRef.current.flatMap((node) =>
+      node.data.node.ports.map((port) => {
+        const point = node.data.portPositions[port.id]
+        return {
+          port_id: port.id,
+          x: Math.round((point?.x ?? 0.5) * 1000) / 1000,
+          y: Math.round((point?.y ?? 0.5) * 1000) / 1000,
+        }
+      }),
+    )
+
+  const buildNodeItems = (): SchemaLayoutItem[] => {
+    const pending = pendingRef.current
+    const ids = pending.all
+      ? nodesRef.current.map((node) => node.id)
+      : Array.from(pending.nodes)
+    const items: SchemaLayoutItem[] = []
+    for (const id of ids) {
+      if (pending.blocks.has(id)) continue
+      const node = nodesRef.current.find((item) => item.id === id)
+      if (!node) continue
+      items.push({ asset_id: id, x: Math.round(node.position.x), y: Math.round(node.position.y) })
+    }
+    return items
+  }
+
+  /** Блок + его ячейки одним пакетом: размер, позиция и local_x/local_y ячеек. */
+  const buildStage3Items = (): SchemaLayoutItem[] => {
+    const items: SchemaLayoutItem[] = []
+    for (const blockId of pendingRef.current.blocks) {
+      const node = nodesRef.current.find((item) => item.id === blockId)
+      const blockData = node?.data.block
+      if (!node || !blockData) continue
+      const width = Math.round(
+        node.width ?? node.measured?.width ?? savedBlockSizesRef.current[blockId]?.width ?? 0,
+      )
+      const height = Math.round(
+        node.height ?? node.measured?.height ?? savedBlockSizesRef.current[blockId]?.height ?? 0,
+      )
+      const snapshot = blockCellsRef.current[blockId]
+      const cells = blockData.children.filter((child) => child.role !== 'busbar')
+      const cellEntries: Array<{ id: string; local: CellLocal }> = []
+      for (const cell of cells) {
+        const override = cellOverridesRef.current[cell.id]
+        const measured = snapshot?.layout[cell.id]
+        const base =
+          override ??
+          measured ??
+          (cell.local_x != null && cell.local_y != null
+            ? { x: cell.local_x, y: cell.local_y }
+            : null)
+        if (!base) continue
+        const bounds = snapshot
+          ? snapshot.bounds
+          : { width: Math.max(0, width - BLOCK_PADDING * 2), height: Math.max(0, height - 60) }
+        if (!bounds.width || !bounds.height) continue
+        // Вписываем в текущие рамки блока: после уменьшения блока старые
+        // координаты иначе дали бы 422 out_of_bounds.
+        cellEntries.push({
+          id: cell.id,
+          local: clampCellBox(
+            {
+              x: base.x,
+              y: base.y,
+              width: measured?.width ?? cellWidthForBlock(width || BLOCK_DEFAULT_WIDTH),
+              height: measured?.height ?? 0,
+            },
+            bounds,
+          ),
+        })
+      }
+      items.push(
+        ...blockLayoutItems({
+          assetId: blockId,
+          position: node.position,
+          size: width > 0 && height > 0 ? { width, height } : null,
+          cells: cellEntries,
+        }),
+      )
+    }
+    return items
+  }
+
+  /** Единая точка сохранения: и ручная кнопка, и автосейв идут сюда. */
+  const flushSave = async (manual = false): Promise<void> => {
+    if (!canEdit) return
+    if (saveBusyRef.current) {
+      pendingSaveRef.current = true
+      return
+    }
+    if (saveTimerRef.current != null) {
+      window.clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    if (retryTimerRef.current != null) {
+      window.clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
+    const pending = pendingRef.current
+    const nodeIdsSaved = pending.all
+      ? nodesRef.current.map((node) => node.id)
+      : Array.from(pending.nodes)
+    const blockIdsSaved = Array.from(pending.blocks)
+    const stage3Items = buildStage3Items()
+    const stage3Ids = new Set(stage3Items.map((item) => item.asset_id))
+    const items = [
+      ...buildNodeItems().filter((item) => !stage3Ids.has(item.asset_id)),
+      ...stage3Items,
+    ]
+    const ports = manual ? collectPortItems() : []
+    if (items.length === 0 && ports.length === 0) {
+      if (manual) setStatus('Изменений для сохранения нет')
+      return
+    }
+    saveBusyRef.current = true
+    setSavePhase('saving')
+    try {
+      let updated = 0
+      let updatedPorts = 0
+      let updatedBlocks = 0
+      let updatedCells = 0
+      const chunks = items.length > 0 ? chunkItems(items, LAYOUT_CHUNK_SIZE) : [[]]
+      for (let index = 0; index < chunks.length; index += 1) {
+        const result = await gisApi.saveSchemaLayout(chunks[index], index === 0 ? ports : [])
+        updated += result.updated
+        updatedPorts += result.updated_ports ?? 0
+        updatedBlocks += result.updated_blocks ?? 0
+        updatedCells += result.updated_cells ?? 0
+      }
+      for (const id of nodeIdsSaved) pendingRef.current.nodes.delete(id)
+      for (const id of blockIdsSaved) pendingRef.current.blocks.delete(id)
+      pendingRef.current.all = false
+      setSavePhase('saved')
+      setDirty(false)
+      setError(null)
+      if (manual) {
+        const portsPart = ports.length > 0 ? `, портов ${updatedPorts}` : ''
+        setStatus(
+          `Сохранено: узлов ${updated}, блоков ${updatedBlocks}, ячеек ${updatedCells}${portsPart}`,
+        )
+      }
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : 'Не удалось сохранить раскладку'
+      setSavePhase('error')
+      if (manual) setError(message)
+      retryTimerRef.current = window.setTimeout(() => {
+        retryTimerRef.current = null
+        void flushSaveRef.current(false)
+      }, AUTOSAVE_RETRY_MS)
+    } finally {
+      saveBusyRef.current = false
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false
+        scheduleAutosave()
+      }
+    }
+  }
+  flushSaveRef.current = flushSave
+
+  /** Изменения пришли: через 2 с уйдёт PUT /api/topology/layout (ошибка — повтор через 5 с). */
+  const scheduleAutosave = useCallback((delay: number = AUTOSAVE_DEBOUNCE_MS) => {
+    if (saveBusyRef.current) {
+      pendingSaveRef.current = true
+      return
+    }
+    setSavePhase((phase) => nextSavePhase(phase, 'schedule'))
+    if (saveTimerRef.current != null) window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null
+      void flushSaveRef.current(false)
+    }, delay)
+  }, [])
+
+  const handleCellsMeasured = useCallback(
+    (blockId: string, layout: CellLayoutMap, bounds: { width: number; height: number }) => {
+      blockCellsRef.current[blockId] = { layout, bounds }
+    },
+    [],
+  )
+
+  const handleCellDragEnd = useCallback(
+    (blockId: string, cellId: string, x: number, y: number) => {
+      cellOverridesRef.current[cellId] = { x, y }
+      pendingRef.current.blocks.add(blockId)
+      setDirty(true)
+      scheduleAutosave()
+    },
+    [scheduleAutosave],
+  )
+
+  const handleBlockResizeEnd = useCallback(
+    (blockId: string, width: number, height: number) => {
+      savedBlockSizesRef.current[blockId] = { width, height }
+      pendingRef.current.blocks.add(blockId)
+      setDirty(true)
+      scheduleAutosave()
+    },
+    [scheduleAutosave],
+  )
+
+  // При выходе из режима редактирования не оставляем таймеры висеть.
+  useEffect(() => {
+    if (editMode) return
+    if (saveTimerRef.current != null) window.clearTimeout(saveTimerRef.current)
+    if (retryTimerRef.current != null) window.clearTimeout(retryTimerRef.current)
+    saveTimerRef.current = null
+    retryTimerRef.current = null
+    setSavePhase('idle')
+  }, [editMode])
+
   const [blocks, setBlocks] = useState<SchemaBlock[]>([])
   const [legend, setLegend] = useState<{ symbol: string; title: string; count: number }[]>([])
   const [showLegend, setShowLegend] = useState(false)
@@ -899,8 +1690,70 @@ function Flow({
       .catch(() => setLegend([]))
   }, [])
 
+  const createChainLine = useCallback(
+    async (fromId: string, fromName: string, toId: string, toName: string) => {
+      const polesRaw = window.prompt('Сколько опор между ячейками?', '5')
+      if (polesRaw === null) return
+      const poles = Math.max(0, Math.min(200, Number(polesRaw) || 0))
+      const mark = window.prompt('Марка провода/кабеля (например, АС-35)', 'АС-35')
+      if (mark === null) return
+      const kindRaw = window.prompt('Тип линии: overhead (ВЛ) или cable (кабель)', 'overhead')
+      if (kindRaw === null) return
+      const linkType = kindRaw.trim().toLowerCase() === 'cable' ? 'cable' : 'overhead'
+      setSaving(true)
+      setError(null)
+      try {
+        const created = await gisApi.createLineChain({
+          from_asset_id: fromId,
+          to_asset_id: toId,
+          poles,
+          cable_mark: mark.trim() || undefined,
+          link_type: linkType,
+        })
+        const linkIds = created.link_ids
+        const poleIds = created.poles.map((pole) => pole.id)
+        pushCommand(
+          `линия ${created.line_code} (${poles} опор)`,
+          async () => {
+            for (const id of linkIds) await gisApi.deleteLink(id)
+            for (const id of poleIds) await gisApi.remove(id)
+          },
+          async () => {
+            for (const id of poleIds) await gisApi.restoreAsset(id)
+            for (const id of linkIds) await gisApi.restoreLink(id)
+          },
+        )
+        setChainMode(false)
+        setCellLinkMode(false)
+        onGraphChanged()
+        focusAsset(toId)
+        setStatus(`Линия ${created.line_code} создана: ${fromName} → ${toName}, опор ${poles}`)
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось создать линию')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [onGraphChanged, pushCommand, focusAsset],
+  )
+
   const handleCellLink = useCallback(async (blockId: string, cellId: string, name: string) => {
     if (!cellLinkMode) return
+    if (chainMode) {
+      if (!cellLinkFirst) {
+        setCellLinkFirst({ blockId, cellId, name })
+        setStatus(`Линия: выбрана «${name}», кликните вторую ячейку`)
+        return
+      }
+      if (cellLinkFirst.cellId === cellId) {
+        setError('Выберите другую ячейку')
+        return
+      }
+      const from = cellLinkFirst
+      setCellLinkFirst(null)
+      await createChainLine(from.cellId, from.name, cellId, name)
+      return
+    }
     if (!cellLinkFirst) {
       setCellLinkFirst({ blockId, cellId, name })
       setStatus(`Связь ячеек: выбрана «${name}», кликните принимающую ячейку другого комплекта`)
@@ -943,7 +1796,7 @@ function Flow({
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось соединить ячейки')
     }
-  }, [cellLinkMode, cellLinkFirst, onGraphChanged, pushCommand])
+  }, [cellLinkMode, chainMode, cellLinkFirst, createChainLine, onGraphChanged, pushCommand])
 
   const handleCellPick = useCallback(
     (blockId: string, cellId: string, name: string) => {
@@ -1155,6 +2008,58 @@ function Flow({
       }
     },
     [onGraphChanged],
+  )
+
+  // --- этап 2: питание ячеек и переключение ---------------------------------
+
+  /** Переключение ячейки или вводного разъединителя через toggle-API. */
+  const handleToggleAsset = useCallback(
+    async (assetId: string, next: 'on' | 'off') => {
+      if (toggleBusyRef.current.has(assetId)) return
+      toggleBusyRef.current.add(assetId)
+      setError(null)
+      try {
+        const result = await gisApi.toggleAsset(assetId, { state: next })
+        setCellStates((prev) => ({
+          ...prev,
+          [assetId]: { status: result.status, grounded: result.grounded, voltage_kv: result.voltage_kv },
+        }))
+        setStatus(
+          result.energized
+            ? `${result.name}: включено — под напряжением, ${voltageText(true, result.voltage_kv)}`
+            : `${result.name}: отключено — обесточено`,
+        )
+        onGraphChanged()
+      } catch (err) {
+        if (err instanceof ApiError) {
+          setError(
+            err.status === 403
+              ? 'Нет права переключать: нужен доступ «изменение состояния объекта»'
+              : err.message,
+          )
+        } else {
+          setError('Не удалось переключить объект')
+        }
+      } finally {
+        toggleBusyRef.current.delete(assetId)
+      }
+    },
+    [onGraphChanged],
+  )
+
+  /** Создано составное устройство по шаблону (`POST /api/schema/composite`). */
+  const handleTemplateCreated = useCallback(
+    (result: CompositeCreateResult) => {
+      const parts = [`${result.children} элементов`]
+      if (result.sections.length > 0) {
+        parts.push(`секций: ${result.sections.length}`)
+      }
+      if (result.disconnector) parts.push('вводной разъединитель')
+      setStatus(`Создано по шаблону: «${result.name}» — ${parts.join(', ')}`)
+      onGraphChanged()
+      focusAsset(result.id)
+    },
+    [focusAsset, onGraphChanged],
   )
 
   // --- Библиотека блоков: клик ставит в центр, drag&drop — в точку сброса -----
@@ -1446,7 +2351,12 @@ function Flow({
     onCellPick: handleCellPick,
     onCellLink: handleCellLink,
     onCellCable: handleCellCable,
+    onToggleCell: handleToggleAsset,
+    onToggleNode: handleToggleAsset,
     onPortMove,
+    onCellsMeasured: handleCellsMeasured,
+    onCellDragEnd: handleCellDragEnd,
+    onBlockResizeEnd: handleBlockResizeEnd,
   })
 
   const modeFlags = useMemo<NodeModeFlags>(
@@ -1478,7 +2388,12 @@ function Flow({
       onCellPick: handleCellPick,
       onCellLink: handleCellLink,
       onCellCable: handleCellCable,
+      onToggleCell: handleToggleAsset,
+      onToggleNode: handleToggleAsset,
       onPortMove,
+      onCellsMeasured: handleCellsMeasured,
+      onCellDragEnd: handleCellDragEnd,
+      onBlockResizeEnd: handleBlockResizeEnd,
     }
   })
 
@@ -1488,44 +2403,61 @@ function Flow({
     const flags = modeRef.current.flags
     const blockByAsset = new Map(graph.blocks.map((block) => [block.asset_id, block]))
     setNodes(
-      graph.nodes.map((node) => ({
-        id: node.id,
-        type: 'asset',
-        position: positions[node.id],
-        selected: node.id === modeRef.current.selectedId,
-        draggable: flags.draggable,
-        data: {
-          node,
-          editable: flags.editable,
-          portDrag: flags.portDrag,
-          portPositions: portsForNode(node),
-          onPortMove: (portId: string, x: number, y: number) =>
-            handlersRef.current.onPortMove(node.id, portId, x, y),
-          block: blockByAsset.get(node.id),
-          onSelectChild: (id: string) => handlersRef.current.onSelect(id),
-          onAddCell: (id: string) => handlersRef.current.onAddCell(id),
-          onAddCellsBulk: (id: string) => handlersRef.current.onAddCellsBulk(id),
-          onDeleteCell: (assetId: string, cellId: string, name: string) =>
-            handlersRef.current.onDeleteCell(assetId, cellId, name),
-          onMoveCell: (assetId: string, cellId: string, name: string) =>
-            handlersRef.current.onMoveCell(assetId, cellId, name),
-          onToggleCollapse: (assetId: string, collapsed: boolean) =>
-            handlersRef.current.onToggleCollapse(assetId, collapsed),
-          activeConnection: flags.activeConnection,
-          jumperMode: flags.jumperMode,
-          jumperFirstId: flags.jumperFirstId,
-          onCellPick: (blockId: string, cellId: string, name: string) =>
-            handlersRef.current.onCellPick(blockId, cellId, name),
-          linkCellsMode: flags.linkCellsMode,
-          onCellLink: (blockId: string, cellId: string, name: string) =>
-            void handlersRef.current.onCellLink(blockId, cellId, name),
-          cellLinkFirstId: flags.cellLinkFirstId,
-          cableMode: flags.cableMode,
-          onCellCable: (blockId: string, cellId: string, name: string) =>
-            handlersRef.current.onCellCable(blockId, cellId, name),
-          cableFromCellId: flags.cableFromCellId,
-        },
-      })),
+      graph.nodes.map((node) => {
+        const blockData = blockByAsset.get(node.id)
+        // Этап 3: размер блока из schema_width/schema_height (его же держит NodeResizer).
+        // Пока размер не сохранён, узел авторазмерный — вёрстка не меняется.
+        const blockSize = blockData ? blockSizeOf(blockData) : null
+        return {
+          id: node.id,
+          type: 'asset',
+          position: positions[node.id],
+          width: blockSize?.width,
+          height: blockSize?.height,
+          selected: node.id === modeRef.current.selectedId,
+          draggable: flags.draggable,
+          data: {
+            node,
+            editable: flags.editable,
+            portDrag: flags.portDrag,
+            portPositions: portsForNode(node),
+            onPortMove: (portId: string, x: number, y: number) =>
+              handlersRef.current.onPortMove(node.id, portId, x, y),
+            block: blockData,
+            onSelectChild: (id: string) => handlersRef.current.onSelect(id),
+            onAddCell: (id: string) => handlersRef.current.onAddCell(id),
+            onAddCellsBulk: (id: string) => handlersRef.current.onAddCellsBulk(id),
+            onDeleteCell: (assetId: string, cellId: string, name: string) =>
+              handlersRef.current.onDeleteCell(assetId, cellId, name),
+            onMoveCell: (assetId: string, cellId: string, name: string) =>
+              handlersRef.current.onMoveCell(assetId, cellId, name),
+            onToggleCollapse: (assetId: string, collapsed: boolean) =>
+              handlersRef.current.onToggleCollapse(assetId, collapsed),
+            onCellsMeasured: handlersRef.current.onCellsMeasured,
+            onCellDragEnd: handlersRef.current.onCellDragEnd,
+            onBlockResizeEnd: handlersRef.current.onBlockResizeEnd,
+            activeConnection: flags.activeConnection,
+            jumperMode: flags.jumperMode,
+            jumperFirstId: flags.jumperFirstId,
+            onCellPick: (blockId: string, cellId: string, name: string) =>
+              handlersRef.current.onCellPick(blockId, cellId, name),
+            linkCellsMode: flags.linkCellsMode,
+            onCellLink: (blockId: string, cellId: string, name: string) =>
+              void handlersRef.current.onCellLink(blockId, cellId, name),
+            cellLinkFirstId: flags.cellLinkFirstId,
+            cableMode: flags.cableMode,
+            onCellCable: (blockId: string, cellId: string, name: string) =>
+              handlersRef.current.onCellCable(blockId, cellId, name),
+            cableFromCellId: flags.cableFromCellId,
+            canSwitch,
+            cellStates: mergedCellStates,
+            onToggleCell: (cellId: string, next: 'on' | 'off') =>
+              void handlersRef.current.onToggleCell(cellId, next),
+            onToggleNode: (assetId: string, next: 'on' | 'off') =>
+              void handlersRef.current.onToggleNode(assetId, next),
+          },
+        }
+      }),
     )
     setEdges(buildEdges(graph, positions))
     setDirty(false)
@@ -1533,8 +2465,23 @@ function Flow({
     setError(null)
     setEdgeDraft(null)
     setPending(null)
-    // Пересборка зависит только от графа: флаги режимов и выделение применяются точечно ниже.
-  }, [graph, setNodes, setEdges])
+    // Пересборка зависит только от графа: флаги режимов, статусы ячеек и выделение
+    // применяются точечно отдельными эффектами, иначе каждая смена статуса
+    // пересчитывала бы dagre и сбрасывала раскладку.
+  }, [graph, setNodes, setEdges, canSwitch])
+
+  // Статусы ячеек (реестр + локальные переключения) обновляем точечно, без дагре.
+  useEffect(() => {
+    setNodes((current) => {
+      let changed = false
+      const next = current.map((node) => {
+        if (node.data.cellStates === mergedCellStates) return node
+        changed = true
+        return { ...node, data: { ...node.data, cellStates: mergedCellStates } }
+      })
+      return changed ? next : current
+    })
+  }, [mergedCellStates, setNodes])
 
   // Флаги режимов обновляются точечно: без dagre, без пересборки связей и замыканий.
   useEffect(() => {
@@ -1557,36 +2504,24 @@ function Flow({
     localStorage.setItem('karier-schema-frame', showFrame ? '1' : '0')
   }, [showFrame])
 
+  // Камеру подводим один раз при открытии схемы. Дальше граф перезагружается
+  // после каждого переключения ячейки — сбрасывать зум в «показать всё» при этом
+  // нельзя: оператор теряет место, где нажимал кнопку.
+  const didFitRef = useRef(false)
   useEffect(() => {
+    if (didFitRef.current) return
+    didFitRef.current = true
     const timer = setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 60)
     return () => clearTimeout(timer)
   }, [graph, fitView])
 
   const saveCurrent = async () => {
+    // Ручной триггер: отправляется всё накопленное, включая позиции всех узлов и порты.
+    pendingRef.current.all = true
     setSaving(true)
     setError(null)
     try {
-      const items = nodes.map((node) => ({
-        asset_id: node.id,
-        x: Math.round(node.position.x),
-        y: Math.round(node.position.y),
-      }))
-      const ports = nodes.flatMap((node) =>
-        node.data.node.ports.map((port) => {
-          const point = node.data.portPositions[port.id]
-          return {
-            port_id: port.id,
-            x: Math.round((point?.x ?? 0.5) * 1000) / 1000,
-            y: Math.round((point?.y ?? 0.5) * 1000) / 1000,
-          }
-        }),
-      )
-      const result = await gisApi.saveSchemaLayout(items, ports)
-      setStatus(`Сохранено: узлов ${result.updated}, портов ${result.updated_ports}`)
-      setDirty(false)
-      onGraphChanged()
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Не удалось сохранить раскладку')
+      await flushSaveRef.current(true)
     } finally {
       setSaving(false)
     }
@@ -1614,7 +2549,9 @@ function Flow({
 
     setNodes((current) => current.map((node) => ({ ...node, position: layout[node.id] ?? node.position })))
     setDirty(true)
-    setStatus('Шаблон ГОСТ применён — проверьте и сохраните раскладку')
+    pendingRef.current.all = true
+    scheduleAutosave()
+    setStatus('Шаблон ГОСТ применён — сохраню автоматически')
   }
 
   const applyAuto = () => {
@@ -1623,36 +2560,129 @@ function Flow({
       current.map((node) => ({ ...node, position: auto[node.id] ?? node.position })),
     )
     setDirty(true)
-    setStatus('Авто-раскладка применена — нажмите «Сохранить раскладку»')
+    pendingRef.current.all = true
+    scheduleAutosave()
+    setStatus('Авто-раскладка применена — сохраню автоматически')
   }
 
-  const resolvePorts = (
-    connection: Connection,
-  ): { sourcePortId: string; targetPortId: string } | { error: string } => {
-    const sourceNode = graph.nodes.find((node) => node.id === connection.source)
-    const targetNode = graph.nodes.find((node) => node.id === connection.target)
-    if (!sourceNode || !targetNode) return { error: 'Не найден объект связи' }
+  type ConnectEndpoint =
+    | { kind: 'asset'; assetId: string; port: AssetPort | null }
+    | { kind: 'cell'; cellId: string; side: 'in' | 'out'; blockId: string }
 
-    const sourcePort =
-      sourceNode.ports.find((port) => port.id === connection.sourceHandle) ??
-      sourceNode.ports.find((port) => port.kind === 'out' || port.kind === 'io')
-    const targetPort =
-      targetNode.ports.find((port) => port.id === connection.targetHandle) ??
-      targetNode.ports.find((port) => port.kind === 'in' || port.kind === 'io')
+  const cellOwnerMap = useMemo(() => cellBlockMap(graph), [graph])
 
-    if (!sourcePort) return { error: `У объекта «${sourceNode.name}» нет выходного порта` }
-    if (!targetPort) return { error: `У объекта «${targetNode.name}» нет входного порта` }
-    if (sourcePort.kind === 'in') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
-    if (targetPort.kind === 'out') return { error: 'Соединять можно только выход со входом (OUT → IN)' }
-
-    const fromKv = sourcePort.nominal_voltage_kv
-    const toKv = targetPort.nominal_voltage_kv
-    if (fromKv != null && toKv != null && fromKv !== toKv) {
-      return { error: `Напряжения не совпадают: ${fromKv} кВ и ${toKv} кВ` }
+  /** Куда ведёт конец линии: порт узла или порт ячейки внутри блока. */
+  const resolveEndpoint = (
+    assetId: string,
+    handleId: string | null | undefined,
+    role: 'source' | 'target',
+  ): ConnectEndpoint | { error: string } => {
+    const cell = parseCellHandle(handleId)
+    if (cell) {
+      const owner = cellOwnerMap[cell.cellId]
+      if (!owner) return { error: 'Ячейка не найдена в блоке' }
+      if (role === 'source' && cell.side !== 'out') {
+        return { error: 'Линия от ячейки идёт только от выхода' }
+      }
+      if (role === 'target' && cell.side !== 'in') {
+        return { error: 'Линия к ячейке идёт только на вход' }
+      }
+      return { kind: 'cell', cellId: cell.cellId, side: cell.side, blockId: owner.blockId }
     }
-
-    return { sourcePortId: sourcePort.id, targetPortId: targetPort.id }
+    const node = graph.nodes.find((item) => item.id === assetId)
+    if (!node) return { error: 'Не найден объект связи' }
+    const port =
+      node.ports.find((item) => item.id === handleId) ??
+      (role === 'source'
+        ? node.ports.find((item) => item.kind === 'out' || item.kind === 'io')
+        : node.ports.find((item) => item.kind === 'in' || item.kind === 'io'))
+    if (port && role === 'source' && port.kind === 'in') {
+      return { error: 'Соединять можно только выход со входом (OUT → IN)' }
+    }
+    if (port && role === 'target' && port.kind === 'out') {
+      return { error: 'Соединять можно только выход со входом (OUT → IN)' }
+    }
+    // Порта может не быть (например, у опоры) — тогда связь через ячейку сама
+    // создаст вход/выход через ports/ensure.
+    return { kind: 'asset', assetId: node.id, port: port ?? null }
   }
+
+  const resolveConnection = (
+    connection: Connection,
+  ): { source: ConnectEndpoint; target: ConnectEndpoint } | { error: string } => {
+    const source = resolveEndpoint(connection.source, connection.sourceHandle, 'source')
+    if ('error' in source) return source
+    const target = resolveEndpoint(connection.target, connection.targetHandle, 'target')
+    if ('error' in target) return target
+    if (source.kind === 'asset' && target.kind === 'asset') {
+      const fromKv = source.port?.nominal_voltage_kv
+      const toKv = target.port?.nominal_voltage_kv
+      if (fromKv != null && toKv != null && fromKv !== toKv) {
+        return { error: `Напряжения не совпадают: ${fromKv} кВ и ${toKv} кВ` }
+      }
+    }
+    return { source, target }
+  }
+
+  /**
+   * Связь через порт ячейки: у ячейки может не быть портов (их создаёт
+   * `POST /api/assets/{id}/ports/ensure`), затем обычный `POST /api/links`
+   * получает from_port_id/to_port_id именно вложенного объекта.
+   */
+  const connectCellEndpoint = useCallback(
+    async (source: ConnectEndpoint, target: ConnectEndpoint) => {
+      setSaving(true)
+      setError(null)
+      try {
+        const ensureIds = new Set<string>()
+        if (source.kind === 'cell') ensureIds.add(source.cellId)
+        if (target.kind === 'cell') ensureIds.add(target.cellId)
+        if (source.kind === 'asset' && !source.port) ensureIds.add(source.assetId)
+        if (target.kind === 'asset' && !target.port) ensureIds.add(target.assetId)
+        for (const id of ensureIds) await gisApi.ensurePorts(id)
+        const fromId = source.kind === 'asset' ? source.assetId : source.cellId
+        const toId = target.kind === 'asset' ? target.assetId : target.cellId
+        const [fromAsset, toAsset] = await Promise.all([gisApi.asset(fromId), gisApi.asset(toId)])
+        const fromPort =
+          source.kind === 'asset' && source.port
+            ? source.port
+            : fromAsset.ports.find((port) => port.kind !== 'in') ?? fromAsset.ports[0]
+        const toPort =
+          target.kind === 'asset' && target.port
+            ? target.port
+            : toAsset.ports.find((port) => port.kind !== 'out') ?? toAsset.ports[0]
+        if (!fromPort || !toPort) {
+          setError('Не удалось подобрать порты для связи — проверьте порты объектов')
+          return
+        }
+        const created = await gisApi.createLink({
+          from_port_id: fromPort.id,
+          to_port_id: toPort.id,
+          link_type: 'cable',
+          cable_mark: `${fromAsset.name} → ${toAsset.name}`,
+        })
+        let linkId = created.id
+        pushCommand(
+          'связь через порт ячейки',
+          async () => {
+            await gisApi.deleteLink(linkId)
+          },
+          async () => {
+            const again = await gisApi.restoreLink(linkId)
+            linkId = again.id
+          },
+        )
+        const cellPart = source.kind === 'cell' || target.kind === 'cell' ? ' (порт ячейки)' : ''
+        setStatus(`Связь создана${cellPart}: ${fromAsset.name} → ${toAsset.name}`)
+        onGraphChanged()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось создать связь')
+      } finally {
+        setSaving(false)
+      }
+    },
+    [onGraphChanged, pushCommand],
+  )
 
   const snapshotPositions = (): Record<string, XYPosition> =>
     Object.fromEntries(nodes.map((node) => [node.id, { ...node.position }]))
@@ -2062,6 +3092,16 @@ function Flow({
     return result
   }, [nodes])
 
+  const autosaveInfo = saveIndicator(savePhase)
+  const autosaveTone =
+    autosaveInfo?.tone === 'bad'
+      ? 'border-bad/60 bg-bad/10 text-bad'
+      : autosaveInfo?.tone === 'ok'
+        ? 'border-ok/50 bg-ok/10 text-ok'
+        : autosaveInfo?.tone === 'accent'
+          ? 'border-accent/50 bg-surface1/95 text-ink'
+          : 'border-line bg-surface1/95 text-ink3'
+
   return (
     <div
       ref={wrapperRef}
@@ -2112,6 +3152,15 @@ function Flow({
           </button>
           <button
             type="button"
+            className="btn-ghost h-8 px-3"
+            data-testid="schema-composite-open"
+            title="Создать по шаблону: БКРУ (6 ячеек), ПС 35/6 (17 на секцию), КТП (вводной разъединитель)"
+            onClick={() => setTemplateOpen(true)}
+          >
+            ▤ По шаблону
+          </button>
+          <button
+            type="button"
             className="btn-ghost h-8 px-2"
             title="Снимки схемы: зафиксировать состояние на дату, посмотреть и опубликовать"
             onClick={() => setSnapshotsOpen(true)}
@@ -2120,8 +3169,14 @@ function Flow({
           </button>
           {editMode ? (
             <>
-              <button type="button" className="btn-primary h-8 px-3" disabled={saving} onClick={() => void saveCurrent()}>
-                {saving ? 'Сохраняем…' : 'Сохранить раскладку'}
+              <button
+                type="button"
+                className="btn-primary h-8 px-3"
+                disabled={saving || savePhase === 'saving'}
+                title="Ручной триггер: раскладка и так сохраняется автоматически через 2 с после изменения"
+                onClick={() => void saveCurrent()}
+              >
+                {saving || savePhase === 'saving' ? 'Сохраняем…' : 'Сохранить раскладку'}
               </button>
               <button type="button" className="btn-ghost h-8 px-3" onClick={applyAuto}>
                 Авто-раскладка
@@ -2153,6 +3208,22 @@ function Flow({
                 }}
               >
                 Кабель
+              </button>
+              <button
+                type="button"
+                className={`btn-ghost h-8 px-3 ${chainMode ? 'ring-1 ring-accent' : ''}`}
+                title="Линия между ячейками через опоры: ВЛ или кабель, с маркой провода"
+                onClick={() => {
+                  setJumperMode(false)
+                  setCableMode(false)
+                  setCableFrom(null)
+                  setCellLinkFirst(null)
+                  setChainMode((value) => !value)
+                  setCellLinkMode(!chainMode)
+                  setStatus(chainMode ? null : 'Линия: кликните первую ячейку, затем вторую — укажите число опор, марку и тип')
+                }}
+              >
+                Линия
               </button>
               <button type="button" className="btn-ghost h-8 px-2" title="Перенумеровать опоры" onClick={() => setPoleDialog('renumber')}>
                 №
@@ -2220,7 +3291,9 @@ function Flow({
                 Двигать порты
               </label>
               <span className="hidden text-[11px] text-ink3 sm:inline">
-                {portDrag ? 'тяните кружки по краю узла' : 'клик по связи — редактирование'}
+                {portDrag
+                  ? 'тяните кружки по краю узла'
+                  : 'угол блока — размер · ⠿ на ячейке — перетащить внутри блока'}
               </span>
             </>
           ) : (
@@ -2238,6 +3311,30 @@ function Flow({
       ) : status ? (
         <div className="absolute right-2 top-2 z-10 max-w-[320px] rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-[12px] text-ok">
           {status}
+        </div>
+      ) : null}
+
+      {/* Этап 3: индикатор автосейва — «Сохранение…» / зелёный успех / красная ошибка с повтором. */}
+      {editMode && canEdit && autosaveInfo ? (
+        <div
+          role={savePhase === 'error' ? 'alert' : 'status'}
+          aria-live={savePhase === 'error' ? 'assertive' : 'polite'}
+          data-testid="schema-autosave"
+          data-phase={savePhase}
+          className={`absolute left-1/2 top-2 z-[13] flex -translate-x-1/2 items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] shadow-lg backdrop-blur ${autosaveTone}`}
+        >
+          {autosaveInfo.spinner ? <span className="schema-spinner" aria-hidden="true" /> : null}
+          <span>{autosaveInfo.text}</span>
+          {savePhase === 'error' ? (
+            <button
+              type="button"
+              className="rounded border border-bad/50 px-1.5 text-[11px] hover:bg-bad/10"
+              title="Повторить сохранение сейчас"
+              onClick={() => void flushSaveRef.current(true)}
+            >
+              Повторить
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -2297,7 +3394,7 @@ function Flow({
         onNodeDragStart={() => {
           dragStartPositions.current = snapshotPositions()
         }}
-        onNodeDragStop={() => {
+        onNodeDragStop={(_, dragged) => {
           const before = dragStartPositions.current
           const after = snapshotPositions()
           if (before) {
@@ -2306,6 +3403,9 @@ function Flow({
           dragStartPositions.current = null
           setGuides(null)
           setDirty(true)
+          // Этап 3: отпустили узел — через 2 с позиция уйдёт автосейвом.
+          pendingRef.current.nodes.add(dragged.id)
+          scheduleAutosave()
         }}
         onNodeContextMenu={(event, node) => {
           event.preventDefault()
@@ -2331,6 +3431,11 @@ function Flow({
         }}
         onConnectStart={(_, params) => {
           if (!editMode || portDrag) return
+          // Линия от порта ячейки: подсветку совместимых портов узла не включаем.
+          if (parseCellHandle(params.handleId)) {
+            setActiveConnection(null)
+            return
+          }
           const node = graph.nodes.find((item) => item.id === params.nodeId)
           if (!node) return
           const port = node.ports.find((item) => item.id === params.handleId)
@@ -2350,20 +3455,51 @@ function Flow({
         isValidConnection={(candidate) => {
           const connection = candidate as Connection
           if (!connection.source || !connection.target) return false
-          if (connection.source === connection.target) return false
-          const resolved = resolvePorts(connection)
-          return !('error' in resolved)
+          if (
+            connection.source === connection.target &&
+            !parseCellHandle(connection.sourceHandle) &&
+            !parseCellHandle(connection.targetHandle)
+          ) {
+            return false
+          }
+          const resolved = resolveConnection(connection)
+          if ('error' in resolved) return false
+          if (
+            resolved.source.kind === 'asset' &&
+            resolved.target.kind === 'asset' &&
+            (!resolved.source.port || !resolved.target.port)
+          ) {
+            return false
+          }
+          return true
         }}
         onConnect={(connection) => {
           if (!editMode || portDrag) return
-          if (connection.source === connection.target) return
-          const resolved = resolvePorts(connection)
+          const resolved = resolveConnection(connection)
           if ('error' in resolved) {
             setError(resolved.error)
             setPending(null)
             return
           }
-          setPending({ ...connection, sourceHandle: resolved.sourcePortId, targetHandle: resolved.targetPortId })
+          // Этап 3: связь через порт ячейки создаётся сразу — порт вложенного
+          // объекта уже известен (ensure + POST /api/links с портами ячейки).
+          if (resolved.source.kind === 'cell' || resolved.target.kind === 'cell') {
+            setPending(null)
+            void connectCellEndpoint(resolved.source, resolved.target)
+            return
+          }
+          if (connection.source === connection.target) return
+          if (resolved.source.kind !== 'asset' || resolved.target.kind !== 'asset') return
+          if (!resolved.source.port || !resolved.target.port) {
+            setError('У объекта нет порта — создайте вход/выход в карточке или режиме портов')
+            setPending(null)
+            return
+          }
+          setPending({
+            ...connection,
+            sourceHandle: resolved.source.port.id,
+            targetHandle: resolved.target.port.id,
+          })
           setStatus(null)
           setError(null)
         }}
@@ -2557,6 +3693,13 @@ function Flow({
         onLineEquipment={handleLineEquipment}
       />
 
+      <CompositeTemplateDialog
+        open={templateOpen}
+        center={templateOpen ? addCenter() : { x: 240, y: 200 }}
+        onClose={() => setTemplateOpen(false)}
+        onCreated={handleTemplateCreated}
+      />
+
       {poleDialog ? (
         <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
           <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
@@ -2676,6 +3819,24 @@ function Flow({
               зелёный — отключено / обесточено
             </div>
             <div className="text-ink3">заземлено — символ ⏚ у порта</div>
+          </div>
+          <div className="mb-2 space-y-0.5 border-b border-line pb-2">
+            <div className="text-[10px] uppercase tracking-wide text-ink3">Ячейки и разъединители</div>
+            <div className="text-ink2">
+              <span style={{ color: POWER_COLOR.on }}>⚡</span> ячейка включена — под напряжением (красный)
+            </div>
+            <div className="text-ink2">
+              <span style={{ color: POWER_COLOR.off }}>○</span> ячейка отключена / заземлена — обесточено (зелёный)
+            </div>
+            <div className="text-ink3">№ — номер ячейки, подпись — вводная/отходящая/секционная</div>
+            <div className="text-ink3">кнопка «Вкл/Откл» — переключение через API, запись в аудит</div>
+          </div>
+          <div className="mb-2 space-y-0.5 border-b border-line pb-2">
+            <div className="text-[10px] uppercase tracking-wide text-ink3">Блок и ячейки (этап 3)</div>
+            <div className="text-ink2">угол блока — маркеры ресайза, размер сохраняется в БД</div>
+            <div className="text-ink2">⠿ на ячейке — перетаскивание внутри блока (за рамки не выйдет)</div>
+            <div className="text-ink2">кружки на ячейках — порты: линия встаёт на порт ячейки</div>
+            <div className="text-ink3">изменения уходят автосейвом через 2 с после отпускания</div>
           </div>
           <div className="mb-2 space-y-0.5 border-b border-line pb-2">
             <div className="text-[10px] uppercase tracking-wide text-ink3">Связи</div>
@@ -2932,12 +4093,18 @@ export function SchemaView({
   selectedId,
   onSelect,
   canEdit = false,
+  canSwitch = false,
+  assetStates = {},
   onGraphChanged,
 }: {
   graph: TopologyGraph
   selectedId: string | null
   onSelect: (id: string) => void
   canEdit?: boolean
+  /** Право `asset.status.edit`: кнопки «Включить/Отключить» у ячеек и разъединителей. */
+  canSwitch?: boolean
+  /** Статусы объектов реестра: от них зависит цвет ячеек внутри блоков. */
+  assetStates?: Record<string, CellPowerState>
   onGraphChanged?: () => void
 }) {
   return (
@@ -2948,6 +4115,8 @@ export function SchemaView({
           selectedId={selectedId}
           onSelect={onSelect}
           canEdit={canEdit}
+          canSwitch={canSwitch}
+          assetStates={assetStates}
           onGraphChanged={onGraphChanged ?? (() => undefined)}
         />
       </div>

@@ -74,6 +74,9 @@ def _create_child(
             attrs=dict(node.get("params") or {}),
         ),
         actor=actor,
+        # Ячейка/элемент блока не проходит валидацию required_attrs: это
+        # визуальный элемент схемы, паспортные данные заполняются в карточке.
+        validate_attributes=False,
     )
     asset.schema_block_id = parent.id
     asset.schema_role = node.get("role", "cell")
@@ -317,6 +320,10 @@ def create_contour(
     asset.schema_role = "block"
     asset.schema_x = x
     asset.schema_y = y
+    # этап 3: размер блока — отдельные колонки (attrs.contour_w/h остаются для
+    # старых клиентов и отчётов, поэтому пишем оба места)
+    asset.schema_width = float(width)
+    asset.schema_height = float(height)
     db.commit()
     db.refresh(asset)
 
@@ -943,6 +950,7 @@ def create_cable(
     cross_section_mm2: float | None = None,
     cores: int | None = None,
     link_type: str = "cable",
+    line_id: uuid.UUID | None = None,
 ):
     """Кабельная/воздушная связь между двумя объектами с подбором портов."""
     if from_asset.id == to_asset.id:
@@ -962,6 +970,7 @@ def create_cable(
         length_m=length_m,
         cross_section_mm2=cross_section_mm2,
         cores=cores,
+        line_id=line_id,
     )
     link = links_service.create_link(db, from_asset.pit_id, payload, actor=actor)
     audit.add(
@@ -994,6 +1003,9 @@ def add_line_equipment(
             status="off",
         ),
         actor=actor,
+        # Паспортные данные (мощность и т.п.) заполняются в карточке позже:
+        # добавление оборудования в линию не должно требовать их сразу.
+        validate_attributes=False,
     )
 
     if anchor.schema_x is not None:
@@ -1017,3 +1029,124 @@ def add_line_equipment(
         detail=f"В линию к {anchor.code} добавлено оборудование {asset.code} ({asset_type.name})",
     )
     return {"asset": asset, "link": link}
+
+# --- линия между ячейками через опоры ---------------------------------------
+
+def _schema_point(db: Session, asset: Asset) -> tuple[float, float]:
+    """Координаты объекта на схеме; для ячейки — блок + локальный сдвиг."""
+    if asset.schema_x is not None and asset.schema_y is not None:
+        return (float(asset.schema_x), float(asset.schema_y))
+    if asset.x is not None and asset.y is not None:
+        return (float(asset.x), float(asset.y))
+    if asset.schema_block_id is not None:
+        block = db.get(Asset, asset.schema_block_id)
+        if block is not None and block.schema_x is not None:
+            return (
+                float(block.schema_x) + float(asset.schema_local_x or 0),
+                float(block.schema_y) + float(asset.schema_local_y or 0),
+            )
+    return (0.0, 0.0)
+
+
+def _pole_type(db: Session) -> AssetType:
+    asset_type = db.scalar(
+        select(AssetType).where(AssetType.is_active.is_(True), AssetType.category == "pole")
+    )
+    if asset_type is None:
+        asset_type = db.scalar(
+            select(AssetType).where(AssetType.is_active.is_(True), AssetType.code == "op")
+        )
+    if asset_type is None:
+        asset_type = db.scalar(
+            select(AssetType).where(AssetType.is_active.is_(True), AssetType.is_composite.is_(False))
+        )
+    if asset_type is None:
+        raise ApiError(400, "line.no_pole_type", "Нет активного типа опоры")
+    return asset_type
+
+
+def create_line_chain(
+    db: Session,
+    from_asset: Asset,
+    to_asset: Asset,
+    actor: Employee,
+    *,
+    poles: int = 5,
+    prefix: str = "Опора",
+    link_type: str = "overhead",
+    cable_mark: str | None = None,
+    line_name: str | None = None,
+    line_code: str | None = None,
+    voltage_kv: float | None = None,
+) -> dict[str, Any]:
+    """Линия между двумя ячейками: объект линии + N опор + связи цепочкой.
+
+    Опоры расставляются по прямой между ячейками на схеме (schema_x/schema_y),
+    каждая связь получает line_id, поэтому линия фильтруется как единый фидер.
+    """
+    if from_asset.id == to_asset.id:
+        raise conflict("Нельзя соединить ячейку саму с собой", "line.same_asset")
+
+    pit = gis.get_pit(db)
+    kind = "overhead" if link_type == "overhead" else "cable"
+    code = (line_code or "").strip() or f"L-{uuid.uuid4().hex[:6].upper()}"
+    name = (line_name or "").strip() or f"Линия {from_asset.code} → {to_asset.code}"
+
+    line = Line(
+        id=uuid.uuid4(),
+        pit_id=pit.id,
+        code=code,
+        name=name,
+        kind=kind,
+        state="deenergized",
+        voltage_kv=voltage_kv,
+    )
+    db.add(line)
+    db.flush()
+
+    ax, ay = _schema_point(db, from_asset)
+    bx, by = _schema_point(db, to_asset)
+    pole_type = _pole_type(db)
+
+    created: list[Asset] = []
+    for index in range(max(0, min(poles, 200))):
+        ratio = (index + 1) / (poles + 1)
+        x = round(ax + (bx - ax) * ratio, 1)
+        y = round(ay + (by - ay) * ratio, 1)
+        label = f"{prefix} {index + 1} ({code})"
+        pole = gis.create_asset(
+            db,
+            AssetCreate(name=label, type_code=pole_type.code, status="on"),
+            actor=actor,
+            validate_attributes=False,
+        )
+        pole.schema_role = "line"
+        pole.schema_x = x
+        pole.schema_y = y
+        pole.attrs = {**(pole.attrs or {}), "pole_no": label, "line_id": str(line.id)}
+        db.commit()
+        db.refresh(pole)
+        created.append(pole)
+
+    sequence = [from_asset, *created, to_asset]
+    mark = (cable_mark or "").strip() or ("ВЛ 6 кВ" if kind == "overhead" else None)
+    links = []
+    for previous, current in zip(sequence, sequence[1:]):
+        link = create_cable(
+            db,
+            previous,
+            current,
+            actor,
+            cable_mark=mark,
+            link_type=link_type,
+            line_id=line.id,
+        )
+        links.append(link)
+
+    audit.add(
+        "schema.line_chain_created",
+        entity="line",
+        entity_id=line.id,
+        detail=f"Линия {code}: {from_asset.code} → {to_asset.code}, опор {len(created)}",
+    )
+    return {"line": line, "poles": created, "links": links}

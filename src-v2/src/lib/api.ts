@@ -35,10 +35,18 @@ export interface Problem {
   detail?: string
   title?: string
   fields?: Record<string, string>
+  /** Русские подписи полей: backend отдаёт их рядом с машинными ключами `fields`. */
+  field_labels?: Record<string, string>
 }
 
 function normalizeProblem(raw: unknown, status: number): Problem {
-  const data = raw as { detail?: unknown; title?: string; code?: string; fields?: Record<string, string> }
+  const data = raw as {
+    detail?: unknown
+    title?: string
+    code?: string
+    fields?: Record<string, string>
+    field_labels?: Record<string, string>
+  }
   if (Array.isArray(data?.detail)) {
     const fields: Record<string, string> = {}
     const parts = data.detail.map((item: unknown) => {
@@ -54,7 +62,13 @@ function normalizeProblem(raw: unknown, status: number): Problem {
     }
   }
   if (typeof data?.detail === 'string') {
-    return { code: data.code, detail: data.detail, title: data.title, fields: data.fields }
+    return {
+      code: data.code,
+      detail: data.detail,
+      title: data.title,
+      fields: data.fields,
+      field_labels: data.field_labels,
+    }
   }
   return { detail: `Ошибка ${status}` }
 }
@@ -64,12 +78,15 @@ export class ApiError extends Error {
   status: number
   code: string
   fields: Record<string, string>
+  /** Подписи к `fields` по-русски (для сообщений под полями формы). */
+  fieldLabels: Record<string, string>
 
   constructor(status: number, problem: Problem) {
     super(problem.detail || problem.title || `Ошибка ${status}`)
     this.status = status
     this.code = problem.code || 'error'
     this.fields = problem.fields || {}
+    this.fieldLabels = problem.field_labels || {}
   }
 }
 

@@ -68,6 +68,17 @@ def line_out(line: Line, links_count: int = 0) -> LineOut:
 
 
 def link_out(link: Link, warnings: list[str] | None = None) -> LinkOut:
+    cable_asset = None
+    if link.cable_asset_id is not None and link.cable_asset is not None:
+        cable = link.cable_asset
+        cable_asset = AssetRefOut(
+            id=cable.id,
+            code=cable.code,
+            name=cable.name,
+            type_code=cable.asset_type.code if cable.asset_type else "",
+            type_icon=cable.asset_type.icon if cable.asset_type else None,
+            status=cable.status,
+        )
     return LinkOut(
         id=link.id,
         from_asset=_asset_ref(link.from_port),
@@ -86,6 +97,8 @@ def link_out(link: Link, warnings: list[str] | None = None) -> LinkOut:
         cross_section_mm2=float(link.cross_section_mm2) if link.cross_section_mm2 else None,
         cores=link.cores,
         line=line_out(link.line) if link.line else None,
+        cable_asset_id=link.cable_asset_id,
+        cable_asset=cable_asset,
         label=link_label(link),
         version=link.version,
         warnings=warnings or [],
@@ -132,21 +145,53 @@ def get_link_any(db: Session, link_id: uuid.UUID) -> Link:
     return link
 
 
-def _get_port(db: Session, port_id: uuid.UUID) -> AssetPort:
+def _get_port(db: Session, port_id: uuid.UUID, *, pit_id: uuid.UUID) -> AssetPort:
+    """Порт для новой связи: чужой карьер — 404.
+
+    Порт вложенной ячейки (block→cell, cell→cell) — обычный порт своего объекта,
+    никаких ограничений по вложенности нет: связь строится по портам, а не по
+    блокам, поэтому внешние порты ПС/БКРУ и порты их ячеек равноправны.
+    """
     port = db.get(AssetPort, port_id)
     if port is None:
         raise not_found(f"Порт {port_id} не найден")
+    asset = port.asset
+    if asset is None or asset.pit_id != pit_id:
+        raise not_found(f"Порт {port_id} не найден в этом карьере")
     return port
+
+
+def ensure_ports_linkable(
+    db: Session,
+    pit_id: uuid.UUID,
+    from_port_id: uuid.UUID,
+    to_port_id: uuid.UUID,
+) -> None:
+    """Проверка портов для публичного ``POST /api/links`` (404/422).
+
+    Порт архивного объекта вернул бы в граф «мёртвый» объект, поэтому публичный
+    API отказывает 422 ``link.asset_archived``. Внутренние сервисные вызовы
+    (перемычка, цепочка линии, MCP-инструмент) валидируют контекст сами и этот
+    предпроверочный шаг не используют.
+    """
+    for port_id in (from_port_id, to_port_id):
+        port = _get_port(db, port_id, pit_id=pit_id)
+        asset = port.asset
+        if asset is not None and asset.deleted_at is not None:
+            raise ApiError(
+                422,
+                "link.asset_archived",
+                f"Порт {port_id}: объект {asset.code} в архиве — "
+                "восстановите объект перед созданием связи",
+                fields={"from_port_id": "объект в архиве", "to_port_id": "объект в архиве"},
+            )
 
 
 # --- изменение ------------------------------------------------------------
 
 def create_link(db: Session, pit_id: uuid.UUID, payload: LinkCreate, *, actor) -> LinkOut:
-    from_port = _get_port(db, payload.from_port_id)
-    to_port = _get_port(db, payload.to_port_id)
-
-    if from_port.asset.pit_id != pit_id or to_port.asset.pit_id != pit_id:
-        raise ApiError(400, "link.other_pit", "Порты принадлежат другому карьеру")
+    from_port = _get_port(db, payload.from_port_id, pit_id=pit_id)
+    to_port = _get_port(db, payload.to_port_id, pit_id=pit_id)
 
     warnings = topology.validate_new_link(
         db,

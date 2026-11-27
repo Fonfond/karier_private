@@ -14,6 +14,7 @@ from app.api.deps import current_user, require_admin, require_permission
 from app.core.errors import not_found
 from app.db.session import get_db
 from app.models import Asset, AssetPort, AssetType, Employee, Line, Link
+from app.schemas.equipment import ToggleIn, ToggleOut
 from app.schemas.gis import (
     AssetCreate,
     AssetGroupIn,
@@ -30,6 +31,7 @@ from app.schemas.gis import (
     AssetListOut,
     AssetOut,
     AssetTypeCreate,
+    AssetTypeFieldOut,
     AssetTypeOut,
     AssetTypeUpdate,
     AssetUpdate,
@@ -62,6 +64,7 @@ from app.schemas.gis import (
     TopologyIssueOut,
 )
 from app.services import audit, documents as documents_service, gis
+from app.services import asset_fields
 from app.services import groups as groups_service
 from app.services import composite as composite_service
 from app.services import maintenance as maintenance_service
@@ -81,13 +84,33 @@ router = APIRouter(tags=["gis"])
 @router.get("/asset-types", response_model=list[AssetTypeOut], summary="Справочник типов")
 def list_asset_types(
     include_inactive: bool = Query(default=False, description="Показать и архивные типы"),
+    with_fields: bool = Query(
+        default=False,
+        description="Отдать поля паспорта типа (динамическая форма реестра, ?with_fields=1)",
+    ),
     _: Employee = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> list[AssetTypeOut]:
     return [
-        AssetTypeOut(**gis.type_out(db, item))
+        AssetTypeOut(**gis.type_out(db, item, with_fields=with_fields))
         for item in gis.list_types(db, include_inactive=include_inactive)
     ]
+
+
+@router.get(
+    "/asset-types/{type_id}/fields",
+    response_model=list[AssetTypeFieldOut],
+    summary="Поля типа оборудования (динамическая форма)",
+)
+def list_asset_type_fields(
+    type_id: uuidlib.UUID,
+    _: Employee = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[AssetTypeFieldOut]:
+    asset_type = db.get(AssetType, type_id)
+    if asset_type is None:
+        raise not_found("Тип не найден")
+    return asset_fields.public_fields(asset_type)
 
 
 @router.post(
@@ -106,7 +129,7 @@ def create_asset_type(
         detail=f"Добавлен тип {asset_type.code}",
         payload={"code": asset_type.code, "category": asset_type.category},
     )
-    return AssetTypeOut(**gis.type_out(db, asset_type))
+    return AssetTypeOut(**gis.type_out(db, asset_type, with_fields=True))
 
 
 @router.patch(
@@ -125,7 +148,7 @@ def patch_asset_type(
     audit.add(
         "asset_type.updated", entity="asset_type", entity_id=updated.id, detail=f"Изменён тип {updated.code}"
     )
-    return AssetTypeOut(**gis.type_out(db, updated))
+    return AssetTypeOut(**gis.type_out(db, updated, with_fields=True))
 
 
 @router.delete("/asset-types/{type_id}", response_model=AssetTypeOut, summary="Архивировать тип (админ)")
@@ -332,6 +355,46 @@ def change_asset_state(
     )
 
 
+@router.post(
+    "/assets/{asset_id}/toggle",
+    response_model=ToggleOut,
+    summary="Включить/отключить ячейку или разъединитель (этап 2)",
+)
+def toggle_asset(
+    asset_id: uuidlib.UUID,
+    payload: ToggleIn | None = None,
+    user: Employee = Depends(require_permission("asset.status.edit")),
+    db: Session = Depends(get_db),
+) -> ToggleOut:
+    """Кнопка «Включить/Отключить»: меняет status on/off, отдаёт напряжение.
+
+    Принимает ``{"state": "on"|"off"}`` (необязательно) и ``reason``; без тела
+    просто переключает состояние. Право — ``asset.status.edit`` (у viewer его
+    нет → 403). Пишет ``audit.audit_log`` (actor, from_state → to_state) и
+    запись в журнал переключений ``gis.switching_ops``.
+    """
+    asset = gis.get_asset(db, asset_id)
+    data = payload or ToggleIn()
+    result = state_service.toggle_asset(
+        db, asset, state=data.state, reason=data.reason, actor=user
+    )
+    updated = result["asset"]
+    return ToggleOut(
+        asset_id=updated.id,
+        code=updated.code,
+        name=updated.name,
+        cell_kind=updated.cell_kind,
+        status=updated.status,
+        previous_status=result["previous_status"],
+        changed=result["changed"],
+        grounded=result["grounded"],
+        energized=result["energized"],
+        voltage_kv=result["voltage_kv"],
+        nominal_voltage_kv=result["nominal_voltage_kv"],
+        topology_energized=result["topology_energized"],
+    )
+
+
 @router.delete("/assets/{asset_id}", summary="Удалить объект (мягко)")
 def delete_asset(
     asset_id: uuidlib.UUID,
@@ -461,6 +524,10 @@ def create_link(
     db: Session = Depends(get_db),
 ) -> LinkOut:
     pit = gis.get_pit(db)
+    # Этап 3: связь строится по портам, поэтому порты вложенных ячеек
+    # (block→cell, cell→cell) допустимы наравне с block→block. Чужие порты —
+    # 404, порты архивных объектов — 422 (см. docs/team/35a-db-interactivity.md).
+    links_service.ensure_ports_linkable(db, pit.id, payload.from_port_id, payload.to_port_id)
     return links_service.create_link(db, pit.id, payload, actor=user)
 
 

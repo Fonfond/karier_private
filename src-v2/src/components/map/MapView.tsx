@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
 import type { GraphEdge } from '../../lib/gis'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
-import { STATUS_COLOR, layerImageObjectUrl } from '../../lib/gis'
+import { layerImageObjectUrl } from '../../lib/gis'
+import { powerStateOf } from '../../lib/power'
 
 interface MapViewProps {
   layer: MapLayer
@@ -29,12 +30,13 @@ interface MapViewProps {
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
   const color = asset.type.color ?? '#4C9AFF'
-  const status = STATUS_COLOR[asset.status] ?? '#6B7A8A'
+  // Кайма маркера — по электробезопасности: красный под напряжением, зелёный обесточен.
+  const power = powerStateOf(asset.status, asset.grounded)
   const size = selected ? 44 : 36
   return L.divIcon({
     className: 'karier-marker',
     html: `
-      <span class="karier-marker__body" style="--c:${color};--ring:${status};--s:${size}px">
+      <span class="karier-marker__body" style="--c:${color};--ring:${power.color};--s:${size}px">
         <span class="karier-marker__icon">${asset.type.icon ?? '●'}</span>
       </span>`,
     iconSize: [size, size],

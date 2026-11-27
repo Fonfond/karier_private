@@ -16,6 +16,7 @@ from app.api.middleware import AuditMiddleware
 from app.api.routers import (
     audit,
     auth,
+    cables,
     defects,
     documents,
     employees,
@@ -210,6 +211,7 @@ app.include_router(me.router, prefix=api)
 app.include_router(employees.router, prefix=api)
 app.include_router(audit.router, prefix=api)
 app.include_router(gis.router, prefix=api)
+app.include_router(cables.router, prefix=api)
 app.include_router(documents.router, prefix=api)
 app.include_router(map_layers.router, prefix=api)
 app.include_router(media.router, prefix=api)
