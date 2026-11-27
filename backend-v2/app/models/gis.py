@@ -75,6 +75,22 @@ class MapLayer(Base, TimestampMixin):
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+#: Классы оборудования (этап 1 модели «Карьер»): определяют вкладку реестра и
+#: сценарий создания. ``equipment`` — «Прочее» для типов, которые ещё не разметил
+#: администратор: новые типы не должны падать на CHECK.
+EQUIPMENT_CLASSES = (
+    "distribution",
+    "transformer_assembly",
+    "switching",
+    "cell",
+    "cable",
+    "mobile",
+    "line",
+    "source",
+    "equipment",
+)
+
+
 class AssetType(Base, TimestampMixin):
     """Справочник типов оборудования. Расширяется через админку без релиза."""
 
@@ -84,6 +100,12 @@ class AssetType(Base, TimestampMixin):
         CheckConstraint(
             "category in ('source','line','equipment','mobile','lighting','aux','pole')",
             name="ck_asset_types_category",
+        ),
+        CheckConstraint(
+            "equipment_class in ("
+            "'distribution','transformer_assembly','switching','cell','cable',"
+            "'mobile','line','source','equipment')",
+            name="ck_asset_types_equipment_class",
         ),
         {"schema": SCHEMA},
     )
@@ -101,7 +123,20 @@ class AssetType(Base, TimestampMixin):
     attr_schema = Column(JSONB, nullable=False, default=dict)
     required_attrs = Column(ARRAY(String), nullable=False, default=list)
 
+    # модель оборудования: класс (вкладка/сценарий) и группа для UI.
+    # attr_schema/required_attrs остаются рабочими — двойная запись переходного
+    # периода синхронизируется с gis.asset_type_fields (см. services/asset_fields.py)
+    equipment_class = Column(
+        String(32), nullable=False, default="equipment", server_default="equipment"
+    )
+    group_code = Column(String(32))
+
     is_mobile_default = Column(Boolean, nullable=False, default=False)
+    # ведёт журнал ТО (моточасы, топливо)
+    has_maintenance = Column(Boolean, nullable=False, default=False, server_default="false")
+    # комплектное оборудование: при размещении создаёт дочерние ячейки по шаблону
+    is_composite = Column(Boolean, nullable=False, default=False, server_default="false")
+    composite_template = Column(JSONB, nullable=False, default=list, server_default="[]")
     # символ на однолинейной схеме: breaker, disconnector, busbar, load, generator, source, line, ct, arrester
     schema_symbol = Column(String(24), nullable=False, default="load")
     sort_order = Column(Integer, nullable=False, default=100)
@@ -114,6 +149,51 @@ class AssetType(Base, TimestampMixin):
     children = relationship("AssetType", back_populates="parent", order_by="AssetType.sort_order")
 
     assets = relationship("Asset", back_populates="asset_type")
+    fields = relationship(
+        "AssetTypeField",
+        back_populates="asset_type",
+        cascade="all, delete-orphan",
+        order_by="AssetTypeField.sort_order, AssetTypeField.code",
+    )
+
+
+class AssetTypeField(Base):
+    """Поле паспорта типа оборудования: из него строится форма создания объекта.
+
+    Таблица — новый источник правды для динамической формы (этап 1). Старые
+    ``asset_types.attr_schema``/``required_attrs`` сохраняются и синхронизируются
+    (двойная запись), поэтому старые клиенты продолжают работать.
+    """
+
+    __tablename__ = "asset_type_fields"
+    __table_args__ = (
+        UniqueConstraint("asset_type_id", "code", name="uq_asset_type_fields_type_code"),
+        CheckConstraint(
+            "data_type in ('number','integer','text','boolean','date','select')",
+            name="ck_asset_type_fields_data_type",
+        ),
+        Index("ix_asset_type_fields_type", "asset_type_id", "sort_order"),
+        {"schema": SCHEMA},
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_type_id = Column(
+        Uuid, ForeignKey(f"{SCHEMA}.asset_types.id", ondelete="CASCADE"), nullable=False
+    )
+    code = Column(String(48), nullable=False)
+    label = Column(String(128), nullable=False)
+    unit = Column(String(32))
+    data_type = Column(String(16), nullable=False, default="text")
+    required = Column(Boolean, nullable=False, default=False)
+    default_value = Column(JSONB)
+    options = Column(JSONB, nullable=False, default=list)
+    # min/max — допустимый диапазон для number/integer
+    min_value = Column("min", Numeric(14, 4))
+    max_value = Column("max", Numeric(14, 4))
+    group_label = Column(String(64))
+    sort_order = Column(Integer, nullable=False, default=0)
+
+    asset_type = relationship("AssetType", back_populates="fields")
 
 
 class Asset(Base, TimestampMixin):
@@ -132,6 +212,30 @@ class Asset(Base, TimestampMixin):
         CheckConstraint(
             "lifecycle in ('planned','installed','reserve','written_off')",
             name="ck_assets_lifecycle",
+        ),
+        # ячейка: ввод / отходящая / секционная. Заполняется у дочерних объектов
+        # ПС/БКРУ вместо свободного текста schema_role (этап 1 модели).
+        CheckConstraint(
+            "cell_kind in ('in','out','sectional')",
+            name="ck_assets_cell_kind",
+        ),
+        # кабельный учёт: отдельная колонка вместо CHECK на JSONB attrs —
+        # типизировано, индексируется и не зависит от набора ключей в attrs.
+        # ``lifecycle`` (planned/installed/reserve/written_off) — жизненный цикл
+        # объекта, ``lifecycle_status`` — состояние кабеля как изделия.
+        CheckConstraint(
+            "lifecycle_status in ('installed','reserve','repair')",
+            name="ck_assets_lifecycle_status",
+        ),
+        # размер блока схемы: если задан — строго больше нуля (этап 3).
+        # NULL — размер не задан (ячейка/символ), рисует клиент.
+        CheckConstraint(
+            "schema_width is null or schema_width > 0",
+            name="ck_assets_schema_width_positive",
+        ),
+        CheckConstraint(
+            "schema_height is null or schema_height > 0",
+            name="ck_assets_schema_height_positive",
         ),
         Index("ix_assets_pit_type", "pit_id", "asset_type_id"),
         Index("ix_assets_parent", "parent_asset_id"),
@@ -168,9 +272,20 @@ class Asset(Base, TimestampMixin):
     schema_block_id = Column(Uuid, ForeignKey(f"{SCHEMA}.assets.id", ondelete="CASCADE"))
     schema_local_x = Column(Numeric(10, 2))
     schema_local_y = Column(Numeric(10, 2))
+    # размер блока на схеме (px): ширина/высота прямоугольника ПС/БКРУ/КТП/контура.
+    # Заполняется NodeResizer'ом через PUT /api/topology/layout (этап 3).
+    schema_width = Column(Numeric(10, 2))
+    schema_height = Column(Numeric(10, 2))
     schema_role = Column(String(24))
 
     attrs = Column(JSONB, nullable=False, default=dict)
+
+    # ячейка ПС/БКРУ: вид, номер в секции, номер секции (этап 1 модели, nullable)
+    cell_kind = Column(String(16))
+    cell_no = Column(Integer)
+    section_no = Column(Integer)
+    # кабель: установлен / в запасе / в ремонте (только для класса cable)
+    lifecycle_status = Column(String(16))
 
     created_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
     updated_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
@@ -237,3 +352,30 @@ class SchemaBlock(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
     asset_type = relationship("AssetType")
+
+
+class SchemaSnapshot(Base, TimestampMixin):
+    """Снимок однолинейной схемы: состояние топологии на дату.
+
+    `payload` — полный слепок: узлы, порты, связи, блоки, раскладка и штамп.
+    Опубликованный снимок неизменяем: публикация только фиксирует кто и когда,
+    живая схема продолжает меняться отдельно.
+    """
+
+    __tablename__ = "schema_snapshots"
+    __table_args__ = (
+        CheckConstraint("status in ('draft','published')", name="ck_schema_snapshots_status"),
+        Index("ix_schema_snapshots_pit_status", "pit_id", "status"),
+        {"schema": SCHEMA},
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    pit_id = Column(Uuid, ForeignKey(f"{SCHEMA}.pits.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(160), nullable=False)
+    comment = Column(Text)
+    status = Column(String(16), nullable=False, default="draft", server_default="draft")
+    payload = Column(JSONB, nullable=False, default=dict)
+
+    created_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+    published_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+    published_at = Column(DateTime(timezone=True))

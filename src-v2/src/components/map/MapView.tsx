@@ -4,7 +4,8 @@ import { useState } from 'react'
 import { CircleMarker, ImageOverlay, MapContainer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet'
 import type { GraphEdge } from '../../lib/gis'
 import type { AssetBrief, MapLayer } from '../../lib/gis'
-import { STATUS_COLOR } from '../../lib/gis'
+import { layerImageObjectUrl } from '../../lib/gis'
+import { powerStateOf } from '../../lib/power'
 
 interface MapViewProps {
   layer: MapLayer
@@ -23,17 +24,19 @@ interface MapViewProps {
   linkMode?: boolean
   dragFrom?: string | null
   onConnectStart?: (id: string) => void
+  vlPath?: Array<{ x: number; y: number }>
   onConnectDrop?: (id: string) => void
 }
 
 function markerIcon(asset: AssetBrief, selected: boolean): L.DivIcon {
   const color = asset.type.color ?? '#4C9AFF'
-  const status = STATUS_COLOR[asset.status] ?? '#6B7A8A'
+  // Кайма маркера — по электробезопасности: красный под напряжением, зелёный обесточен.
+  const power = powerStateOf(asset.status, asset.grounded)
   const size = selected ? 44 : 36
   return L.divIcon({
     className: 'karier-marker',
     html: `
-      <span class="karier-marker__body" style="--c:${color};--ring:${status};--s:${size}px">
+      <span class="karier-marker__body" style="--c:${color};--ring:${power.color};--s:${size}px">
         <span class="karier-marker__icon">${asset.type.icon ?? '●'}</span>
       </span>`,
     iconSize: [size, size],
@@ -107,6 +110,7 @@ export function MapView({
   linkMode = false,
   dragFrom = null,
   onConnectStart,
+  vlPath = [],
   onConnectDrop,
 }: MapViewProps) {
   const bounds = L.latLngBounds(
@@ -114,6 +118,28 @@ export function MapView({
     [layer.bounds[1][0], layer.bounds[1][1]],
   )
   const historyPoints: Array<[number, number]> = (history ?? []).map((point) => [point.y, point.x])
+
+  // Подложка защищена авторизацией (S-5): тянем её с Bearer и держим blob-URL,
+  // показывая карту без подложки, пока картинка не загрузилась.
+  const [layerUrl, setLayerUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+    layerImageObjectUrl(layer.image_url)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        objectUrl = url
+        setLayerUrl(url)
+      })
+      .catch(() => setLayerUrl(null))
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [layer.image_url])
 
   return (
     <MapContainer
@@ -129,7 +155,7 @@ export function MapView({
       zoomControl={false}
       className="h-full w-full bg-[#070C10]"
     >
-      <ImageOverlay url={layer.image_url} bounds={bounds} className="karier-layer" />
+      {layerUrl ? <ImageOverlay url={layerUrl} bounds={bounds} className="karier-layer" /> : null}
       <FitBounds bounds={bounds} />
       <ClickCatcher enabled={adding} onClick={onMapClick} />
 
@@ -159,6 +185,12 @@ export function MapView({
         ),
       )}
 
+      {vlPath.length > 1 ? (
+        <Polyline
+          positions={vlPath.map((point) => [point.y, point.x] as [number, number])}
+          pathOptions={{ color: '#4C9AFF', weight: 3, dashArray: '8 6' }}
+        />
+      ) : null}
       {links.map((link) => {
         const from = positions[link.from_asset_id]
         const to = positions[link.to_asset_id]

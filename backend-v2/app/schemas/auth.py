@@ -41,9 +41,11 @@ class RegisterStartRequest(BaseModel):
 class RegisterStartOut(BaseModel):
     delivery: str = Field(description="Канал доставки кода: telegram | email | manual")
     delivery_target: str | None = Field(default=None, description="Куда отправлен код (маскировано)")
-    expires_in: int
-    next_step: str = Field(default="code_sent", description="code_sent | already_registered")
-    debug_code: str | None = Field(default=None, description="Только для dev-стенда без бота")
+    expires_in: int = Field(description="Сколько секунд остаётся жить выданному коду (0 — кода нет)")
+    next_step: str = Field(
+        default="code_sent",
+        description="code_sent | code_required | already_registered",
+    )
 
 
 class RegisterVerifyRequest(BaseModel):

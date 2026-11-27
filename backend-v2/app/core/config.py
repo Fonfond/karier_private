@@ -5,7 +5,13 @@
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Значения-заглушки: реальные секреты задаются только через .env (не коммитится)
+# или переменные окружения. См. docs/team/08-s1-repo-hygiene.md.
+PLACEHOLDER_DB_PASSWORD = "__SET_DB_PASSWORD__"
+PLACEHOLDER_SECRET_KEY = "__SET_SECRET_KEY__"
 
 
 class Settings(BaseSettings):
@@ -23,15 +29,17 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api"
 
     # --- база данных ---
+    # Пароль в коде не хранится: задайте DATABASE_URL в backend-v2/.env
     DATABASE_URL: str = (
-        "postgresql+psycopg://karier_user:Df492357816@127.0.0.1:5432/karier_db"
+        f"postgresql+psycopg://karier_user:{PLACEHOLDER_DB_PASSWORD}@127.0.0.1:5432/karier_db"
     )
     DB_ECHO: bool = False
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
     # --- безопасность ---
-    SECRET_KEY: str = "dev-only-secret-change-me-karier-2026"
+    # Заглушка: рабочий ключ — только в backend-v2/.env (32+ случайных символа)
+    SECRET_KEY: str = PLACEHOLDER_SECRET_KEY
     JWT_ALGORITHM: str = "HS256"
 
     ACCESS_TOKEN_TTL_MIN: int = 15
@@ -54,6 +62,12 @@ class Settings(BaseSettings):
     LOCKOUT_MINUTES: tuple[int, ...] = (1, 15, 60)
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_REGISTER_PER_HOUR: int = 20
+
+    # --- обратный прокси и клиентский IP ---
+    # Доверенные reverse-proxy: IP или CIDR через запятую. X-Forwarded-For
+    # принимается только от этих адресов; пустой список — заголовок игнорируется,
+    # клиентский IP берётся из TCP-соединения.
+    TRUSTED_PROXIES: str = ""
 
     # --- CORS (dev: фронт на 5174, API на 8001; в prod — один домен) ---
     CORS_ORIGINS: str = "http://localhost:5174,http://127.0.0.1:5174"
@@ -81,14 +95,46 @@ class Settings(BaseSettings):
     MEDIA_URL_TTL_MIN: int = 120
 
     # --- разработка ---
-    # Показывать OTP-код в ответе API (только для стенда без Telegram-бота).
-    EXPOSE_OTP_CODE: bool = True
-    # Печатать письма/коды в stdout вместо отправки.
+    # DEPRECATED (S-5): коды первичной регистрации больше не возвращаются в ответе
+    # API — их выдаёт администратор (POST /api/employees/{id}/otp). Флаг оставлен
+    # ради совместимости существующих .env; в prod обязан быть false (см. валидатор).
+    EXPOSE_OTP_CODE: bool = False
+    # Печатать письма/коды в stdout вместо отправки. Сами коды в журнал не пишутся.
     CONSOLE_NOTIFICATIONS: bool = True
+
+    @model_validator(mode="after")
+    def _require_real_secrets_in_prod(self) -> "Settings":
+        """В prod без .env приложение обязано упасть, а не работать на заглушках."""
+        if self.ENV != "prod":
+            return self
+        problems: list[str] = []
+        if PLACEHOLDER_DB_PASSWORD in self.DATABASE_URL:
+            problems.append(
+                "DATABASE_URL: не задан пароль БД (добавьте DATABASE_URL в backend-v2/.env)"
+            )
+        if self.SECRET_KEY == PLACEHOLDER_SECRET_KEY or len(self.SECRET_KEY) < 32:
+            problems.append(
+                "SECRET_KEY: не задан или короче 32 символов "
+                "(добавьте SECRET_KEY в backend-v2/.env)"
+            )
+        if self.EXPOSE_OTP_CODE:
+            problems.append(
+                "EXPOSE_OTP_CODE: в prod коды не выводятся (флаг deprecated), установите false"
+            )
+        if problems:
+            raise ValueError(
+                "Некорректная конфигурация для ENV=prod: " + "; ".join(problems)
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def trusted_proxies(self) -> list[str]:
+        """Список доверенных прокси (IP или CIDR) для X-Forwarded-For."""
+        return [item.strip() for item in self.TRUSTED_PROXIES.split(",") if item.strip()]
 
     @property
     def is_dev(self) -> bool:

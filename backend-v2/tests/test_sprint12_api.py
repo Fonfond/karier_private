@@ -12,6 +12,16 @@ from app.db.session import SessionLocal
 from app.models import Link, MapLayer
 
 
+def test_csp_header_present(client):
+    """S-5: CSP включён в dev и prod одинаково (проверяем на живом ответе API)."""
+    response = client.get("/api/health/live")
+    assert response.status_code == 200
+    policy = response.headers.get("content-security-policy", "")
+    assert "default-src 'self'" in policy, policy
+    assert "object-src 'none'" in policy, policy
+    assert "frame-ancestors 'self'" in policy, policy
+
+
 def _png(width: int = 600, height: int = 400) -> bytes:
     image = Image.new("RGB", (width, height), (40, 60, 80))
     buffer = io.BytesIO()
@@ -48,9 +58,14 @@ def test_map_layer_upload_activates_new_layer(client, admin_headers):
     active = client.get("/api/map/layers/active", headers=admin_headers).json()
     assert active["id"] == layer["id"]
 
-    image = client.get(f"/api/map/layers/{layer['id']}/image")
-    assert image.status_code == 200
+    # S-5: подложка доступна только авторизованным, кэш — приватный
+    anonymous = client.get(f"/api/map/layers/{layer['id']}/image")
+    assert anonymous.status_code == 401, anonymous.text
+
+    image = client.get(f"/api/map/layers/{layer['id']}/image", headers=admin_headers)
+    assert image.status_code == 200, image.text
     assert image.headers["content-type"] == "image/png"
+    assert image.headers["cache-control"] == "private, no-store"
 
     # возвращаем прежнюю подложку, чтобы не менять демо
     db = SessionLocal()

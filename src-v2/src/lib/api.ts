@@ -35,18 +35,58 @@ export interface Problem {
   detail?: string
   title?: string
   fields?: Record<string, string>
+  /** Русские подписи полей: backend отдаёт их рядом с машинными ключами `fields`. */
+  field_labels?: Record<string, string>
 }
+
+function normalizeProblem(raw: unknown, status: number): Problem {
+  const data = raw as {
+    detail?: unknown
+    title?: string
+    code?: string
+    fields?: Record<string, string>
+    field_labels?: Record<string, string>
+  }
+  if (Array.isArray(data?.detail)) {
+    const fields: Record<string, string> = {}
+    const parts = data.detail.map((item: unknown) => {
+      const entry = item as { loc?: Array<string | number>; msg?: string }
+      const field = Array.isArray(entry.loc) ? String(entry.loc[entry.loc.length - 1]) : 'поле'
+      fields[field] = entry.msg ?? 'неверное значение'
+      return `${field}: ${entry.msg ?? 'неверное значение'}`
+    })
+    return {
+      code: 'validation.failed',
+      detail: `Проверьте параметры связи — ${parts.join('; ')}`,
+      fields,
+    }
+  }
+  if (typeof data?.detail === 'string') {
+    return {
+      code: data.code,
+      detail: data.detail,
+      title: data.title,
+      fields: data.fields,
+      field_labels: data.field_labels,
+    }
+  }
+  return { detail: `Ошибка ${status}` }
+}
+
 
 export class ApiError extends Error {
   status: number
   code: string
   fields: Record<string, string>
+  /** Подписи к `fields` по-русски (для сообщений под полями формы). */
+  fieldLabels: Record<string, string>
 
   constructor(status: number, problem: Problem) {
     super(problem.detail || problem.title || `Ошибка ${status}`)
     this.status = status
     this.code = problem.code || 'error'
     this.fields = problem.fields || {}
+    this.fieldLabels = problem.field_labels || {}
   }
 }
 
@@ -96,9 +136,9 @@ export function getAccessToken(): string | null {
   return accessToken
 }
 
-async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+async function requestRaw(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
   const headers = new Headers(init.headers)
-  headers.set('Accept', 'application/json')
+  if (!headers.has('Accept')) headers.set('Accept', 'application/json')
   const isForm = typeof FormData !== 'undefined' && init.body instanceof FormData
   if (init.body && !isForm && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -113,21 +153,35 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
 
   if (response.status === 401 && retry && !path.startsWith('/api/auth/')) {
     const refreshed = await tryRefresh()
-    if (refreshed) return request<T>(path, init, false)
+    if (refreshed) return requestRaw(path, init, false)
   }
 
   if (!response.ok) {
     let problem: Problem = {}
     try {
-      problem = (await response.json()) as Problem
+      problem = normalizeProblem(await response.json(), response.status)
     } catch {
       problem = { detail: `Ошибка ${response.status}` }
     }
     throw new ApiError(response.status, problem)
   }
 
+  return response
+}
+
+async function request<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+  const response = await requestRaw(path, init, retry)
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+/**
+ * Скачать бинарный ответ (например, подложку карты) тем же access-токеном.
+ * Подложка защищена авторизацией (S-5), поэтому обычная <img src> не подходит.
+ */
+export async function requestBlob(path: string): Promise<Blob> {
+  const response = await requestRaw(path, { headers: { Accept: 'image/*' } })
+  return await response.blob()
 }
 
 async function tryRefresh(): Promise<boolean> {
@@ -264,8 +318,13 @@ export const api = {
       method: 'POST',
     }),
   resendInvite: (id: string) =>
-    request<{ delivery: string; expires_in: number; debug_code: string | null }>(
+    request<{ delivery: string; expires_in: number; issued: boolean }>(
       `/api/employees/${id}/resend-invite`,
+      { method: 'POST' },
+    ),
+  issueOtp: (id: string) =>
+    request<{ code: string; tab_no: string; expires_at: string; expires_in: number }>(
+      `/api/employees/${id}/otp`,
       { method: 'POST' },
     ),
 

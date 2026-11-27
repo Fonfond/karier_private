@@ -50,7 +50,7 @@ from app.models import (
     Role,
 )
 from app.schemas.auth import UserOut
-from app.services import audit, notify
+from app.services import audit
 
 
 def now() -> datetime:
@@ -510,6 +510,11 @@ def disable_totp(db: Session, employee: Employee, password: str, code: str) -> N
 
 GENERIC_REGISTER_MESSAGE = "Если табельный номер найден, код отправлен"
 
+# Срок жизни кода первичной регистрации. Код выдаёт администратор вручную
+# (POST /api/employees/{id}/otp); фиксированное значение, чтобы срок не зависел
+# от .env и был одинаковым на стенде и в prod.
+REGISTRATION_CODE_TTL_MIN = 10
+
 
 def start_registration(db: Session, tab_no: str) -> dict:
     employee = get_employee_by_tab(db, tab_no)
@@ -524,8 +529,7 @@ def start_registration(db: Session, tab_no: str) -> dict:
         return {
             "delivery": "telegram",
             "delivery_target": None,
-            "expires_in": settings.ONBOARDING_TTL_MIN * 60,
-            "debug_code": None,
+            "expires_in": 0,
             "next_step": "code_sent",
         }
 
@@ -541,11 +545,49 @@ def start_registration(db: Session, tab_no: str) -> dict:
             "delivery": employee.otp_channel or "telegram",
             "delivery_target": None,
             "expires_in": 0,
-            "debug_code": None,
             "next_step": "already_registered",
         }
 
-    # гасим предыдущие активные коды
+    # Код больше НЕ генерируется и НЕ возвращается в ответе: его выдаёт
+    # администратор через POST /api/employees/{id}/otp. Здесь только сообщаем,
+    # есть ли уже выданный и ещё живой код.
+    active = db.scalar(
+        select(OnboardingToken)
+        .where(
+            OnboardingToken.employee_id == employee.id,
+            OnboardingToken.consumed_at.is_(None),
+            OnboardingToken.expires_at > now(),
+        )
+        .order_by(OnboardingToken.created_at.desc())
+        .limit(1)
+    )
+    audit.add(
+        "auth.register.code_required",
+        entity="employee",
+        entity_id=employee.id,
+        detail="Код выдаёт администратор",
+    )
+    return {
+        "delivery": employee.otp_channel or "telegram",
+        "delivery_target": None,
+        "expires_in": int((active.expires_at - now()).total_seconds()) if active else 0,
+        "next_step": "code_required",
+    }
+
+
+def issue_registration_code(db: Session, employee: Employee) -> dict:
+    """Выдать одноразовый код первичной регистрации (только администратор).
+
+    Код возвращается вызывающему РОВНО ОДИН РАЗ и нигде не сохраняется открытым:
+    в БД лежит только `code_hash`. Повторная выдача гасит все прежние коды;
+    срок жизни — `REGISTRATION_CODE_TTL_MIN` (10 минут).
+    """
+    if employee.credential is not None:
+        raise ApiError(409, "employee.already_registered", "Сотрудник уже зарегистрирован")
+    if employee.status != "active":
+        raise ApiError(409, "employee.inactive", "Сотрудник неактивен")
+
+    # Гасим прежние коды: действующим остаётся только что выданный.
     db.execute(
         OnboardingToken.__table__.update()
         .where(
@@ -556,35 +598,29 @@ def start_registration(db: Session, tab_no: str) -> dict:
     )
 
     code = new_numeric_code(6)
+    expires_at = now() + timedelta(minutes=REGISTRATION_CODE_TTL_MIN)
     token = OnboardingToken(
         id=uuid.uuid4(),
         employee_id=employee.id,
-        channel=employee.otp_channel or "telegram",
+        channel="manual",
         code_hash=code_hash(code),
-        expires_at=now() + timedelta(minutes=settings.ONBOARDING_TTL_MIN),
+        expires_at=expires_at,
     )
     db.add(token)
     db.commit()
 
-    delivery = notify.send_otp_code(
-        tab_no=employee.tab_no,
-        code=code,
-        channel=token.channel,
-        telegram_id=employee.telegram_id,
-        email=employee.email,
-    )
     audit.add(
-        "auth.register.code_sent",
+        "auth.register.code_issued",
         entity="employee",
         entity_id=employee.id,
-        detail=f"Канал: {token.channel}",
+        detail=f"Код выдан администратором, срок {REGISTRATION_CODE_TTL_MIN} мин",
+        payload={"channel": "manual"},
     )
     return {
-        "delivery": delivery.channel,
-        "delivery_target": delivery.target,
-        "expires_in": settings.ONBOARDING_TTL_MIN * 60,
-        "debug_code": code if settings.EXPOSE_OTP_CODE and settings.is_dev else None,
-        "next_step": "code_sent",
+        "code": code,
+        "expires_at": expires_at,
+        "expires_in": REGISTRATION_CODE_TTL_MIN * 60,
+        "tab_no": employee.tab_no,
     }
 
 

@@ -184,3 +184,25 @@ class Media(Base):
     deleted_by = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
 
     asset = relationship("Asset", lazy="joined")
+
+class MaintenanceEntry(Base):
+    """Запись журнала ТО: моточасы, топливо, ремонт."""
+
+    __tablename__ = "maintenance_entries"
+    __table_args__ = (
+        CheckConstraint("kind in ('to','fuel','repair','other')", name="ck_maintenance_kind"),
+        Index("ix_maintenance_asset", "asset_id"),
+        {"schema": "ops"},
+    )
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    asset_id = Column(Uuid, ForeignKey("gis.assets.id", ondelete="CASCADE"), nullable=False)
+    at = Column(DateTime(timezone=True), nullable=False)
+    kind = Column(String(16), nullable=False, default="to")
+    motor_hours = Column(Numeric(10, 1))
+    fuel_liters = Column(Numeric(10, 1))
+    fuel_level_pct = Column(Numeric(5, 1))
+    cost = Column(Numeric(12, 2))
+    note = Column(Text)
+    author_id = Column(Uuid, ForeignKey("auth.employees.id", ondelete="SET NULL"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

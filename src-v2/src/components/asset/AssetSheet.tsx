@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert, Badge, Field } from '../ui'
+import { Alert, Badge, ConfirmDialog, Field } from '../ui'
 import { ApiError } from '../../lib/api'
-import type { AssetOut, ChildAsset, PowerPath } from '../../lib/gis'
+import type { AssetOut, CableRecord, ChildAsset, PowerPath } from '../../lib/gis'
 import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../../lib/gis'
+import { cellKindTitle } from '../../lib/equipmentTemplates'
+import type { PowerStateUpdate } from '../../lib/power'
 import { StateControls } from './StateControls'
+import { PowerStateBadge } from './PowerStateBadge'
 import { DocumentsTab } from './DocumentsTab'
 import { PhotosTab } from './PhotosTab'
 import { HistoryTab } from './HistoryTab'
+import { MaintenanceTab } from './MaintenanceTab'
 import { ChildrenModal } from './ChildrenModal'
 import { QrModal } from '../QrModal'
 import { openExport } from '../../lib/dashboard'
@@ -18,9 +22,17 @@ interface Props {
   canSwitch: boolean
   canManageDocs: boolean
   onMove?: (asset: AssetOut) => void
+  /** Вызывается после успешного удаления: родитель закрывает карточку и обновляет список. */
+  onDeleted?: (assetId: string) => void
+  /**
+   * F1: успешное переключение питания/заземления (StateControls, дети блока).
+   * MapPage обновляет локальные `assets`/`assetStates`, чтобы схема перекрасилась
+   * сразу, без перезагрузки страницы.
+   */
+  onStateChanged?: (update: PowerStateUpdate) => void
 }
 
-type Tab = 'passport' | 'photos' | 'docs' | 'history'
+type Tab = 'passport' | 'photos' | 'docs' | 'history' | 'maintenance'
 
 const ATTR_LABELS: Record<string, string> = {
   power_kw: 'Мощность, кВт',
@@ -40,13 +52,49 @@ const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'history', label: 'История' },
 ]
 
-export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs, onMove }: Props) {
+/** Состояния кабеля (этап 2 кабельного учёта). */
+const CABLE_STATE_LABEL: Record<string, string> = {
+  installed: 'на оборудовании',
+  reserve: 'в запасе',
+  repair: 'в ремонте',
+}
+
+/** Считается ли объект переключаемым: ячейка ПС/БКРУ, разъединитель, коммутационный аппарат. */
+function isSwitchableAsset(asset: AssetOut): boolean {
+  return (
+    Boolean(asset.cell_kind) ||
+    asset.type.equipment_class === 'switching' ||
+    asset.type.code === 'razedinitel'
+  )
+}
+
+/** Номинал напряжения: паспорт ячейки → порт → null. */
+function nominalVoltageOf(asset: AssetOut): number | null {
+  const raw = Number(asset.attrs?.voltage_kv)
+  if (Number.isFinite(raw) && raw > 0) return raw
+  const port = asset.ports.find((item) => item.nominal_voltage_kv != null)
+  return port?.nominal_voltage_kv ?? null
+}
+
+function isCableAsset(asset: AssetOut): boolean {
+  return (
+    asset.type.equipment_class === 'cable' ||
+    asset.type.code === 'cable' ||
+    asset.lifecycle_status != null
+  )
+}
+
+export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canManageDocs, onMove, onDeleted, onStateChanged }: Props) {
   const [asset, setAsset] = useState<AssetOut | null>(null)
   const [path, setPath] = useState<PowerPath | null>(null)
   const [children, setChildren] = useState<ChildAsset[]>([])
+  /** Кабельный учёт: статус и привязка кабеля-объекта (этап 2). */
+  const [cable, setCable] = useState<CableRecord | null>(null)
   const [tab, setTab] = useState<Tab>('passport')
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editSaving, setEditSaving] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
@@ -71,6 +119,13 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
       setPath(powerPath)
       setChildren(kids)
       setError(null)
+      if (isCableAsset(detail)) {
+        // Привязка кабеля (участок/объект) приходит только из кабельного учёта.
+        const cables = await gisApi.cables().catch(() => [] as CableRecord[])
+        setCable(cables.find((item) => item.id === detail.id) ?? null)
+      } else {
+        setCable(null)
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось загрузить объект')
     }
@@ -80,6 +135,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
     setAsset(null)
     setPath(null)
     setChildren([])
+    setCable(null)
     setTab('passport')
     setConfirmDelete(false)
     void load()
@@ -90,6 +146,8 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
 
   const statusColor = STATUS_COLOR[asset.status] ?? '#6B7A8A'
   const attrs = Object.entries(asset.attrs ?? {})
+  const switchable = isSwitchableAsset(asset)
+  const nominalVoltage = nominalVoltageOf(asset)
 
   const openEditor = () => {
     setEditForm({
@@ -127,6 +185,20 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
     }
   }
 
+  const deleteAsset = async () => {
+    setDeleteBusy(true)
+    setDeleteError(null)
+    try {
+      await gisApi.remove(asset.id)
+      setConfirmDelete(false)
+      onDeleted?.(asset.id)
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Не удалось удалить объект')
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3">
@@ -140,12 +212,27 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           <div className="text-[17px] font-semibold leading-tight">{asset.name}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-ink2">
             <span className="font-mono">{asset.code}</span>
-            <span
-              className="inline-flex items-center gap-1 rounded-full px-2 py-0.5"
-              style={{ background: `${statusColor}22`, color: statusColor }}
-            >
-              ● {STATUS_LABEL[asset.status] ?? asset.status}
-            </span>
+            {switchable ? (
+              <PowerStateBadge
+                status={asset.status}
+                grounded={asset.grounded}
+                voltageKv={nominalVoltage}
+                size="sm"
+              />
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5"
+                style={{ background: `${statusColor}22`, color: statusColor }}
+              >
+                ● {STATUS_LABEL[asset.status] ?? asset.status}
+              </span>
+            )}
+            {asset.cell_kind ? (
+              <Badge tone="neutral">
+                №{asset.cell_no ?? '—'} · {cellKindTitle(asset.cell_kind)}
+                {asset.section_no != null ? ` · секция ${asset.section_no}` : ''}
+              </Badge>
+            ) : null}
             {path?.energized && asset.status !== 'on' ? <Badge tone="ok">питание есть</Badge> : null}
             {asset.grounded ? <Badge tone="warm">⏚ заземлено</Badge> : null}
             {asset.is_mobile ? <Badge tone="accent">мобильный</Badge> : null}
@@ -172,7 +259,7 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
       </div>
 
       <div className="-mx-1 flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface2/50 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {TABS.map((item) => (
+        {(asset?.type.has_maintenance ? [...TABS, { key: 'maintenance' as Tab, label: 'ТО' }] : TABS).map((item) => (
           <button
             key={item.key}
             type="button"
@@ -205,6 +292,39 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             </button>
             <InfoCell label="Портов" value={String(asset.ports.length)} />
           </div>
+
+          {cable || isCableAsset(asset) ? (
+            <div>
+              <div className="mb-1 text-[12px] uppercase tracking-wide text-ink3">Кабельный учёт</div>
+              <div className="grid grid-cols-2 gap-2 text-[13px]">
+                <InfoCell
+                  label="Состояние кабеля"
+                  value={CABLE_STATE_LABEL[cable?.lifecycle_status ?? asset.lifecycle_status ?? ''] ?? '—'}
+                />
+                <InfoCell label="Марка" value={cable?.cable_mark ?? '—'} />
+                <InfoCell
+                  label="Сечение"
+                  value={cable?.section_mm2 != null ? `${cable.section_mm2} мм²` : '—'}
+                />
+                <InfoCell label="Длина" value={cable?.length_m != null ? `${cable.length_m} м` : '—'} />
+                <div className="col-span-2 rounded-lg bg-surface2/60 px-2.5 py-2">
+                  <div className="text-[11px] text-ink3">Привязка</div>
+                  <div className="mt-0.5 break-words text-ink">
+                    {cable?.link_label ?? cable?.installed_on ?? 'не установлен (свободен)'}
+                  </div>
+                  {cable?.from_asset && cable?.to_asset ? (
+                    <div className="mt-0.5 text-[11px] text-ink3">
+                      {cable.from_asset.name} → {cable.to_asset.name}
+                    </div>
+                  ) : null}
+                  <div className="mt-1 text-[11px] text-ink3">
+                    Установка и снятие — на странице «Кабели», вкладки «На оборудовании / В запасе /
+                    В ремонте».
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {attrs.length > 0 ? (
             <div>
@@ -269,8 +389,23 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
 
           {canSwitch ? (
             <div>
-              <div className="mb-1 text-[12px] uppercase tracking-wide text-ink3">Оперативное состояние</div>
-              <StateControls asset={asset} onChanged={(next) => setAsset(next)} />
+              <div className="mb-1 flex items-center gap-2 text-[12px] uppercase tracking-wide text-ink3">
+                <span>Оперативное состояние</span>
+                {switchable ? (
+                  <span className="rounded border border-line px-1.5 py-0.5 text-[10px] normal-case tracking-normal text-ink3">
+                    переключение через toggle-API · аудит
+                  </span>
+                ) : null}
+              </div>
+              <StateControls
+                asset={asset}
+                onChanged={(next) => {
+                  setAsset(next)
+                  // F1: сообщаем карте/схеме — иначе цвет на холсте остаётся прежним
+                  onStateChanged?.({ id: next.id, status: next.status, grounded: next.grounded })
+                }}
+                switchable={switchable}
+              />
             </div>
           ) : null}
 
@@ -300,26 +435,25 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
             {canManage ? (
               <button
                 type="button"
-                className={confirmDelete ? 'btn-danger h-10 px-3 text-[13px]' : 'btn-ghost h-10 px-3 text-[13px]'}
-                onClick={async () => {
-                  if (!confirmDelete) {
-                    setConfirmDelete(true)
-                    return
-                  }
-                  await gisApi.remove(asset.id)
-                  window.location.reload()
-                }}
+                className="btn-ghost h-10 px-3 text-[13px] text-bad"
+                onClick={() => setConfirmDelete(true)}
               >
-                {confirmDelete ? 'Точно удалить?' : 'Удалить'}
+                Удалить
               </button>
             ) : null}
           </div>
+          {deleteError ? (
+            <div className="pt-1">
+              <Alert kind="error">{deleteError}</Alert>
+            </div>
+          ) : null}
         </>
       ) : null}
 
       {tab === 'photos' ? <PhotosTab assetId={asset.id} assetCode={asset.code} /> : null}
       {tab === 'docs' ? <DocumentsTab assetId={asset.id} canManage={canManageDocs} /> : null}
       {tab === 'history' ? <HistoryTab assetId={asset.id} /> : null}
+      {tab === 'maintenance' ? <MaintenanceTab assetId={asset.id} /> : null}
 
       {showChildren ? (
         <ChildrenModal
@@ -328,9 +462,11 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           children={children}
           canSwitch={canSwitch}
           onClose={() => setShowChildren(false)}
-          onChanged={(updated) =>
+          onChanged={(updated) => {
             setChildren((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-          }
+            // F1: переключение ячейки во «внутренней схеме» тоже красит холст сразу
+            onStateChanged?.({ id: updated.id, status: updated.status, grounded: updated.grounded })
+          }}
         />
       ) : null}
 
@@ -422,6 +558,16 @@ export function AssetSheet({ assetId, onOpenAsset, canManage, canSwitch, canMana
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Удалить объект?"
+        message={`«${asset.name}» (${asset.code}) исчезнет из реестра и с карты. История, документы и журнал аудита сохранятся.`}
+        confirmLabel="Удалить"
+        busy={deleteBusy}
+        onConfirm={deleteAsset}
+        onCancel={() => setConfirmDelete(false)}
+      />
     </div>
   )
 }

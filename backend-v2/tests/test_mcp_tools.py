@@ -28,13 +28,17 @@ def _admin(db) -> Employee:
 
 def _asset(db, type_code: str) -> Asset:
     pit = gis.get_pit(db)
-    return db.scalar(
-        select(Asset)
-        .join(Asset.asset_type)
-        .where(Asset.pit_id == pit.id, Asset.deleted_at.is_(None))
-        .where(Asset.asset_type.has(code=type_code))
-        .limit(1)
+    items = list(
+        db.scalars(
+            select(Asset)
+            .join(Asset.asset_type)
+            .where(Asset.pit_id == pit.id, Asset.deleted_at.is_(None))
+            .where(Asset.asset_type.has(code=type_code))
+            .order_by(Asset.code)
+        )
     )
+    # предпочитаем объект с координатами: в базе могут быть объекты, созданные без них
+    return next((item for item in items if item.x is not None and item.y is not None), items[0])
 
 
 def test_list_assets_returns_ports_and_coordinates(db):

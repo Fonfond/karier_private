@@ -84,6 +84,25 @@ npm run build            # production-сборка
 
 ## 3. Деплой
 
+### 3.0. Docker на собственном сервере (рекомендуется)
+
+В репозитории есть готовая поставка: `docker-compose.yml` (PostgreSQL 18 + API с 1 воркером +
+nginx со статикой), `backend-v2/Dockerfile`, `src-v2/Dockerfile`, `deploy/nginx.conf`,
+`.env.example` без секретов.
+
+```bash
+cp .env.example .env      # заполнить POSTGRES_PASSWORD и SECRET_KEY (32+ символов)
+docker compose build
+docker compose up -d      # api применит alembic upgrade head и запустится
+docker compose exec api python seed.py            # первичные учётки и данные — см. инструкцию
+curl -fsS http://127.0.0.1:8080/api/health/ready  # {"status":"ok","database":"ok"}
+```
+
+Пошаговая инструкция (требования, `.env` с пояснениями, seed/break-glass/OTP, бэкап и
+восстановление, обновление и откат, логи, TLS, второй карьер по фидерам от ПС 35-6) —
+[`docs/55-deploy-docker.md`](docs/55-deploy-docker.md). Поставка подготовлена в F-1
+(см. `docs/team/24-f1-docker.md`); код приложения при упаковке не менялся.
+
 ### 3.1. Бэкенд (Render / Railway / любой VPS)
 
 1. Создайте PostgreSQL (Render PostgreSQL, Neon, Supabase, RDS) и получите `DATABASE_URL`

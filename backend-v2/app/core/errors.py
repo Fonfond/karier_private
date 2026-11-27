@@ -18,6 +18,7 @@ class ApiError(Exception):
         detail: str,
         *,
         fields: dict[str, str] | None = None,
+        field_labels: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(detail)
@@ -25,6 +26,9 @@ class ApiError(Exception):
         self.code = code
         self.detail = detail
         self.fields = fields or {}
+        # `fields` — машинные ключи (по ним клиент находит поле формы),
+        # `field_labels` — русские подписи рядом, без подмены ключей.
+        self.field_labels = field_labels or {}
         self.headers = headers or {}
 
 
@@ -35,6 +39,7 @@ def problem_response(
     code: str,
     detail: str,
     fields: dict[str, str] | None = None,
+    field_labels: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     body: dict[str, Any] = {
@@ -48,6 +53,8 @@ def problem_response(
     }
     if fields:
         body["fields"] = fields
+    if field_labels:
+        body["field_labels"] = field_labels
     return JSONResponse(
         status_code=status,
         content=body,
@@ -63,6 +70,7 @@ async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
         code=exc.code,
         detail=exc.detail,
         fields=exc.fields or None,
+        field_labels=exc.field_labels or None,
         headers=exc.headers,
     )
 

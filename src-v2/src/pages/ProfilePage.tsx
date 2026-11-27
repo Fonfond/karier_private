@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
-import { Alert, Badge, Field, PageTitle } from '../components/ui'
+import { Alert, Badge, ConfirmDialog, Field, PageTitle } from '../components/ui'
 import { ApiError, api } from '../lib/api'
 
 interface SessionRow {
@@ -36,6 +36,9 @@ export function ProfilePage() {
   const [recovery, setRecovery] = useState<string[] | null>(null)
   const [mfaError, setMfaError] = useState<string | null>(null)
   const [sessions, setSessions] = useState<SessionRow[]>([])
+  const [revokeTarget, setRevokeTarget] = useState<SessionRow | null>(null)
+  const [revokeBusy, setRevokeBusy] = useState(false)
+  const [sessionError, setSessionError] = useState<string | null>(null)
 
   useEffect(() => {
     api.sessions().then(setSessions).catch(() => setSessions([]))
@@ -87,9 +90,18 @@ export function ProfilePage() {
     }
   }
 
-  const revoke = async (id: string) => {
-    await api.revokeSession(id)
-    setSessions(await api.sessions())
+  const revoke = async (session: SessionRow) => {
+    setRevokeBusy(true)
+    setSessionError(null)
+    try {
+      await api.revokeSession(session.id)
+      setSessions(await api.sessions())
+      setRevokeTarget(null)
+    } catch (err) {
+      setSessionError(err instanceof ApiError ? err.message : 'Не удалось отозвать сессию')
+    } finally {
+      setRevokeBusy(false)
+    }
   }
 
   return (
@@ -234,6 +246,11 @@ export function ProfilePage() {
 
       <div className="card">
         <h2 className="mb-3 text-[15px] font-semibold">Активные устройства</h2>
+        {sessionError ? (
+          <div className="mb-3">
+            <Alert kind="error">{sessionError}</Alert>
+          </div>
+        ) : null}
         {sessions.length === 0 ? (
           <p className="hint">Нет данных</p>
         ) : (
@@ -252,9 +269,7 @@ export function ProfilePage() {
                     <button
                       type="button"
                       className="btn-danger h-9 px-3 text-[12px]"
-                      onClick={async () => {
-                        await revoke(session.id)
-                      }}
+                      onClick={() => setRevokeTarget(session)}
                     >
                       Отозвать
                     </button>
@@ -265,6 +280,20 @@ export function ProfilePage() {
           </ul>
         )}
       </div>
+
+      <ConfirmDialog
+        open={Boolean(revokeTarget)}
+        title="Отозвать сессию?"
+        message={
+          revokeTarget
+            ? `Устройство «${revokeTarget.user_agent ?? 'неизвестное'}» (${revokeTarget.ip ?? 'IP неизвестен'}) будет разлогинено. Понадобится повторный вход.`
+            : undefined
+        }
+        confirmLabel="Отозвать"
+        busy={revokeBusy}
+        onConfirm={() => (revokeTarget ? revoke(revokeTarget) : undefined)}
+        onCancel={() => setRevokeTarget(null)}
+      />
     </div>
   )
 }

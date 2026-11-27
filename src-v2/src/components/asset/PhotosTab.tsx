@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Alert } from '../ui'
+import { Alert, ConfirmDialog } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { MediaItem } from '../../lib/opsApi'
 import { opsApi } from '../../lib/opsApi'
@@ -15,6 +15,8 @@ export function PhotosTab({ assetId, assetCode }: { assetId: string; assetCode: 
   const [notice, setNotice] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [viewer, setViewer] = useState<MediaItem | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<MediaItem | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -41,11 +43,18 @@ export function PhotosTab({ assetId, assetCode }: { assetId: string; assetCode: 
   }
 
   const remove = async (item: MediaItem) => {
+    setDeleting(true)
+    setError(null)
     try {
       await opsApi.deletePhoto(item.id)
+      setNotice('Фото удалено')
+      setPendingDelete(null)
+      setViewer(null)
       await load()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Не удалось удалить фото')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -110,7 +119,11 @@ export function PhotosTab({ assetId, assetCode }: { assetId: string; assetCode: 
             </div>
             <div className="flex gap-2">
               {(can('document.manage') || viewer.author_tab_no === user?.tab_no) ? (
-                <button type="button" className="btn-ghost h-9 px-3 text-[12px] text-bad" onClick={() => void remove(viewer)}>
+                <button
+                  type="button"
+                  className="btn-ghost h-9 px-3 text-[12px] text-bad"
+                  onClick={() => setPendingDelete(viewer)}
+                >
                   Удалить
                 </button>
               ) : null}
@@ -128,6 +141,20 @@ export function PhotosTab({ assetId, assetCode }: { assetId: string; assetCode: 
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Удалить фото?"
+        message={
+          pendingDelete
+            ? `Фото${pendingDelete.captured_at ? ` от ${new Date(pendingDelete.captured_at).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' })}` : ''} будет удалено без возможности восстановления.`
+            : undefined
+        }
+        confirmLabel="Удалить"
+        busy={deleting}
+        onConfirm={() => (pendingDelete ? remove(pendingDelete) : undefined)}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base, TimestampMixin
-from app.models.gis import SCHEMA
+from app.models.gis import SCHEMA, SchemaSnapshot
 
 
 class Line(Base, TimestampMixin):
@@ -74,6 +74,8 @@ class Link(Base, TimestampMixin):
         Index("ix_links_from", "from_port_id"),
         Index("ix_links_to", "to_port_id"),
         Index("ix_links_line", "line_id"),
+        # кабельный учёт этапа 2: связь ссылается на кабель-объект из реестра
+        Index("ix_links_cable_asset", "cable_asset_id"),
         Index(
             "uq_links_pair_active",
             "from_port_id",
@@ -93,6 +95,12 @@ class Link(Base, TimestampMixin):
         Uuid, ForeignKey(f"{SCHEMA}.asset_ports.id", ondelete="CASCADE"), nullable=False
     )
     line_id = Column(Uuid, ForeignKey(f"{SCHEMA}.lines.id", ondelete="SET NULL"))
+    # кабель-объект реестра, установленный на этот участок (этап 2).
+    # Поля cable_mark/cable_no/length_m/cross_section_mm2 остаются денормализацией
+    # для старых отчётов; FK очищается при удалении кабеля и при снятии кабеля.
+    cable_asset_id = Column(
+        Uuid, ForeignKey(f"{SCHEMA}.assets.id", ondelete="SET NULL"), nullable=True
+    )
 
     link_type = Column(String(16), nullable=False, default="cable")
     feed_role = Column(String(16), nullable=False, default="main")
@@ -101,6 +109,10 @@ class Link(Base, TimestampMixin):
     geometry = Column(JSONB, nullable=False, default=list)
     length_m = Column(Numeric(10, 2))
     cable_mark = Column(String(64))
+    cable_no = Column(String(32))
+    cable_status = Column(String(16), nullable=False, default="in_work", server_default="in_work")
+    installed_on = Column(String(255))
+    route_note = Column(Text)
     cross_section_mm2 = Column(Numeric(8, 2))
     cores = Column(Integer)
     attrs = Column(JSONB, nullable=False, default=dict)
@@ -114,6 +126,9 @@ class Link(Base, TimestampMixin):
     from_port = relationship("AssetPort", foreign_keys=[from_port_id], lazy="joined")
     to_port = relationship("AssetPort", foreign_keys=[to_port_id], lazy="joined")
     line = relationship("Line", back_populates="links")
+    # без eager-загрузки: граф топологии читает тысячи связей, и join к объектам
+    # кабелей на каждом запросе был бы лишним. Кабельный сервис читает точечно.
+    cable_asset = relationship("Asset", foreign_keys=[cable_asset_id])
 
 
 class SwitchingOp(Base):
@@ -137,3 +152,15 @@ class SwitchingOp(Base):
     note = Column(Text)
 
     asset = relationship("Asset", lazy="joined")
+
+
+# --- снимки схемы: индекс и комментарий таблицы -----------------------------
+# Сама таблица `gis.schema_snapshots` объявлена в `app.models.gis`, а её индекс по
+# `created_at` и комментарий созданы миграцией 0014. Пока они не описаны в
+# метаданных, `alembic revision --autogenerate` предлагает их удалить/пересоздать
+# на каждом прогоне. Объявляем здесь — рядом с остальной топологией схемы.
+SCHEMA_SNAPSHOT_COMMENT = (
+    "Снимок схемы: состояние топологии на дату (черновик или опубликованная версия)"
+)
+SchemaSnapshot.__table__.comment = SCHEMA_SNAPSHOT_COMMENT
+Index("ix_schema_snapshots_created", SchemaSnapshot.__table__.c.created_at)

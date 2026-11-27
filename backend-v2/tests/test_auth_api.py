@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pyotp
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from app.db.session import SessionLocal
 from app.models import Employee, MfaFactor
@@ -103,42 +103,189 @@ def test_registration_requires_existing_employee(client):
     body = response.json()
     # ответ нейтрален и не подтверждает наличие табельного
     assert body["next_step"] == "code_sent"
-    assert body["debug_code"] is None
+    # S-5: кода в ответе нет ни в каком виде
+    assert "debug_code" not in body
+    assert "code" not in body
 
 
-def test_registration_flow(client):
-    tab_no = f"8{uuid.uuid4().int % 100000:05d}"
+def _admin_headers(client) -> dict:
     admin = client.post("/api/auth/login", json={"tab_no": "000001", "password": "admin"})
-    headers = {"Authorization": f"Bearer {admin.json()['access_token']}"}
+    assert admin.status_code == 200, admin.text
+    return {"Authorization": f"Bearer {admin.json()['access_token']}"}
 
+
+def _new_employee(client, headers: dict, tab_no: str) -> dict:
     created = client.post(
         "/api/employees",
         headers=headers,
         json={"tab_no": tab_no, "full_name": "Регистров Регистр Регистрович", "role": "operator"},
     )
-    assert created.status_code == 201
+    assert created.status_code == 201, created.text
+    return created.json()
 
-    start = client.post("/api/auth/register/start", json={"tab_no": tab_no})
-    code = start.json()["debug_code"]
-    assert code
 
-    verified = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": code})
-    assert verified.status_code == 200
-    setup_token = verified.json()["setup_token"]
+def _drop_employee(tab_no: str) -> None:
+    db = SessionLocal()
+    try:
+        db.execute(text("delete from auth.employees where tab_no = :tab_no"), {"tab_no": tab_no})
+        db.commit()
+    finally:
+        db.close()
 
-    weak = client.post(
-        "/api/auth/register/complete", json={"setup_token": setup_token, "password": "123456"}
+
+def test_otp_issue_requires_admin(client, operator_secret):
+    """Код выдаёт только администратор: аноним → 401, оператор → 403."""
+    # для 401 достаточно любого id: зависимость проверяется до обработчика
+    anonymous = client.post(f"/api/employees/{uuid.uuid4()}/otp")
+    assert anonymous.status_code == 401, anonymous.text
+
+    _reset_totp_counter("000002")
+    login = client.post("/api/auth/login", json={"tab_no": "000002", "password": "operator123"})
+    assert login.status_code == 200, login.text
+    body = login.json()
+    verify = client.post(
+        "/api/auth/mfa/verify",
+        json={"challenge_token": body["challenge_token"], "code": pyotp.TOTP(operator_secret).now()},
     )
-    # короткий пароль отсекается либо схемой (422), либо политикой (400)
-    assert weak.status_code in (400, 422)
-    assert weak.json()["code"] == "validation.failed"
+    assert verify.status_code == 200, verify.text
+    operator_headers = {"Authorization": f"Bearer {verify.json()['access_token']}"}
 
-    done = client.post(
-        "/api/auth/register/complete",
-        json={"setup_token": setup_token, "password": "Obhodchik-2026"},
-    )
-    assert done.status_code == 200
-    assert done.json()["user"]["tab_no"] == tab_no
+    forbidden = client.post(f"/api/employees/{uuid.uuid4()}/otp", headers=operator_headers)
+    assert forbidden.status_code == 403, forbidden.text
+    assert forbidden.json()["code"] == "perm.denied"
+
+
+def test_registration_flow(client):
+    # S-9: табельный вне демо-диапазона 8XXXXX и с уникальным суффиксом.
+    # S-5: код выдаёт администратор через POST /employees/{id}/otp.
+    tab_no = f"TST-{uuid.uuid4().hex[:8].upper()}"
+    headers = _admin_headers(client)
+
+    try:
+        employee = _new_employee(client, headers, tab_no)
+
+        start = client.post("/api/auth/register/start", json={"tab_no": tab_no})
+        assert start.status_code == 200, start.text
+        start_body = start.json()
+        assert start_body["next_step"] == "code_required"
+        assert start_body["expires_in"] == 0
+        assert "debug_code" not in start_body and "code" not in start_body
+
+        issued = client.post(f"/api/employees/{employee['id']}/otp", headers=headers)
+        assert issued.status_code == 201, issued.text
+        issued_body = issued.json()
+        assert issued_body["expires_in"] == 600
+        assert issued_body["tab_no"] == tab_no
+        code = issued_body["code"]
+        assert len(code) == 6 and code.isdigit()
+
+        verified = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": code})
+        assert verified.status_code == 200, verified.text
+        setup_token = verified.json()["setup_token"]
+
+        weak = client.post(
+            "/api/auth/register/complete", json={"setup_token": setup_token, "password": "123456"}
+        )
+        # короткий пароль отсекается либо схемой (422), либо политикой (400)
+        assert weak.status_code in (400, 422)
+        assert weak.json()["code"] == "validation.failed"
+
+        done = client.post(
+            "/api/auth/register/complete",
+            json={"setup_token": setup_token, "password": "Obhodchik-2026"},
+        )
+        assert done.status_code == 200
+        assert done.json()["user"]["tab_no"] == tab_no
+    finally:
+        # Сотрудник и его креды/сессии убираются за тестом (каскад в БД).
+        _drop_employee(tab_no)
+
+
+def test_otp_reissue_invalidates_previous(client):
+    """Повторная выдача гасит прежний код: старый → 400, новый работает."""
+    tab_no = f"TST-{uuid.uuid4().hex[:8].upper()}"
+    headers = _admin_headers(client)
+    try:
+        employee = _new_employee(client, headers, tab_no)
+
+        first = client.post(f"/api/employees/{employee['id']}/otp", headers=headers)
+        assert first.status_code == 201, first.text
+        old_code = first.json()["code"]
+
+        second = client.post(f"/api/employees/{employee['id']}/otp", headers=headers)
+        assert second.status_code == 201, second.text
+        new_code = second.json()["code"]
+        assert new_code != old_code
+
+        stale = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": old_code})
+        assert stale.status_code == 400, stale.text
+        # старый код больше не действует: активен только новый, поэтому API отвечает
+        # либо «код неверный», либо «истёк» — оба варианта 400
+        assert stale.json()["code"] in ("auth.code_invalid", "auth.code_expired")
+
+        fresh = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": new_code})
+        assert fresh.status_code == 200, fresh.text
+    finally:
+        _drop_employee(tab_no)
+
+
+def test_otp_used_and_expired_codes_rejected(client):
+    """Использованный и истёкший коды дают 400 (S-5)."""
+    tab_no = f"TST-{uuid.uuid4().hex[:8].upper()}"
+    headers = _admin_headers(client)
+    try:
+        employee = _new_employee(client, headers, tab_no)
+
+        used = client.post(f"/api/employees/{employee['id']}/otp", headers=headers).json()["code"]
+        assert client.post(
+            "/api/auth/register/verify", json={"tab_no": tab_no, "code": used}
+        ).status_code == 200
+        again = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": used})
+        assert again.status_code == 400, again.text
+        assert again.json()["code"] == "auth.code_expired"
+
+        expired = client.post(f"/api/employees/{employee['id']}/otp", headers=headers).json()["code"]
+        db = SessionLocal()
+        try:
+            db.execute(
+                text(
+                    "update auth.onboarding_tokens set expires_at = now() - interval '1 minute' "
+                    "where employee_id = (select id from auth.employees where tab_no = :tab_no) "
+                    "and consumed_at is null"
+                ),
+                {"tab_no": tab_no},
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        late = client.post("/api/auth/register/verify", json={"tab_no": tab_no, "code": expired})
+        assert late.status_code == 400, late.text
+        assert late.json()["code"] == "auth.code_expired"
+    finally:
+        _drop_employee(tab_no)
+
+
+def test_resend_invite_does_not_return_code(client):
+    """Контракт S-5: resend-invite больше не отдаёт код, только факт выдачи."""
+    tab_no = f"TST-{uuid.uuid4().hex[:8].upper()}"
+    headers = _admin_headers(client)
+    try:
+        employee = _new_employee(client, headers, tab_no)
+
+        empty = client.post(f"/api/employees/{employee['id']}/resend-invite", headers=headers)
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["issued"] is False
+        assert "debug_code" not in empty.json() and "code" not in empty.json()
+
+        client.post(f"/api/employees/{employee['id']}/otp", headers=headers)
+        issued = client.post(f"/api/employees/{employee['id']}/resend-invite", headers=headers)
+        assert issued.status_code == 200, issued.text
+        assert issued.json()["issued"] is True
+        assert 0 < issued.json()["expires_in"] <= 600
+        assert "debug_code" not in issued.json() and "code" not in issued.json()
+    finally:
+        _drop_employee(tab_no)
 
 
 def test_audit_is_written_and_immutable(client, admin_headers):

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_permission
+from app.api.deps import require_admin, require_permission
 from app.core.errors import ApiError, conflict, not_found
 from app.core.security import validate_password_policy
 from app.db.session import get_db
@@ -19,10 +19,12 @@ from app.schemas.employee import (
     EmployeeOut,
     EmployeeUpdate,
     InviteOut,
+    OtpIssueOut,
     ResetPasswordOut,
 )
 from app.services import audit
 from app.services.auth import (
+    issue_registration_code,
     mfa_factor,
     normalize_tab,
     set_temp_password,
@@ -370,21 +372,43 @@ def reset_password(
 
 
 @router.post(
+    "/{employee_id}/otp",
+    response_model=OtpIssueOut,
+    status_code=201,
+    summary="Выдать код первичной регистрации (одноразовый, 10 минут)",
+)
+def issue_otp(
+    employee_id: uuid.UUID,
+    _: Employee = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> OtpIssueOut:
+    """Код возвращается администратору один раз; в БД хранится только хеш."""
+    employee = _get_or_404(db, employee_id)
+    data = issue_registration_code(db, employee)
+    return OtpIssueOut(**data)
+
+
+@router.post(
     "/{employee_id}/resend-invite",
     response_model=InviteOut,
-    summary="Повторно отправить код первичной регистрации",
+    summary="Статус кода первичной регистрации (сам код не возвращается)",
 )
 def resend_invite(
     employee_id: uuid.UUID,
     _: Employee = Permission,
     db: Session = Depends(get_db),
 ) -> InviteOut:
+    """Контракт S-5: код не выдаётся и не возвращается.
+
+    Живой код выдаёт администратор через `POST /{id}/otp` (и видит его один раз).
+    Здесь — только состояние: есть ли действующий код и сколько ему осталось.
+    """
     employee = _get_or_404(db, employee_id)
     if employee.credential is not None:
         raise conflict("Сотрудник уже зарегистрирован", "employee.already_registered")
-    data = start_registration(db, employee.tab_no)
+    state = start_registration(db, employee.tab_no)
     return InviteOut(
-        delivery=data["delivery"],
-        expires_in=data["expires_in"],
-        debug_code=data.get("debug_code"),
+        delivery=state["delivery"],
+        expires_in=state["expires_in"],
+        issued=state["expires_in"] > 0,
     )

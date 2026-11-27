@@ -3,6 +3,7 @@ import { Alert, Badge, Field, PageTitle } from '../components/ui'
 import { ApiError } from '../lib/api'
 import type { AssetType } from '../lib/gis'
 import { gisApi } from '../lib/gis'
+import { parseCompositeTemplate } from '../lib/equipmentTemplates'
 
 const CATEGORIES = [
   { value: 'source', label: 'Источник питания' },
@@ -46,6 +47,11 @@ interface Draft {
   name: string
   category: string
   schema_symbol: string
+  has_maintenance: boolean
+  is_composite: boolean
+  composite: Record<string, number>
+  /** Шаблон состава v2 (этап 2): форма не перезаписывает его legacy-списком. */
+  templateV2: boolean
   icon: string
   color: string
   parent_id: string
@@ -64,6 +70,10 @@ const EMPTY: Draft = {
   name: '',
   category: 'equipment',
   schema_symbol: 'load',
+  has_maintenance: false,
+  is_composite: false,
+  composite: {},
+  templateV2: false,
   icon: '🔧',
   color: '#4C9AFF',
   parent_id: '',
@@ -79,12 +89,23 @@ const EMPTY: Draft = {
 function draftFrom(type: AssetType): Draft {
   const ports = type.port_template?.ports ?? []
   const firstVoltage = ports.find((port) => port.voltage_kv !== undefined)?.voltage_kv
+  const template = parseCompositeTemplate(type.composite_template)
+  const rawTemplate = Array.isArray(type.composite_template) ? type.composite_template : []
   return {
     id: type.id,
     code: type.code,
     name: type.name,
     category: type.category,
     schema_symbol: type.schema_symbol ?? 'load',
+    has_maintenance: type.has_maintenance ?? false,
+    is_composite: type.is_composite ?? false,
+    // legacy v1: {type_code, count}. Элементы v2 (мета/секции) игнорируются.
+    composite: Object.fromEntries(
+      rawTemplate
+        .filter((item) => item && typeof item === 'object' && item.type_code)
+        .map((item) => [String(item.type_code), Number(item.count) || 1]),
+    ),
+    templateV2: template.isV2 && (template.sections.length > 0 || template.disconnector !== null),
     icon: type.icon ?? '🔧',
     color: type.color ?? '#4C9AFF',
     parent_id: type.parent_id ?? '',
@@ -142,6 +163,8 @@ function Editor({
         name: form.name.trim(),
         category: form.category,
         schema_symbol: form.schema_symbol,
+        has_maintenance: form.has_maintenance,
+        is_composite: form.is_composite || types.some((item) => item.parent_id === form.id),
         icon: form.icon || '●',
         color: form.color,
         description: form.description.trim() || null,
@@ -156,6 +179,24 @@ function Editor({
         required_attrs: form.attrs.filter((key) => key === 'power_kw'),
         is_mobile_default: form.mobile,
       }
+      // Шаблон этапа 2 (БКРУ/ПС/КТП) — массив с секциями: legacy-форма его не
+      // перезаписывает, иначе состав секций потеряется при сохранении типа.
+      if (!form.templateV2) {
+        payload.composite_template = Object.entries({
+          ...Object.fromEntries(
+            types
+              .filter((item) => item.parent_id === form.id)
+              .map((item) => [item.code, form.composite[item.code] ?? 1]),
+          ),
+          ...form.composite,
+        })
+          .filter(([, count]) => Number(count) > 0)
+          .map(([typeCode, count]) => ({
+            type_code: typeCode,
+            count: Number(count),
+            label: types.find((item) => item.code === typeCode)?.name ?? typeCode,
+          }))
+      }
       if (form.parent_id) payload.parent_id = form.parent_id
       else payload.clear_parent = true
 
@@ -163,10 +204,7 @@ function Editor({
         await gisApi.updateType(form.id, payload)
         onSaved(`Тип «${form.name}» обновлён`)
       } else {
-        await gisApi.createType({
-          ...payload,
-          code: form.code.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-        })
+        await gisApi.createType({ ...payload })
         onSaved(`Тип «${form.name}» добавлен`)
       }
     } catch (err) {
@@ -191,14 +229,10 @@ function Editor({
         {error ? <Alert kind="error">{error}</Alert> : null}
 
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Код (латиницей)">
-            <input
-              className="input"
-              value={form.code}
-              disabled={Boolean(form.id)}
-              onChange={(e) => set('code', e.target.value)}
-              placeholder="dgu_100"
-            />
+          <Field label="Код типа">
+            <div className="rounded-lg border border-line bg-surface2/40 px-3 py-2 text-[12px] text-ink3">
+              {form.id ? form.code : 'создаётся автоматически из названия'}
+            </div>
           </Field>
           <div className="sm:col-span-2">
             <Field label="Название">
@@ -226,6 +260,63 @@ function Editor({
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Комплектное оборудование">
+            <div className="space-y-1 text-[12px] text-ink2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.is_composite || types.some((item) => item.parent_id === form.id)}
+                  onChange={(e) => set('is_composite', e.target.checked)}
+                />
+                одно оборудование с ячейками
+              </label>
+              {form.templateV2 ? (
+                <p className="rounded border border-line bg-surface2/60 px-2 py-1 text-[11px] text-ink3">
+                  Состав задан шаблоном этапа 2 (БКРУ — 6 ячеек, ПС 35/6 — по 17 на секцию, КТП —
+                  вводной разъединитель). Форма его не перезаписывает; создание — в редакторе схемы,
+                  кнопка «По шаблону».
+                </p>
+              ) : null}
+              {form.is_composite || types.some((item) => item.parent_id === form.id) ? (
+                form.id ? (
+                  <div className="space-y-1">
+                    {types.filter((item) => item.parent_id === form.id).length === 0 ? (
+                      <p className="text-[11px] text-ink3">Сначала добавьте подтипы (ячейки) этого типа.</p>
+                    ) : (
+                      types
+                        .filter((item) => item.parent_id === form.id)
+                        .map((child) => (
+                          <label key={child.code} className="flex items-center justify-between gap-2">
+                            <span className="truncate">{child.name}</span>
+                            <input
+                              type="number"
+                              min={0}
+                              className="input h-7 w-16"
+                              value={form.composite[child.code] ?? 1}
+                              onChange={(e) =>
+                                set('composite', { ...form.composite, [child.code]: Number(e.target.value) })
+                              }
+                            />
+                          </label>
+                        ))
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-ink3">Сохраните тип, затем добавьте подтипы и укажите их количество.</p>
+                )
+              ) : null}
+            </div>
+          </Field>
+          <Field label="Журнал ТО">
+            <label className="flex items-center gap-2 text-[12px] text-ink2">
+              <input
+                type="checkbox"
+                checked={form.has_maintenance}
+                onChange={(e) => set('has_maintenance', e.target.checked)}
+              />
+              вести моточасы, топливо и ТО
+            </label>
           </Field>
           <Field label="Иконка">
             <div className="grid max-h-24 grid-cols-8 gap-1 overflow-y-auto rounded-lg border border-line p-1.5">
@@ -349,7 +440,7 @@ function Editor({
           <button
             type="button"
             className="btn-primary px-5"
-            disabled={busy || form.name.trim().length < 2 || (!form.id && form.code.trim().length < 2)}
+            disabled={busy || form.name.trim().length < 2}
             onClick={() => void save()}
           >
             {busy ? 'Сохраняем…' : form.id ? 'Сохранить' : 'Добавить тип'}

@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError, conflict, not_found
-from app.models import AssetPort, Line, Link
+from app.models import Asset, AssetPort, Line, Link
 from app.schemas.gis import (
     AssetRefOut,
     LineCreate,
@@ -68,6 +68,17 @@ def line_out(line: Line, links_count: int = 0) -> LineOut:
 
 
 def link_out(link: Link, warnings: list[str] | None = None) -> LinkOut:
+    cable_asset = None
+    if link.cable_asset_id is not None and link.cable_asset is not None:
+        cable = link.cable_asset
+        cable_asset = AssetRefOut(
+            id=cable.id,
+            code=cable.code,
+            name=cable.name,
+            type_code=cable.asset_type.code if cable.asset_type else "",
+            type_icon=cable.asset_type.icon if cable.asset_type else None,
+            status=cable.status,
+        )
     return LinkOut(
         id=link.id,
         from_asset=_asset_ref(link.from_port),
@@ -78,10 +89,16 @@ def link_out(link: Link, warnings: list[str] | None = None) -> LinkOut:
         feed_role=link.feed_role,
         state=link.state,
         cable_mark=link.cable_mark,
+        cable_no=link.cable_no,
+        cable_status=link.cable_status,
+        installed_on=link.installed_on,
+        route_note=link.route_note,
         length_m=float(link.length_m) if link.length_m else None,
         cross_section_mm2=float(link.cross_section_mm2) if link.cross_section_mm2 else None,
         cores=link.cores,
         line=line_out(link.line) if link.line else None,
+        cable_asset_id=link.cable_asset_id,
+        cable_asset=cable_asset,
         label=link_label(link),
         version=link.version,
         warnings=warnings or [],
@@ -120,21 +137,61 @@ def get_link(db: Session, link_id: uuid.UUID) -> Link:
     return link
 
 
-def _get_port(db: Session, port_id: uuid.UUID) -> AssetPort:
+def get_link_any(db: Session, link_id: uuid.UUID) -> Link:
+    """Связь без фильтра архива — нужна для отмены удаления."""
+    link = db.get(Link, link_id)
+    if link is None:
+        raise not_found("Связь не найдена")
+    return link
+
+
+def _get_port(db: Session, port_id: uuid.UUID, *, pit_id: uuid.UUID) -> AssetPort:
+    """Порт для новой связи: чужой карьер — 404.
+
+    Порт вложенной ячейки (block→cell, cell→cell) — обычный порт своего объекта,
+    никаких ограничений по вложенности нет: связь строится по портам, а не по
+    блокам, поэтому внешние порты ПС/БКРУ и порты их ячеек равноправны.
+    """
     port = db.get(AssetPort, port_id)
     if port is None:
         raise not_found(f"Порт {port_id} не найден")
+    asset = port.asset
+    if asset is None or asset.pit_id != pit_id:
+        raise not_found(f"Порт {port_id} не найден в этом карьере")
     return port
+
+
+def ensure_ports_linkable(
+    db: Session,
+    pit_id: uuid.UUID,
+    from_port_id: uuid.UUID,
+    to_port_id: uuid.UUID,
+) -> None:
+    """Проверка портов для публичного ``POST /api/links`` (404/422).
+
+    Порт архивного объекта вернул бы в граф «мёртвый» объект, поэтому публичный
+    API отказывает 422 ``link.asset_archived``. Внутренние сервисные вызовы
+    (перемычка, цепочка линии, MCP-инструмент) валидируют контекст сами и этот
+    предпроверочный шаг не используют.
+    """
+    for port_id in (from_port_id, to_port_id):
+        port = _get_port(db, port_id, pit_id=pit_id)
+        asset = port.asset
+        if asset is not None and asset.deleted_at is not None:
+            raise ApiError(
+                422,
+                "link.asset_archived",
+                f"Порт {port_id}: объект {asset.code} в архиве — "
+                "восстановите объект перед созданием связи",
+                fields={"from_port_id": "объект в архиве", "to_port_id": "объект в архиве"},
+            )
 
 
 # --- изменение ------------------------------------------------------------
 
 def create_link(db: Session, pit_id: uuid.UUID, payload: LinkCreate, *, actor) -> LinkOut:
-    from_port = _get_port(db, payload.from_port_id)
-    to_port = _get_port(db, payload.to_port_id)
-
-    if from_port.asset.pit_id != pit_id or to_port.asset.pit_id != pit_id:
-        raise ApiError(400, "link.other_pit", "Порты принадлежат другому карьеру")
+    from_port = _get_port(db, payload.from_port_id, pit_id=pit_id)
+    to_port = _get_port(db, payload.to_port_id, pit_id=pit_id)
 
     warnings = topology.validate_new_link(
         db,
@@ -159,6 +216,10 @@ def create_link(db: Session, pit_id: uuid.UUID, payload: LinkCreate, *, actor) -
         feed_role=payload.feed_role,
         state=payload.state,
         cable_mark=payload.cable_mark,
+        cable_no=payload.cable_no,
+        cable_status=payload.cable_status,
+        installed_on=payload.installed_on,
+        route_note=payload.route_note,
         length_m=payload.length_m,
         cross_section_mm2=payload.cross_section_mm2,
         cores=payload.cores,
@@ -229,6 +290,48 @@ def delete_link(db: Session, link: Link, *, actor) -> None:
     link.version = (link.version or 1) + 1
     db.commit()
     audit.add("link.deleted", entity="link", entity_id=link.id, detail=f"Удалена связь {label}")
+
+
+def restore_link(db: Session, link: Link, *, actor) -> LinkOut:
+    """Вернуть связь из архива (отмена удаления).
+
+    Восстановление возможно, только если оба объекта живы и пара портов снова
+    свободна — иначе связь вернулась бы «в никуда» или создала дубль.
+    """
+    if link.deleted_at is None:
+        raise conflict("Связь не в архиве", "link.not_archived")
+
+    from_port = db.get(AssetPort, link.from_port_id)
+    to_port = db.get(AssetPort, link.to_port_id)
+    if from_port is None or to_port is None:
+        raise conflict("Порты связи не найдены", "link.ports_missing")
+
+    for port in (from_port, to_port):
+        asset = db.get(Asset, port.asset_id)
+        if asset is None or asset.deleted_at is not None:
+            raise conflict("Объект связи находится в архиве", "link.asset_archived")
+
+    duplicate = db.scalar(
+        select(Link).where(
+            Link.from_port_id == link.from_port_id,
+            Link.to_port_id == link.to_port_id,
+            Link.deleted_at.is_(None),
+        )
+    )
+    if duplicate is not None:
+        raise conflict("Такая связь уже существует", "link.duplicate")
+
+    link.deleted_at = None
+    link.deleted_by = None
+    link.version = (link.version or 1) + 1
+    db.commit()
+    audit.add(
+        "link.restored",
+        entity="link",
+        entity_id=link.id,
+        detail=f"Восстановлена связь {link_label(link)}",
+    )
+    return link_out(link)
 
 
 # --- линии ----------------------------------------------------------------

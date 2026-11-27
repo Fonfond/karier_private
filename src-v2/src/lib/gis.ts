@@ -1,15 +1,31 @@
 /** Клиент ГИС: реестр, топология, схема, переключения, документы. */
 
-import { apiRequest } from './api'
+import { apiRequest, requestBlob } from './api'
 
 export interface TypeRef {
   code: string
   name: string
   category: string
   schema_symbol?: string
+  has_maintenance?: boolean
+  is_composite?: boolean
+  /**
+   * Шаблон состава. В v2 (этап 2) — массив: метаданные + секции с ячейками;
+   * для legacy-типов — плоский список `{type_code, count}`. Разбор — `lib/equipmentTemplates.ts`.
+   */
+  composite_template?: unknown
+  /** Класс оборудования (`distribution`, `switching`, `cell`, `cable`…) — этап 1. */
+  equipment_class?: string
+  group_code?: string | null
   icon: string | null
   color: string | null
 }
+
+/** Вид ячейки ПС/БКРУ (`gis.assets.cell_kind`, миграция 0015). */
+export type CellKind = 'in' | 'out' | 'sectional'
+
+/** Кабельный учёт этапа 2 (`gis.assets.lifecycle_status`). */
+export type CableState = 'installed' | 'reserve' | 'repair'
 
 export interface AssetPort {
   id: string
@@ -22,17 +38,57 @@ export interface AssetPort {
   schema_y?: number | null
 }
 
+/** Типы данных поля паспорта (`gis.asset_type_fields.data_type`). */
+export type AssetFieldDataType = 'number' | 'integer' | 'text' | 'boolean' | 'date' | 'select'
+
+/**
+ * Поле паспорта типа оборудования. Отдаётся в `GET /api/asset-types?with_fields=1`
+ * и `GET /api/asset-types/{id}/fields`; из него строится динамическая форма реестра.
+ */
+export interface AssetTypeField {
+  id?: string
+  code: string
+  label: string
+  unit?: string | null
+  data_type: AssetFieldDataType
+  required?: boolean
+  default_value?: unknown
+  options?: Array<string | number | boolean>
+  min?: number | null
+  max?: number | null
+  group_label?: string | null
+  sort_order?: number
+}
+
 export interface AssetType {
   id: string
   code: string
   name: string
   category: string
+  /** Класс оборудования (миграция 0015): вкладки создания по классам. */
+  equipment_class?: string
+  /** Код вкладки UI для класса (`distribution`, `transformers`, `cells`…). */
+  group_code?: string | null
   schema_symbol: string
+  has_maintenance?: boolean
+  is_composite?: boolean
+  /**
+   * Состав комплекта. v2 (этап 2) — массив: метаданные + секции с ячейками;
+   * legacy v1 — плоский список `{type_code, count, label}`. Форма «Типы» читает
+   * только legacy-элементы, v2-шаблон она не перезаписывает (см. TypesPage).
+   */
+  composite_template?:
+    | Array<{ type_code?: string; count?: number; label?: string; [key: string]: unknown }>
+    | Record<string, unknown>
+    | null
   icon: string | null
   color: string | null
   port_template: { ports?: Array<{ code: string; name: string; kind: string; voltage_kv?: number }> }
-  attr_schema: Record<string, { type?: string }>
+  /** legacy-схема атрибутов: правила `{type, unit, options, min, max, label…}`. */
+  attr_schema: Record<string, Record<string, unknown>>
   required_attrs: string[]
+  /** Поля паспорта: заполняются только при `with_fields=1`. */
+  fields?: AssetTypeField[]
   is_mobile_default: boolean
   sort_order: number
   is_active: boolean
@@ -54,11 +110,20 @@ export interface AssetBrief {
   y: number | null
   location_text: string | null
   parent_id: string | null
+  grouped?: boolean
+  /** Ячейка/разъединитель: вид и номер (этап 2 модели оборудования). */
+  cell_kind?: CellKind | null
+  cell_no?: number | null
+  section_no?: number | null
+  /** Кабель: на оборудовании / в запасе / в ремонте. */
+  lifecycle_status?: CableState | null
   version: number
   updated_at: string
 }
 
 export interface AssetOut extends AssetBrief {
+  schema_x?: number | null
+  schema_y?: number | null
   pit_id: string
   lifecycle: string
   z: number | null
@@ -83,6 +148,14 @@ export interface MapLayer {
   min_zoom: number
   max_zoom: number
   version: number
+}
+
+/**
+ * Подложка карты защищена авторизацией (S-5): качаем её тем же access-токеном
+ * и отдаём Leaflet blob-URL. Вызывающий обязан сделать URL.revokeObjectURL.
+ */
+export async function layerImageObjectUrl(imageUrl: string): Promise<string> {
+  return URL.createObjectURL(await requestBlob(imageUrl))
 }
 
 export interface PowerPathNode {
@@ -160,6 +233,13 @@ export interface GraphJumper {
 }
 
 export interface GraphBlock {
+  kind?: string | null
+  /** исторические поля: то же значение, что schema_width/schema_height */
+  width?: number | null
+  height?: number | null
+  /** этап 3: gis.assets.schema_width / schema_height (px), задаются NodeResizer'ом */
+  schema_width?: number | null
+  schema_height?: number | null
   asset_id: string
   code: string
   name: string
@@ -180,6 +260,10 @@ export interface GraphEdge {
   state: string
   feed_role: string
   cable_mark: string | null
+  cable_no?: string | null
+  cable_status?: string
+  installed_on?: string | null
+  route_note?: string | null
   length_m: number | null
   cross_section_mm2: number | null
   cores: number | null
@@ -190,6 +274,35 @@ export interface TopologyGraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
   blocks: GraphBlock[]
+}
+
+/**
+ * Одна запись PUT /api/topology/layout (этап 3). Все поля, кроме `asset_id`,
+ * необязательны: узел/блок присылает x/y (и width/height), ячейка внутри блока —
+ * local_x/local_y (`gis.assets.schema_local_x/y`).
+ */
+export interface SchemaLayoutItem {
+  asset_id: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  local_x?: number
+  local_y?: number
+}
+
+export interface SchemaLayoutPortItem {
+  port_id: string
+  x: number
+  y: number
+}
+
+export interface SchemaLayoutResult {
+  updated: number
+  updated_ports: number
+  updated_blocks?: number
+  updated_cells?: number
+  skipped: string[]
 }
 
 export interface TopologyIssue {
@@ -210,6 +323,13 @@ export interface LinkOut {
   feed_role: string
   state: string
   cable_mark: string | null
+  cable_no?: string | null
+  cable_status?: string
+  installed_on?: string | null
+  /** Кабель-объект, установленный на участок (этап 2, nullable). */
+  cable_asset_id?: string | null
+  cable_asset?: CableAssetRef | null
+  route_note?: string | null
   length_m: number | null
   cross_section_mm2: number | null
   cores: number | null
@@ -244,11 +364,157 @@ export interface ChildAsset {
   status: string
   grounded: boolean
   energized: boolean
+  /** Придут на будущих версиях API; сейчас вид/номер берём из имени и params. */
+  cell_kind?: CellKind | null
+  cell_no?: number | null
+  section_no?: number | null
   ports: AssetPort[]
 }
 
+// --- этап 2: составные устройства, переключение, кабельный учёт -------------
+
+/** Созданная ячейка блока (ответ `POST /api/schema/composite`). */
+export interface CompositeCellResult {
+  id: string
+  code: string
+  name: string
+  type_code: string
+  cell_kind: CellKind
+  cell_no: number
+  section_no: number
+  status: string
+  grounded: boolean
+  voltage_kv: number | null
+  local_x: number | null
+  local_y: number | null
+}
+
+export interface CompositeSectionResult {
+  section_no: number
+  label: string
+  voltage_kv: number | null
+  cells: CompositeCellResult[]
+}
+
+export interface CompositeDisconnectorResult {
+  id: string
+  code: string
+  name: string
+  type_code: string
+  cell_kind: CellKind
+  status: string
+  grounded: boolean
+}
+
+export interface CompositeCreateResult {
+  id: string
+  code: string
+  name: string
+  type_code: string
+  schema_x: number | null
+  schema_y: number | null
+  template_version: number
+  children: number
+  block: { id: string; code: string; name: string; type_code: string; schema_x: number | null; schema_y: number | null } | null
+  sections: CompositeSectionResult[]
+  cells: CompositeCellResult[]
+  /** КТП: ячеек нет, только вводной разъединитель. */
+  disconnector: CompositeDisconnectorResult | null
+  disconnector_id: string | null
+}
+
+/** Ответ `POST /api/assets/{id}/toggle` — оперативное состояние ячейки/разъединителя. */
+export interface ToggleResult {
+  asset_id: string
+  code: string
+  name: string
+  cell_kind: CellKind | null
+  status: 'on' | 'off'
+  previous_status: string
+  changed: boolean
+  grounded: boolean
+  /** Оперативное «под напряжением»: включено и не заземлено (для цвета). */
+  energized: boolean
+  /** Фактическое напряжение: номинал при включении, иначе 0. */
+  voltage_kv: number
+  nominal_voltage_kv: number | null
+  topology_energized: boolean
+}
+
+export interface CableAssetRef {
+  id: string
+  code: string
+  name: string
+  type_code: string
+  type_icon: string | null
+  status: string
+}
+
+/** Кабель-объект в кабельном учёте (`GET /api/cables`). */
+export interface CableRecord {
+  id: string
+  code: string
+  name: string
+  type_code: string
+  status: string
+  lifecycle_status: CableState
+  cable_mark: string | null
+  section_mm2: number | null
+  length_m: number | null
+  voltage_kv: number | null
+  /** Привязка: участок связи, на котором стоит кабель. */
+  link_id: string | null
+  link_label: string | null
+  link_state: string | null
+  installed_on: string | null
+  from_asset: CableAssetRef | null
+  to_asset: CableAssetRef | null
+  attrs: Record<string, unknown>
+  version: number
+  updated_at: string
+  warnings: string[]
+}
+
+export interface CableInstallResult {
+  cable: CableRecord
+  link_id: string | null
+  link_label: string | null
+}
+
+export interface CableReturnResult {
+  cable: CableRecord
+  detached_links: string[]
+}
+
+export interface RelocateSchemaAssetIn {
+  target_asset_id: string | null
+  confirm?: boolean
+  x?: number | null
+  y?: number | null
+  local_x?: number | null
+  local_y?: number | null
+}
+
+export interface RelocateSchemaAssetOut {
+  asset: AssetOut
+  warnings: string[]
+  old_parent_id: string | null
+  old_block_id: string | null
+  old_local_x: number | null
+  old_local_y: number | null
+  old_schema_x: number | null
+  old_schema_y: number | null
+}
+
 export const gisApi = {
-  types: () => apiRequest<AssetType[]>('/api/asset-types'),
+  /** Справочник типов; `with_fields` добавляет поля паспорта для динамической формы. */
+  types: (params: { with_fields?: boolean; include_inactive?: boolean } = {}) => {
+    const query = new URLSearchParams()
+    if (params.with_fields) query.set('with_fields', '1')
+    if (params.include_inactive) query.set('include_inactive', 'true')
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return apiRequest<AssetType[]>(`/api/asset-types${suffix}`)
+  },
 
   assets: (params: {
     type_code?: string
@@ -298,6 +564,8 @@ export const gisApi = {
     parent_id?: string | null
     location_text?: string | null
     attrs?: Record<string, unknown>
+    /** Состояние кабеля: отдельная колонка `gis.assets.lifecycle_status` (0015). */
+    lifecycle_status?: 'installed' | 'reserve' | 'repair'
   }) => apiRequest<AssetOut>('/api/assets', { method: 'POST', body: JSON.stringify(payload) }),
 
   update: (id: string, payload: Record<string, unknown>) =>
@@ -305,11 +573,74 @@ export const gisApi = {
 
   remove: (id: string) => apiRequest<{ message: string }>(`/api/assets/${id}`, { method: 'DELETE' }),
 
+  // Отмена удаления: объект возвращается из архива вместе со своими связями
+  restoreAsset: (id: string) =>
+    apiRequest<AssetOut>(`/api/assets/${id}/restore`, { method: 'POST' }),
+
   setState: (id: string, payload: { status?: string; grounded?: boolean; reason?: string }) =>
     apiRequest<{ asset: AssetOut; energization_changed: boolean; affected_assets: number }>(
       `/api/assets/${id}/state`,
       { method: 'POST', body: JSON.stringify(payload) },
     ),
+
+  /**
+   * Этап 2: включить/отключить ячейку или разъединитель.
+   * Без `state` — переключить (on→off, иначе on); с `state` — выставить.
+   * В ответе `energized`/`voltage_kv` — для цвета и подписи «под напряжением».
+   */
+  toggleAsset: (id: string, payload: { state?: 'on' | 'off' | null; reason?: string } = {}) =>
+    apiRequest<ToggleResult>(`/api/assets/${id}/toggle`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Этап 2: блок + секции + ячейки (+ вводной разъединитель КТП) одной транзакцией. */
+  createComposite: (payload: {
+    type_code: string
+    name: string
+    x: number
+    y: number
+    code?: string | null
+    cells_per_section?: number | null
+  }) =>
+    apiRequest<CompositeCreateResult>('/api/schema/composite', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Этап 2: кабельный учёт — кабели-объекты по состоянию installed/reserve/repair. */
+  cables: (params: { lifecycle_status?: CableState; q?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams()
+    if (params.lifecycle_status) query.set('lifecycle_status', params.lifecycle_status)
+    if (params.q) query.set('q', params.q)
+    if (params.limit) query.set('limit', String(params.limit))
+    const suffix = query.toString() ? `?${query.toString()}` : ''
+    return apiRequest<CableRecord[]>(`/api/cables${suffix}`)
+  },
+
+  /** Установить кабель: на участок связи (`link_id`) или на объект (`asset_id`). */
+  installCable: (
+    id: string,
+    payload: {
+      link_id?: string
+      asset_id?: string
+      cable_mark?: string
+      length_m?: number
+      cross_section_mm2?: number
+      reason?: string
+    },
+  ) =>
+    apiRequest<CableInstallResult>(`/api/cables/${id}/install`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** Снять кабель: в запас (`reserve`) или в ремонт (`repair`). */
+  returnCable: (id: string, payload: { status?: CableState; link_id?: string; reason?: string } = {}) =>
+    apiRequest<CableReturnResult>(`/api/cables/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   graph: () => apiRequest<TopologyGraph>('/api/topology/graph'),
 
@@ -341,6 +672,10 @@ export const gisApi = {
 
   deleteLink: (id: string) =>
     apiRequest<{ message: string }>(`/api/links/${id}`, { method: 'DELETE' }),
+
+  // Отмена удаления связи: тот же id, те же порты
+  restoreLink: (id: string) =>
+    apiRequest<LinkOut>(`/api/links/${id}/restore`, { method: 'POST' }),
 
   lines: () => apiRequest<Array<{ id: string; code: string; name: string }>>('/api/lines'),
 
@@ -377,12 +712,89 @@ export const gisApi = {
     apiRequest<AssetType>(`/api/asset-types/${id}`, { method: 'DELETE' }),
 
   saveSchemaLayout: (
-    items: Array<{ asset_id: string; x: number; y: number }>,
-    ports: Array<{ port_id: string; x: number; y: number }> = [],
+    items: SchemaLayoutItem[],
+    ports: SchemaLayoutPortItem[] = [],
   ) =>
-    apiRequest<{ updated: number; updated_ports: number; skipped: string[] }>('/api/topology/layout', {
+    apiRequest<SchemaLayoutResult>('/api/topology/layout', {
       method: 'PUT',
       body: JSON.stringify({ items, ports }),
+    }),
+
+groupAssets: (payload: { parent_type_code: string; name: string; child_ids: string[]; x?: number; y?: number }) =>
+    apiRequest<{ parent_id: string; children: number }>('/api/asset-groups', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  ungroupAsset: (id: string) =>
+    apiRequest<{ parent_id: string; children: number }>(`/api/asset-groups/${id}/ungroup`, { method: 'POST' }),
+
+maintenanceList: (assetId: string) =>
+    apiRequest<Array<{ id: string; at: string; kind: string; motor_hours: number | null; fuel_liters: number | null; fuel_level_pct: number | null; cost: number | null; note: string | null; author_name: string | null }>>(
+      `/api/assets/${assetId}/maintenance`,
+    ),
+
+  maintenanceAdd: (assetId: string, payload: Record<string, unknown>) =>
+    apiRequest<{ id: string }>(`/api/assets/${assetId}/maintenance`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  maintenanceDelete: (entryId: string) =>
+    apiRequest<{ message: string }>(`/api/maintenance/${entryId}`, { method: 'DELETE' }),
+
+ensurePorts: (assetId: string) =>
+    apiRequest<{ created: number; ports: Array<{ id: string; code: string }> }>(
+      `/api/assets/${assetId}/ports/ensure`,
+      { method: 'POST' },
+    ),
+
+  passportUrl: (assetId: string) =>
+    apiRequest<{ url: string; kind: string }>('/api/reports/token', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'passport', asset_id: assetId }),
+    }),
+
+generatePoles: (payload: {
+    type_code?: string
+    x1: number
+    y1: number
+    x2: number
+    y2: number
+    count: number
+    start: number
+    step: number
+    prefix: string
+    source_asset_id?: string
+    target_asset_id?: string
+    path?: number[][]
+  }) => apiRequest<{ count: number; first: string; last: string; ids: string[] }>('/api/schema/poles/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  }),
+
+  renumberPoles: (payload: { type_code?: string; start: number; step: number; prefix: string }) =>
+    apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+renumberPolesChain: (payload: { anchor_asset_id?: string; link_id?: string; type_code?: string; start: number; step: number; prefix: string }) =>
+    apiRequest<{ count: number; first: string; last: string }>('/api/schema/poles/renumber-chain', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+placeComposite: (payload: { type_id: string; x: number; y: number; name?: string }) =>
+    apiRequest<{ id: string; name: string; code: string; children: number }>('/api/composites/place', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  attachComposite: (parentId: string, childIds: string[]) =>
+    apiRequest<{ id: string; name: string; code: string; children: number }>(`/api/composites/${parentId}/attach`, {
+      method: 'POST',
+      body: JSON.stringify({ child_ids: childIds }),
     }),
 
   allTypes: () => apiRequest<AssetType[]>('/api/asset-types?include_inactive=true'),
@@ -415,11 +827,115 @@ schemaLegend: () =>
       { method: 'POST', body: JSON.stringify({ from_cell_id: fromCellId, to_cell_id: toCellId, label }) },
     ),
 
-  addBlockCell: (assetId: string, label: string, role = 'outgoing') =>
+  addBlockCell: (
+    assetId: string,
+    label: string,
+    role = 'outgoing',
+    opts: { type_code?: string; x?: number; y?: number } = {},
+  ) =>
     apiRequest<{ id: string; code: string; name: string; role: string }>(
       `/api/schema/assets/${assetId}/cells`,
-      { method: 'POST', body: JSON.stringify({ label, role }) },
+      { method: 'POST', body: JSON.stringify({ label, role, ...opts }) },
     ),
+
+  // --- визуальная сборка схемы: контур, постановка из реестра --------------
+
+  createContour: (payload: {
+    name: string
+    type_code: string
+    x: number
+    y: number
+    width?: number
+    height?: number
+    comment?: string
+  }) =>
+    apiRequest<{ id: string; code: string; name: string; type_code: string; x: number; y: number; width: number; height: number }>(
+      '/api/schema/contours',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  placeOnSchema: (id: string, x: number, y: number) =>
+    apiRequest<AssetOut>(`/api/schema/assets/${id}/place`, {
+      method: 'POST',
+      body: JSON.stringify({ x, y }),
+    }),
+
+  /** Атомарно перенести объект/ячейку в другой блок/контур (или на схему). */
+  relocateAsset: (assetId: string, payload: RelocateSchemaAssetIn) =>
+    apiRequest<RelocateSchemaAssetOut>(`/api/schema/assets/${assetId}/relocate`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  addBlockCellsBulk: (
+    assetId: string,
+    payload: {
+      count: number
+      start?: number
+      prefix?: string
+      suffix?: string
+      section_size?: number
+      section_prefix?: string
+      role?: string
+      type_code?: string
+    },
+  ) =>
+    apiRequest<{ parent_id: string; count: number; sections: string[]; items: Array<{ id: string; code: string; name: string; role: string }> }>(
+      `/api/schema/assets/${assetId}/cells/bulk`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+
+  createCellCable: (
+    assetId: string,
+    payload: { to_asset_id: string; cable_mark?: string; length_m?: number; cross_section_mm2?: number; cores?: number; link_type?: string },
+  ) =>
+    apiRequest<LinkOut>(`/api/schema/assets/${assetId}/cables`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  createLineChain: (payload: {
+    from_asset_id: string
+    to_asset_id: string
+    poles: number
+    prefix?: string
+    link_type?: 'overhead' | 'cable'
+    cable_mark?: string
+    line_name?: string
+    line_code?: string
+  }) =>
+    apiRequest<{
+      line_id: string
+      line_code: string
+      line_name: string
+      poles: Array<{ id: string; code: string; name: string }>
+      link_ids: string[]
+    }>('/api/schema/lines/chain', { method: 'POST', body: JSON.stringify(payload) }),
+  addLineEquipment: (payload: { anchor_asset_id: string; type_code: string; name?: string; cable_mark?: string; link_type?: string }) =>
+    apiRequest<{ asset_id: string; code: string; name: string; type_code: string; link_id: string | null; schema_x: number | null; schema_y: number | null }>(
+      '/api/schema/line-equipment',
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  unplaceFromSchema: (id: string) =>
+    apiRequest<AssetOut>(`/api/schema/assets/${id}/place`, { method: 'DELETE' }),
+
+  // --- снимки схемы (Q-6): черновик, список, публикация ---------------------
+
+  snapshots: (status?: SnapshotStatus) =>
+    apiRequest<{ items: SnapshotBrief[]; total: number; published_id: string | null }>(
+      `/api/topology/snapshots${status ? `?status=${status}` : ''}`,
+    ),
+
+  createSnapshot: (payload: { title: string; comment?: string }) =>
+    apiRequest<SnapshotDetail>('/api/topology/snapshots', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  snapshot: (id: string) => apiRequest<SnapshotDetail>(`/api/topology/snapshots/${id}`),
+
+  publishSnapshot: (id: string) =>
+    apiRequest<SnapshotDetail>(`/api/topology/snapshots/${id}/publish`, { method: 'POST' }),
 
 }
 
@@ -445,6 +961,14 @@ export const STATUS_LABEL: Record<string, string> = {
   decommissioned: 'списано',
 }
 
+// Цветовая схема питания (требование заказчика): под напряжением — красный,
+// отключено/без питания — зелёный. Отдельно от STATUS_COLOR, который описывает
+// эксплуатационный статус для карточек и списков.
+export const POWER_COLOR = {
+  on: '#F04438',
+  off: '#22C55E',
+} as const
+
 export const STATUS_COLOR: Record<string, string> = {
   on: '#2FBF71',
   off: '#6B7A8A',
@@ -458,4 +982,41 @@ export const DOC_TYPE_LABEL: Record<string, string> = {
   settings: 'Уставки',
   manual: 'Инструкция',
   other: 'Прочее',
+}
+
+// --- снимки схемы (Q-6) -----------------------------------------------------
+
+export type SnapshotStatus = 'draft' | 'published'
+
+export interface SnapshotCounts {
+  nodes: number
+  edges: number
+  blocks: number
+}
+
+export interface SnapshotBrief {
+  id: string
+  title: string
+  comment: string | null
+  status: SnapshotStatus
+  created_at: string
+  created_by: string | null
+  created_by_name: string | null
+  published_at: string | null
+  published_by: string | null
+  published_by_name: string | null
+  counts: SnapshotCounts
+}
+
+export interface SnapshotPayload {
+  schema_version: number
+  captured_at: string
+  pit: { id: string; code: string; name: string; crs_name: string }
+  frame: Record<string, unknown>
+  graph: TopologyGraph
+  counts: SnapshotCounts
+}
+
+export interface SnapshotDetail extends SnapshotBrief {
+  payload: SnapshotPayload
 }

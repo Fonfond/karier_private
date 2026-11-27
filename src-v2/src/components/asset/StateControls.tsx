@@ -3,6 +3,7 @@ import { Alert } from '../ui'
 import { ApiError } from '../../lib/api'
 import type { AssetOut } from '../../lib/gis'
 import { gisApi } from '../../lib/gis'
+import { voltageText } from '../../lib/power'
 import { enqueue } from '../../lib/outbox'
 import { syncOutbox } from '../../lib/sync'
 
@@ -10,13 +11,18 @@ interface Props {
   asset: AssetOut
   onChanged: (asset: AssetOut) => void
   compact?: boolean
+  /**
+   * Ячейка/разъединитель: включение и отключение идёт через toggle-API
+   * (`POST /api/assets/{id}/toggle`) — с напряжением и аудитом этапа 2.
+   */
+  switchable?: boolean
 }
 
 /**
  * Оперативные переключения: включить/отключить и заземление.
  * Заземление требует причины и подтверждения — как в журнале переключений.
  */
-export function StateControls({ asset, onChanged, compact = false }: Props) {
+export function StateControls({ asset, onChanged, compact = false, switchable = false }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -50,6 +56,25 @@ export function StateControls({ asset, onChanged, compact = false }: Props) {
     }
 
     try {
+      if (switchable && payload.status) {
+        // Этап 2: ячейки и разъединители переключаются отдельным API — оно же
+        // возвращает фактическое напряжение и пишет аудит `asset.toggled`.
+        const result = await gisApi.toggleAsset(asset.id, {
+          state: payload.status === 'on' ? 'on' : 'off',
+          reason: payload.reason,
+        })
+        onChanged({ ...asset, status: result.status, grounded: result.grounded })
+        setNotice(
+          result.energized
+            ? `Включено — под напряжением, ${voltageText(true, result.voltage_kv)}`
+            : result.grounded
+              ? 'Отключено и заземлено — обесточено'
+              : 'Отключено — обесточено',
+        )
+        setAskGround(false)
+        setReason('')
+        return
+      }
       const result = await gisApi.setState(asset.id, payload)
       onChanged(result.asset)
       if (result.affected_assets > 0) {

@@ -28,6 +28,7 @@ export function BottomNav() {
 
   const more = [
     { to: '/registry', label: 'Реестр', icon: '🗂' },
+    { to: '/cables', label: 'Кабели', icon: '〰' },
     { to: '/defects', label: 'Дефекты', icon: '⚠️' },
     can('settings.edit') ? { to: '/types', label: 'Типы', icon: '⚙️' } : null,
     can('employee.manage') ? { to: '/employees', label: 'Сотрудники', icon: '👷' } : null,

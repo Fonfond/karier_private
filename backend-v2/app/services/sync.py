@@ -11,10 +11,30 @@ from sqlalchemy.orm import Session
 from app.core.errors import ApiError
 from app.models import Asset, AssetMove, ChangeLog, Conflict, Defect, Employee, SyncOp
 from app.schemas.sync import ChangeOut, MoveIn, OpResultOut, PushIn, SyncOpIn
-from app.services import audit, moves as moves_service
+from app.services import audit, gis, moves as moves_service
+from app.services.auth import permissions_of
 
-ALLOWED_ASSET_FIELDS = {"status", "grounded", "x", "y", "location_text", "attrs", "name"}
 ASSET_STATUSES = {"on", "off", "standby", "maintenance", "decommissioned"}
+
+# Карта «поле patch → право». В офлайне клиент присылает произвольный patch,
+# поэтому право проверяется по каждому изменяемому полю, а не «на операцию».
+FIELD_PERMISSIONS: dict[str, str] = {
+    "status": "asset.status.edit",
+    "grounded": "asset.status.edit",
+    "x": "asset.move",
+    "y": "asset.move",
+    "location_text": "asset.move",
+    "name": "asset.create",
+    "attrs": "asset.create",
+}
+
+# Карта «операция → право» там, где право не выводится из полей patch.
+OP_PERMISSIONS: dict[tuple[str, str], set[str]] = {
+    ("asset", "insert"): {"asset.create"},
+    ("move", "update"): {"asset.move"},
+    ("move", "insert"): {"asset.move"},
+    ("defect", "insert"): {"defect.manage"},
+}
 
 
 def _now() -> datetime:
@@ -40,6 +60,53 @@ def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _operation_permissions(op: SyncOpIn) -> set[str]:
+    """Права, необходимые для одной офлайн-операции."""
+    required = set(OP_PERMISSIONS.get((op.entity, op.op), set()))
+    if op.entity == "asset":
+        for field in op.patch:
+            code = FIELD_PERMISSIONS.get(field)
+            if code:
+                required.add(code)
+    return required
+
+
+def _check_push_permissions(ops: list[SyncOpIn], actor: Employee) -> None:
+    """403 до любых изменений: ни одна операция пачки не должна обойти RBAC."""
+    granted = set(permissions_of(actor))
+    missing: list[str] = []
+    for op in ops:
+        absent = _operation_permissions(op) - granted
+        if absent:
+            missing.append(f"{op.entity}/{op.op}: {', '.join(sorted(absent))}")
+    if missing:
+        raise ApiError(
+            403,
+            "perm.denied",
+            "Недостаточно прав для операций синхронизации — " + "; ".join(missing),
+        )
+
+
+def _check_push_entities(db: Session, pit_id: uuid.UUID, ops: list[SyncOpIn]) -> None:
+    """404 до любых изменений: entity_id должен принадлежать карьеру запроса."""
+    for op in ops:
+        if op.entity in ("asset", "move") and op.entity_id is not None:
+            asset = db.get(Asset, op.entity_id)
+            if asset is None or asset.deleted_at is not None or asset.pit_id != pit_id:
+                raise ApiError(404, "asset.not_found", "Объект не найден")
+        elif op.entity == "defect":
+            raw = op.patch.get("asset_id") or op.entity_id
+            if raw is None:
+                continue
+            try:
+                asset_id = uuid.UUID(str(raw))
+            except ValueError:
+                continue  # формат проверит применение операции (rejected)
+            asset = db.get(Asset, asset_id)
+            if asset is None or asset.deleted_at is not None or asset.pit_id != pit_id:
+                raise ApiError(404, "asset.not_found", "Объект дефекта не найден")
 
 
 def _record_conflict(
@@ -94,6 +161,23 @@ def _apply_asset_update(db: Session, op: SyncOpIn, actor: Employee) -> OpResultO
     asset = db.get(Asset, op.entity_id)
     if asset is None or asset.deleted_at is not None:
         return OpResultOut(op_id=op.op_id, status="rejected", message="Объект не найден")
+
+    # Границы карты проверяем до любых изменений и до фиксации конфликта.
+    if "x" in op.patch or "y" in op.patch:
+        try:
+            new_x = (
+                float(op.patch["x"])
+                if "x" in op.patch
+                else (float(asset.x) if asset.x is not None else None)
+            )
+            new_y = (
+                float(op.patch["y"])
+                if "y" in op.patch
+                else (float(asset.y) if asset.y is not None else None)
+            )
+        except (TypeError, ValueError):
+            return OpResultOut(op_id=op.op_id, status="rejected", message="Некорректные координаты")
+        gis.check_bounds(db, asset.pit_id, new_x, new_y)
 
     client_ts = _aware(op.client_ts) or _now()
     server_ts = _aware(asset.updated_at)
@@ -154,19 +238,18 @@ def _apply_asset_update(db: Session, op: SyncOpIn, actor: Employee) -> OpResultO
         status = "conflict_won"
 
     applied: dict[str, object] = {}
-    from app.services.auth import permissions_of
-
-    perms = permissions_of(actor)
-    allowed = (
-        ALLOWED_ASSET_FIELDS
-        if "asset.create" in perms
-        else {"status", "grounded", "x", "y", "location_text"}
-    )
     for field, value in op.patch.items():
-        if field not in allowed:
+        if field not in FIELD_PERMISSIONS:
             continue
         if field == "status" and value not in ASSET_STATUSES:
             continue
+        if field in ("x", "y"):
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return OpResultOut(
+                    op_id=op.op_id, status="rejected", message="Некорректные координаты"
+                )
         setattr(asset, field, value)
         applied[field] = value
 
@@ -209,6 +292,8 @@ def _apply_move(db: Session, op: SyncOpIn, actor: Employee) -> OpResultOut:
         y = float(op.patch.get("y"))
     except (TypeError, ValueError):
         return OpResultOut(op_id=op.op_id, status="rejected", message="Некорректные координаты")
+
+    gis.check_bounds(db, asset.pit_id, x, y)
 
     client_ts = _aware(op.client_ts) or _now()
     server_ts = _aware(asset.updated_at)
@@ -319,6 +404,11 @@ def _apply_defect_insert(db: Session, op: SyncOpIn, actor: Employee) -> OpResult
 
 def push(db: Session, actor: Employee, payload: PushIn) -> dict:
     set_actor(db, actor.id)
+    # Двухфазно: сначала права и принадлежность карьеру — 403/404 до любых
+    # изменений, затем применение операций (ошибки одной не роняют пачку).
+    _check_push_permissions(payload.ops, actor)
+    pit = gis.get_pit(db)
+    _check_push_entities(db, pit.id, payload.ops)
     results: list[OpResultOut] = []
 
     for op in payload.ops:

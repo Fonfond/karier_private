@@ -4,10 +4,12 @@ import { useAuth } from '../auth/AuthProvider'
 import { AssetSheet } from '../components/asset/AssetSheet'
 import { BottomSheet } from '../components/BottomSheet'
 import { MapView } from '../components/map/MapView'
-import { Alert, Badge } from '../components/ui'
+import { Alert, Badge, ConfirmDialog } from '../components/ui'
 import { ApiError } from '../lib/api'
-import type { AssetBrief, AssetType, MapLayer, TopologyGraph } from '../lib/gis'
-import { STATUS_COLOR, STATUS_LABEL, gisApi } from '../lib/gis'
+import type { AssetBrief, AssetType, ChildAsset, MapLayer, TopologyGraph } from '../lib/gis'
+import { POWER_COLOR, gisApi } from '../lib/gis'
+import { applyPowerState, powerStateOf } from '../lib/power'
+import type { PowerStateUpdate } from '../lib/power'
 import { enqueue } from '../lib/outbox'
 import { syncOutbox } from '../lib/sync'
 import { syncApi } from '../lib/syncApi'
@@ -65,6 +67,17 @@ export function MapPage() {
   const [formPower, setFormPower] = useState('')
   const [formLocation, setFormLocation] = useState('')
   const [saving, setSaving] = useState(false)
+  const [placePickerOpen, setPlacePickerOpen] = useState(false)
+  const [vlMode, setVlMode] = useState(false)
+  const [vlPath, setVlPath] = useState<Array<{ x: number; y: number }>>([])
+  const [vlDialog, setVlDialog] = useState(false)
+  const [vlSaving, setVlSaving] = useState(false)
+  const [hint, setHint] = useState<string | null>(null)
+  const [compositeDialog, setCompositeDialog] = useState(false)
+  const [compositeTypeId, setCompositeTypeId] = useState('')
+  const [compositeMode, setCompositeMode] = useState(false)
+  const [vlForm, setVlForm] = useState({ count: '5', start: '1', step: '1', prefix: 'оп.', sourceId: '', targetId: '' })
+  const [placeQuery, setPlaceQuery] = useState('')
 
   const [connecting, setConnecting] = useState(false)
   const [connectStep, setConnectStep] = useState<'from' | 'to'>('from')
@@ -72,13 +85,17 @@ export function MapPage() {
   const [connectTo, setConnectTo] = useState<PortChoice | null>(null)
   const [connectAssetId, setConnectAssetId] = useState<string | null>(null)
   const [connectPorts, setConnectPorts] = useState<Array<{ id: string; code: string; kind: string; voltage: number | null }>>([])
+  const [connectChildren, setConnectChildren] = useState<ChildAsset[]>([])
+  const [connectChild, setConnectChild] = useState<{ id: string; name: string } | null>(null)
+  const [connectBlockId, setConnectBlockId] = useState<string | null>(null)
   const [linkMark, setLinkMark] = useState('')
   const [linkLength, setLinkLength] = useState('')
   const [linkType, setLinkType] = useState('cable')
   const [linkMode, setLinkMode] = useState(false)
   const [dragFrom, setDragFrom] = useState<string | null>(null)
-  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; length: string; state: string } | null>(null)
+  const [editLink, setEditLink] = useState<{ id: string; type: string; mark: string; no: string; status: string; installed: string; length: string; state: string } | null>(null)
   const [linkSaving, setLinkSaving] = useState(false)
+  const [confirmRemoveLink, setConfirmRemoveLink] = useState(false)
 
   const [movingAsset, setMovingAsset] = useState<AssetBrief | null>(null)
   const [moveDraft, setMoveDraft] = useState<{ x: number; y: number } | null>(null)
@@ -91,6 +108,23 @@ export function MapPage() {
   const canManageDocs = can('document.manage')
   const placeAssetId = (location.state as { placeAssetId?: string } | null)?.placeAssetId ?? null
   const openAssetId = (location.state as { openAssetId?: string } | null)?.openAssetId ?? null
+
+  useEffect(() => {
+    if (!vlMode) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        void finishVl()
+      }
+      if (event.key === 'Escape') {
+        setVlMode(false)
+        setVlPath([])
+        setVlDialog(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [vlMode, vlPath, vlForm])
 
   useEffect(() => {
     if (openAssetId) {
@@ -141,14 +175,60 @@ export function MapPage() {
     await loadGraph()
   }, [load, loadGraph, view])
 
+  /**
+   * F1: успешное переключение из карточки объекта.
+   *
+   * 1. Сразу правим локальный реестр `assets` — SchemaView строит `assetStates`
+   *    из него и перекрашивает ячейку (красный ↔ зелёный) без перезагрузки.
+   * 2. Тихо перечитываем граф, чтобы обновились статусы одиночных узлов
+   *    (например, разъединителя КТП, если он вне блока). Камеру не сбрасываем:
+   *    SchemaView делает fitView только при первом открытии схемы.
+   */
+  const handleStateChanged = useCallback(
+    (update: PowerStateUpdate) => {
+      // точечный override — работает даже для только что созданных ячеек
+      setPowerOverrides((prev) => ({
+        ...prev,
+        [update.id]: { status: update.status, grounded: update.grounded },
+      }))
+      setAssets((prev) => applyPowerState(prev, update))
+      void loadGraph()
+    },
+    [loadGraph],
+  )
+
   const filtered = useMemo(() => {
-    if (!category) return assets
-    return assets.filter((asset) => asset.type.category === category)
+    const visible = assets.filter((asset) => !asset.grouped)
+    if (!category) return visible
+    return visible.filter((asset) => asset.type.category === category)
   }, [assets, category])
+
+  /**
+   * Статусы ячеек для блоков схемы. Граф отдаёт состав блока без статуса, а реестр
+   * (`assets`) уже загружен — берём оттуда, чтобы не делать запрос на каждую ячейку.
+   *
+   * `powerOverrides` — точечные результаты переключений (F1). Они нужны для ячеек,
+   * которых ещё нет в загруженном реестре: например, блок только что создан
+   * мастером «По шаблону», и карточка ячейки открыта до перезагрузки списка.
+   */
+  const [powerOverrides, setPowerOverrides] = useState<Record<string, { status: string; grounded: boolean }>>({})
+
+  const assetStates = useMemo(() => {
+    const result: Record<string, { status: string; grounded: boolean }> = { ...powerOverrides }
+    for (const asset of assets) {
+      if (asset.cell_kind) result[asset.id] = { status: asset.status, grounded: asset.grounded }
+    }
+    return result
+  }, [assets, powerOverrides])
 
   const openAsset = (id: string) => {
     if (movingAsset) return
-    if (linkMode) return
+    if (linkMode) {
+      // В режиме связи клик по объекту открывает выбор порта/ячейки,
+      // а не карточку: для комплекса сначала выбирается ячейка.
+      void openConnectPicker(id)
+      return
+    }
     if (connecting) {
       void openConnectPicker(id)
       return
@@ -181,7 +261,10 @@ export function MapPage() {
 
   const openConnectPicker = async (id: string) => {
     try {
-      const detail = await gisApi.asset(id)
+      const [detail, children] = await Promise.all([
+        gisApi.asset(id),
+        gisApi.children(id).catch(() => [] as ChildAsset[]),
+      ])
       const ports = detail.ports
         .filter((port) => (connectStep === 'from' ? port.kind !== 'in' : port.kind !== 'out'))
         .map((port) => ({
@@ -190,12 +273,29 @@ export function MapPage() {
           kind: port.kind,
           voltage: port.nominal_voltage_kv,
         }))
+      setConnectBlockId(id)
+      setConnectChildren(children)
+      setConnectChild(null)
       setConnectAssetId(id)
       setConnectPorts(ports)
       setSheetOpen(true)
     } catch {
       setError('Не удалось получить порты объекта')
     }
+  }
+
+  const pickChildPorts = (child: ChildAsset) => {
+    const ports = child.ports
+      .filter((port) => (connectStep === 'from' ? port.kind !== 'in' : port.kind !== 'out'))
+      .map((port) => ({
+        id: port.id,
+        code: port.code,
+        kind: port.kind,
+        voltage: port.nominal_voltage_kv,
+      }))
+    setConnectAssetId(child.id)
+    setConnectChild({ id: child.id, name: child.name })
+    setConnectPorts(ports)
   }
 
   const pickPort = async (portId: string, portCode: string) => {
@@ -247,7 +347,12 @@ export function MapPage() {
 
   const startLinkDrag = (id: string) => {
     if (!linkMode) return
-    setDragFrom(id)
+    if (!dragFrom) {
+      setDragFrom(id)
+      return
+    }
+    // второй клик по другому объекту — соединяем (без обязательного перетаскивания)
+    if (dragFrom !== id) void dropLinkDrag(id)
   }
 
   const dropLinkDrag = async (id: string) => {
@@ -255,11 +360,43 @@ export function MapPage() {
     const sourceId = dragFrom
     setDragFrom(null)
     try {
-      const [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
-      const fromPort = source.ports.find((port) => port.kind !== 'in')
-      const toPort = target.ports.find((port) => port.kind !== 'out')
+      let [source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+      // Если комплекс содержит ячейки — не соединяем «комплекс целиком»,
+      // а предлагаем выбрать конкретную ячейку (её порт).
+      const [sourceKids, targetKids] = await Promise.all([
+        gisApi.children(sourceId).catch(() => [] as ChildAsset[]),
+        gisApi.children(id).catch(() => [] as ChildAsset[]),
+      ])
+      if (sourceKids.length > 0 || targetKids.length > 0) {
+        setConnecting(true)
+        setConnectStep('from')
+        setConnectFrom(null)
+        setConnectTo(null)
+        setError(null)
+        void openConnectPicker(sourceKids.length > 0 ? sourceId : id)
+        return
+      }
+      let fromPort = source.ports.find((port) => port.kind !== 'in')
+      let toPort = target.ports.find((port) => port.kind !== 'out')
+      if (!fromPort || !toPort) {
+        // у объектов, созданных без шаблона портов, создаём вход/выход автоматически
+        await Promise.all([gisApi.ensurePorts(sourceId), gisApi.ensurePorts(id)])
+        ;[source, target] = await Promise.all([gisApi.asset(sourceId), gisApi.asset(id)])
+        fromPort = source.ports.find((port) => port.kind !== 'in')
+        toPort = target.ports.find((port) => port.kind !== 'out')
+      }
       if (!fromPort || !toPort) {
         setError('У одного из объектов нет подходящих портов для связи')
+        return
+      }
+      if (fromPort.kind === 'in' || toPort.kind === 'out') {
+        setError('Соединять можно только выход со входом (OUT → IN)')
+        return
+      }
+      const fromKv = fromPort.nominal_voltage_kv
+      const toKv = toPort.nominal_voltage_kv
+      if (fromKv != null && toKv != null && fromKv !== toKv) {
+        setError(`Напряжения не совпадают: ${fromKv} кВ и ${toKv} кВ`)
         return
       }
       setConnectFrom({ assetId: source.id, assetName: source.name, portId: fromPort.id, portCode: fromPort.code })
@@ -279,6 +416,9 @@ export function MapPage() {
       id,
       type: edge.link_type,
       mark: edge.cable_mark ?? '',
+      no: edge.cable_no ?? '',
+      status: edge.cable_status ?? 'in_work',
+      installed: edge.installed_on ?? '',
       length: edge.length_m != null ? String(edge.length_m) : '',
       state: edge.state,
     })
@@ -291,6 +431,9 @@ export function MapPage() {
       await gisApi.updateLink(editLink.id, {
         link_type: editLink.type,
         cable_mark: editLink.mark || null,
+        cable_no: editLink.no || null,
+        cable_status: editLink.status,
+        installed_on: editLink.installed || null,
         length_m: editLink.length ? Number(editLink.length) : null,
         state: editLink.state,
       })
@@ -317,6 +460,59 @@ export function MapPage() {
     }
   }
 
+  const startVl = () => {
+    setAdding(false)
+    setDraft(null)
+    setLinkMode(false)
+    setConnecting(false)
+    setVlPath([])
+    setVlMode(true)
+    setVlDialog(true)
+  }
+
+  const finishVl = async () => {
+    const source = vlForm.sourceId ? assets.find((item) => item.id === vlForm.sourceId) : null
+    const target = vlForm.targetId ? assets.find((item) => item.id === vlForm.targetId) : null
+    const direct =
+      source && target && source.x != null && source.y != null && target.x != null && target.y != null
+    let pathPoints = vlPath
+    if (!direct && pathPoints.length < 2) {
+      setError('Поставьте минимум две точки линии или выберите оборудование «откуда» и «куда»')
+      return
+    }
+    if (direct && pathPoints.length === 0) {
+      pathPoints = [
+        { x: source!.x as number, y: source!.y as number },
+        { x: target!.x as number, y: target!.y as number },
+      ]
+    }
+    setVlSaving(true)
+    try {
+      const result = await gisApi.generatePoles({
+        type_code: 'op',
+        x1: pathPoints[0].x,
+        y1: pathPoints[0].y,
+        x2: pathPoints[pathPoints.length - 1].x,
+        y2: pathPoints[pathPoints.length - 1].y,
+        count: Math.max(1, Number(vlForm.count) || 1),
+        start: Number(vlForm.start) || 1,
+        step: Math.max(1, Number(vlForm.step) || 1),
+        prefix: vlForm.prefix || 'оп.',
+        source_asset_id: vlForm.sourceId || undefined,
+        target_asset_id: vlForm.targetId || undefined,
+        path: pathPoints.map((point) => [point.x, point.y]),
+      })
+      setVlMode(false)
+      setVlPath([])
+      setHint(`ВЛ построена: ${result.count} опор (${result.first}…${result.last})`)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось построить ВЛ')
+    } finally {
+      setVlSaving(false)
+    }
+  }
+
   const startAdding = () => {
     setAdding(true)
     setDraft(null)
@@ -333,6 +529,27 @@ export function MapPage() {
   const handleMapClick = async (x: number, y: number) => {
     const rx = Math.round(x * 10) / 10
     const ry = Math.round(y * 10) / 10
+
+    if (compositeMode && compositeTypeId) {
+      setSaving(true)
+      try {
+        const result = await gisApi.placeComposite({ type_id: compositeTypeId, x: rx, y: ry })
+        setHint(`Размещён комплект «${result.name}»: ${result.children} ячеек`)
+        setCompositeMode(false)
+        await refresh()
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Не удалось разместить комплект')
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+
+    if (vlMode) {
+      setVlPath((current) => [...current, { x: rx, y: ry }])
+      setHint(`Точек: ${vlPath.length + 1}. Enter или «Завершить» — построить ВЛ`)
+      return
+    }
 
     if (movingAsset) {
       setMoveDraft({ x: rx, y: ry })
@@ -352,13 +569,49 @@ export function MapPage() {
 
     if (!adding) return
     setDraft({ x: rx, y: ry })
-    setSheetOpen(true)
+    setPlaceQuery('')
+    setPlacePickerOpen(true)
+    setSheetOpen(false)
     setFormName('')
     setFormCode('')
     setFormPower('')
     setFormLocation('')
     setFormType(types[0]?.code ?? 'ktp')
   }
+
+  const placeExisting = async (id: string) => {
+    if (!draft) return
+    setSaving(true)
+    try {
+      await gisApi.update(id, { x: draft.x, y: draft.y })
+      setPlacePickerOpen(false)
+      setDraft(null)
+      setAdding(false)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Не удалось разместить объект')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const placePickerItems = (() => {
+    const query = placeQuery.trim().toLowerCase()
+    return assets
+      .filter(
+        (asset) =>
+          !query ||
+          asset.name.toLowerCase().includes(query) ||
+          asset.code.toLowerCase().includes(query),
+      )
+      .slice()
+      .sort((a, b) => {
+        const left = a.x === null ? 0 : 1
+        const right = b.x === null ? 0 : 1
+        if (left !== right) return left - right
+        return a.name.localeCompare(b.name, 'ru')
+      })
+  })()
 
   const handleAssetDrop = async (id: string, x: number, y: number) => {
     const asset = assets.find((item) => item.id === id)
@@ -501,9 +754,10 @@ export function MapPage() {
             assets={filtered}
             selectedId={selectedId}
             onSelect={openAsset}
-            adding={adding || Boolean(placeAssetId) || Boolean(movingAsset)}
+            adding={adding || Boolean(placeAssetId) || Boolean(movingAsset) || vlMode}
             onMapClick={handleMapClick}
             draft={draft ?? moveDraft}
+            vlPath={vlPath}
             history={moveHistory}
             draggable={can('asset.create') && !movingAsset && !placeAssetId}
             onDragEnd={(id, x, y) => void handleAssetDrop(id, x, y)}
@@ -531,6 +785,8 @@ export function MapPage() {
             selectedId={selectedId}
             onSelect={openAsset}
             canEdit={can('settings.edit')}
+            canSwitch={canSwitch}
+            assetStates={assetStates}
             onGraphChanged={() => void loadGraph()}
           />
         </Suspense>
@@ -655,19 +911,36 @@ export function MapPage() {
           <div className="mb-1.5 text-ink3">Состояние</div>
           {['on', 'off', 'standby', 'maintenance'].map((status) => (
             <div key={status} className="flex items-center gap-2 py-0.5 text-ink2">
-              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: STATUS_COLOR[status] }} />
-              {STATUS_LABEL[status]}
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: powerStateOf(status, false).color }} />
+              {powerStateOf(status, false).label}
             </div>
           ))}
+          <div className="mt-1 text-ink3">
+            <span style={{ color: POWER_COLOR.on }}>●</span> под напряжением ·{' '}
+            <span style={{ color: POWER_COLOR.off }}>●</span> обесточено · ⏚ заземлено
+          </div>
         </div>
       ) : (
         <div className="pointer-events-none absolute bottom-4 left-3 z-[1000] hidden rounded-xl border border-line bg-bg/85 p-3 text-[11px] backdrop-blur sm:block">
           <div className="mb-1.5 text-ink3">Обозначения</div>
-          <div className="text-ink2">— сплошная: связь включена</div>
-          <div className="text-ink2">┄ пунктир: разомкнута</div>
-          <div className="text-ink2">⏚ заземлено · фиолетовая: перемычка</div>
+          <div className="text-ink2"><span style={{ color: POWER_COLOR.on }}>━━</span> красная сплошная — под напряжением</div>
+          <div className="text-ink2"><span style={{ color: POWER_COLOR.off }}>┅┅</span> зелёная пунктирная — отключено / без питания</div>
+          <div className="text-ink2">
+            <span style={{ color: POWER_COLOR.on }}>⚡</span> ячейка включена - под напряжением ·{' '}
+            <span style={{ color: POWER_COLOR.off }}>○</span> отключена/заземлена - обесточено
+          </div>
+          <div className="text-ink2"><span className="tracking-[2px]">···</span> точки — перемычка между ячейками</div>
+          <div className="text-ink2">→ направление «выход → вход» · ⏚ заземлено</div>
+          <div className="text-ink2">фидер — линия от источника к приёмнику</div>
         </div>
       )}
+
+      {error && !connectFrom && !editLink ? (
+        <div className="pointer-events-auto fixed left-1/2 top-20 z-[1200] flex w-[min(92vw,420px)] -translate-x-1/2 items-start gap-2 rounded-xl border border-bad/50 bg-[#2A1114]/95 px-3 py-2 text-[12px] text-bad shadow-xl">
+          <span className="flex-1">{error}</span>
+          <button type="button" onClick={() => setError(null)}>✕</button>
+        </div>
+      ) : null}
 
       {editLink ? (
         <div className="absolute inset-x-3 bottom-24 z-[1002] rounded-xl border border-accent/50 bg-surface1 p-3 text-[12px] shadow-xl sm:left-auto sm:right-4 sm:w-[320px]">
@@ -694,6 +967,25 @@ export function MapPage() {
               <input className="input mt-1 h-8" value={editLink.length} inputMode="decimal" onChange={(e) => setEditLink({ ...editLink, length: e.target.value })} placeholder="120" />
             </label>
           </div>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="block text-[11px] text-ink3">
+              № кабеля
+              <input className="input mt-1 h-8" value={editLink.no} onChange={(e) => setEditLink({ ...editLink, no: e.target.value })} placeholder="КЛ-17" />
+            </label>
+            <label className="block text-[11px] text-ink3">
+              Статус
+              <select className="input mt-1 h-8" value={editLink.status} onChange={(e) => setEditLink({ ...editLink, status: e.target.value })}>
+                <option value="in_work">в работе</option>
+                <option value="reserve">резерв</option>
+                <option value="repair">ремонт</option>
+                <option value="dismounted">демонтирован</option>
+              </select>
+            </label>
+          </div>
+          <label className="mb-2 block text-[11px] text-ink3">
+            Установлен на
+            <input className="input mt-1 h-8" value={editLink.installed} onChange={(e) => setEditLink({ ...editLink, installed: e.target.value })} placeholder="оп.4" />
+          </label>
           <label className="mb-2 block text-[11px] text-ink3">
             Состояние
             <select className="input mt-1 h-8" value={editLink.state} onChange={(e) => setEditLink({ ...editLink, state: e.target.value })}>
@@ -704,10 +996,32 @@ export function MapPage() {
           </label>
           <div className="flex gap-2">
             <button type="button" className="btn-primary h-8 flex-1" disabled={linkSaving} onClick={() => void saveLinkEdit()}>Сохранить</button>
-            <button type="button" className="btn-ghost h-8 text-bad" disabled={linkSaving} onClick={() => void removeLink()}>🗑</button>
+            <button
+              type="button"
+              className="btn-ghost h-8 text-bad"
+              title="Удалить связь"
+              aria-label="Удалить связь"
+              disabled={linkSaving}
+              onClick={() => setConfirmRemoveLink(true)}
+            >
+              🗑
+            </button>
           </div>
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={confirmRemoveLink}
+        title="Удалить связь?"
+        message="Связь исчезнет с карты и из схемы. Объекты и их история сохранятся."
+        confirmLabel="Удалить"
+        busy={linkSaving}
+        onConfirm={async () => {
+          await removeLink()
+          setConfirmRemoveLink(false)
+        }}
+        onCancel={() => setConfirmRemoveLink(false)}
+      />
 
       {isAdmin && view === 'map' && !adding ? (
         <div className="absolute bottom-5 right-4 z-[1000] flex gap-2">
@@ -726,6 +1040,28 @@ export function MapPage() {
             }`}
           >
             🔗 Связать
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false)
+              setLinkMode(false)
+              setCompositeDialog(true)
+            }}
+            className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold shadow-lg ${
+              compositeMode ? 'border-accent bg-accent/15 text-accent' : 'border-line bg-bg/90 text-ink'
+            }`}
+          >
+            Комплект
+          </button>
+          <button
+            type="button"
+            onClick={vlMode ? () => { setVlMode(false); setVlPath([]); setVlDialog(false) } : startVl}
+            className={`flex h-12 items-center gap-2 rounded-full border px-4 text-[13px] font-semibold shadow-lg ${
+              vlMode ? 'border-warm bg-warm/20 text-warm' : 'border-line bg-bg/90 text-ink'
+            }`}
+          >
+            ВЛ
           </button>
           <button
             type="button"
@@ -750,9 +1086,15 @@ export function MapPage() {
           <AssetSheet
             assetId={selectedId}
             onOpenAsset={(id) => setSelectedId(id)}
+            onDeleted={() => {
+              setSelectedId(null)
+              setSheetOpen(false)
+              void refresh()
+            }}
             canManage={can('asset.create')}
             canSwitch={canSwitch}
             canManageDocs={canManageDocs}
+            onStateChanged={handleStateChanged}
             onMove={
               can('asset.move')
                 ? (asset) => {
@@ -823,12 +1165,48 @@ export function MapPage() {
         open={sheetOpen && Boolean(connectAssetId)}
         onClose={() => setSheetOpen(false)}
         title={
-          connectAsset
-            ? `${connectAsset.code} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
-            : 'Порт'
+          connectChild
+            ? `${connectChild.name} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
+            : connectAsset
+              ? `${connectAsset.code} · выберите порт ${connectStep === 'from' ? 'OUT' : 'IN'}`
+              : 'Порт'
         }
       >
         <div className="space-y-3">
+          {connectChild ? (
+            <div className="flex items-center justify-between rounded-lg border border-accent/40 bg-surface2 px-2 py-1 text-[12px]">
+              <span>
+                Ячейка: <b>{connectChild.name}</b>
+              </span>
+              <button
+                type="button"
+                className="btn-ghost h-7 px-2 text-[11px]"
+                onClick={() => {
+                  if (connectBlockId) void openConnectPicker(connectBlockId)
+                }}
+              >
+                ← к комплексу
+              </button>
+            </div>
+          ) : connectChildren.length > 0 ? (
+            <div>
+              <div className="mb-1 text-[11px] uppercase tracking-wide text-ink3">
+                От какой ячейки комплекса?
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {connectChildren.map((child) => (
+                  <button
+                    key={child.id}
+                    type="button"
+                    className="rounded-lg border border-line bg-surface2 px-2 py-1 text-[12px] hover:border-accent"
+                    onClick={() => pickChildPorts(child)}
+                  >
+                    {child.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <p className="hint">
             {connectStep === 'from'
               ? 'Порт, от которого идёт питание (OUT или двунаправленный).'
@@ -918,6 +1296,188 @@ export function MapPage() {
       </BottomSheet>
 
       {/* создание объекта */}
+      {compositeDialog ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
+            <div className="mb-2 text-[15px] font-semibold">Разместить комплект</div>
+            <p className="mb-3 text-[12px] text-ink3">
+              Одно оборудование с ячейками: на карте появится один объект, на схеме — рамка
+              с ячейками. Состав задаётся в типе (флаг «Комплектное оборудование»).
+            </p>
+            {types.filter((type) => type.is_composite).length === 0 ? (
+              <p className="mb-3 text-[12px] text-warm">
+                Нет комплектных типов. Включите флаг в «Типах» и укажите состав.
+              </p>
+            ) : (
+              <label className="mb-3 block text-[11px] text-ink3">
+                Тип комплекта
+                <select className="input mt-1 h-9" value={compositeTypeId} onChange={(e) => setCompositeTypeId(e.target.value)}>
+                  <option value="">— выберите —</option>
+                  {types.filter((type) => type.is_composite).map((type) => (
+                    <option key={type.id} value={type.id}>{type.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn-primary h-9 flex-1"
+                disabled={!compositeTypeId}
+                onClick={() => { setCompositeDialog(false); setCompositeMode(true); setHint('Кликните на карте место для комплекта') }}
+              >
+                Указать место
+              </button>
+              <button type="button" className="btn-ghost h-9" onClick={() => setCompositeDialog(false)}>Отмена</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {vlDialog ? (
+        <div className="fixed inset-0 z-[1400] flex items-end justify-center bg-black/60 p-3 sm:items-center">
+          <div className="card modal-safe w-full max-w-md p-4 text-[13px]">
+            <div className="mb-2 text-[15px] font-semibold">Построить ВЛ</div>
+            <p className="mb-3 text-[12px] text-ink3">
+              Задайте количество опор и нумерацию, затем поставьте на карте несколько точек —
+              линия пойдёт по ним. Enter или кнопка «Завершить» — построить ВЛ.
+            </p>
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <label className="text-[11px] text-ink3">
+                Количество
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.count} onChange={(e) => setVlForm({ ...vlForm, count: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Начальный номер
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.start} onChange={(e) => setVlForm({ ...vlForm, start: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Шаг
+                <input className="input mt-1 h-9" inputMode="numeric" value={vlForm.step} onChange={(e) => setVlForm({ ...vlForm, step: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Префикс
+                <input className="input mt-1 h-9" value={vlForm.prefix} onChange={(e) => setVlForm({ ...vlForm, prefix: e.target.value })} />
+              </label>
+              <label className="text-[11px] text-ink3">
+                Откуда (оборудование)
+                <select className="input mt-1 h-9" value={vlForm.sourceId} onChange={(e) => setVlForm({ ...vlForm, sourceId: e.target.value })}>
+                  <option value="">— не указывать —</option>
+                  {assets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-[11px] text-ink3">
+                Куда (оборудование)
+                <select className="input mt-1 h-9" value={vlForm.targetId} onChange={(e) => setVlForm({ ...vlForm, targetId: e.target.value })}>
+                  <option value="">— не указывать —</option>
+                  {assets.map((asset) => (
+                    <option key={asset.id} value={asset.id}>{asset.name}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="mb-2 text-[11px] text-ink3">
+              Если выбраны «Откуда» и «Куда» — можно ничего не кликать, линия пойдёт по прямой,
+              опоры встанут равномерно между ними. Клики по карте добавляют изломы трассы.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="btn-primary h-10 flex-1"
+                onClick={() => {
+                  setVlDialog(false)
+                  setVlPath([])
+                  setHint('Кликайте точки линии на карте. Enter — завершить')
+                }}
+              >
+                Указать точки
+              </button>
+              <button
+                type="button"
+                className="btn-ghost h-10"
+                onClick={() => { setVlDialog(false); setVlMode(false); setVlPath([]) }}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {vlMode && !vlDialog ? (
+        <div className="fixed inset-x-3 bottom-[calc(150px+env(safe-area-inset-bottom))] z-[1350] flex items-center gap-2 rounded-xl border border-accent/50 bg-surface1 p-2 text-[12px] shadow-xl sm:left-1/2 sm:right-auto sm:w-[380px] sm:-translate-x-1/2">
+          <span className="min-w-0 flex-1 text-ink2">Точек: {vlPath.length}</span>
+          <button type="button" className="btn-primary h-9 px-3" disabled={vlSaving || (vlPath.length < 2 && !(vlForm.sourceId && vlForm.targetId))} onClick={() => void finishVl()}>
+            {vlSaving ? 'Строим…' : 'Завершить'}
+          </button>
+          <button type="button" className="btn-ghost h-9 px-2" onClick={() => { setVlMode(false); setVlPath([]) }}>
+            ✕
+          </button>
+        </div>
+      ) : null}
+
+      {hint ? (
+        <div className="fixed inset-x-3 top-16 z-[1350] mx-auto max-w-md rounded-lg border border-accent/40 bg-surface1 px-3 py-2 text-[12px] text-ink2 shadow-lg" onClick={() => setHint(null)}>
+          {hint}
+        </div>
+      ) : null}
+
+      <BottomSheet
+        open={placePickerOpen}
+        onClose={() => {
+          setPlacePickerOpen(false)
+          setDraft(null)
+        }}
+        title={draft ? `Куда поставить? X ${draft.x} м, Y ${draft.y} м` : 'Выбор объекта'}
+      >
+        <div className="space-y-2">
+          <input
+            className="input h-10"
+            value={placeQuery}
+            onChange={(e) => setPlaceQuery(e.target.value)}
+            placeholder="Поиск по названию или коду"
+          />
+          <div className="max-h-[45vh] space-y-1 overflow-y-auto">
+            {placePickerItems.map((asset) => (
+              <button
+                key={asset.id}
+                type="button"
+                className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-surface2"
+                disabled={saving}
+                onClick={() => void placeExisting(asset.id)}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-[13px] text-ink">
+                    {asset.type.icon} {asset.name}
+                  </span>
+                  <span className="block text-[11px] text-ink3">
+                    {asset.code} · {asset.type.name}
+                  </span>
+                </span>
+                <span className="shrink-0 text-[11px] text-ink3">
+                  {asset.x === null ? 'не размещён' : `X ${asset.x} · Y ${asset.y}`}
+                </span>
+              </button>
+            ))}
+            {placePickerItems.length === 0 ? (
+              <p className="text-[12px] text-ink3">Ничего не найдено</p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="btn-ghost h-10 w-full"
+            onClick={() => {
+              setPlacePickerOpen(false)
+              setSheetOpen(true)
+            }}
+          >
+            + Создать новый объект здесь
+          </button>
+        </div>
+      </BottomSheet>
+
       <BottomSheet
         open={sheetOpen && Boolean(draft)}
         onClose={() => {
