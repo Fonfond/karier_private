@@ -204,6 +204,12 @@ jobs:
           psql -h 127.0.0.1 -U karier_user -d karier_db -v ON_ERROR_STOP=1 \
             -c "create database karier_test_db owner karier_user encoding 'UTF8' template template0;"
 
+      - name: Схема karier_test_db для autouse-фикстур conftest
+        working-directory: backend-v2
+        env:
+          DATABASE_URL: postgresql+psycopg://karier_user:ci-password@127.0.0.1:5432/karier_test_db
+        run: python -m alembic upgrade head
+
       # Полный цикл: upgrade head → downgrade base → upgrade head, затем сверка
       # autogenerate с зафиксированным baseline (29 предсуществующих операций,
       # зафиксирован 2026-11-25: docs/team/11-v1-acceptance.md §6 и
