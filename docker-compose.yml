@@ -20,7 +20,7 @@ services:
       # стабильная локаль для сортировок/отчётов
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     # Порт наружу не публикуем: база доступна только контейнерам compose.
     # Для отладки можно раскомментировать: ports: ["127.0.0.1:5432:5432"]
     healthcheck:

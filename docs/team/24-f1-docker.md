@@ -1,4 +1,4 @@
-﻿# 24 — F-1: Docker/Compose упаковка «Карьера»
+# 24 — F-1: Docker/Compose упаковка «Карьера»
 
 **Дата:** 2026-11-26, 00:40–01:20 (локальное время машины, UTC+08:00)
 **Кто:** `integrator` (задача t23, команда `karier-improvements`)
@@ -60,7 +60,7 @@ deploy/nginx.conf           ED69F7D33854FE5F9C843701C06F0F3BDE30B3B2704B1257C993
 
 | Том | Куда | Что хранится |
 |---|---|---|
-| `pgdata` | `/var/lib/postgresql/data` | база `karier_db` |
+| `pgdata` | `/var/lib/postgresql` (PG18+: данные в подкаталоге) | база `karier_db` |
 | `documents` | `/app/var/documents` | документы объектов (`DOCUMENTS_DIR`) |
 | `media` | `/app/var/media` | фото и медиа (`MEDIA_DIR`) |
 

@@ -41,6 +41,9 @@
 * **db** — PostgreSQL 18, наружу не публикуется.
 * Данные: `pgdata` (БД), `documents` (`var/documents`), `media` (`var/media`) — именованные тома,
   переживают `down`/`up` и обновления.
+  > **PostgreSQL 18+**: том `pgdata` монтируется в `/var/lib/postgresql` (данные — в подкаталоге
+  > `<major>/docker`), а не в `/var/lib/postgresql/data`. Старый путь на образе 18 приводит к
+  > `Restarting` БД и ошибке «there appears to be PostgreSQL data in /var/lib/postgresql/data».
 
 ---
 
