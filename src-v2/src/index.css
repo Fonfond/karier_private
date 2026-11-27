@@ -13,6 +13,13 @@
     height: 100%;
   }
 
+  /* 38a: мобильная шапка/тулбар не должны давать горизонтальный скролл страницы */
+  html,
+  body {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
   body {
     @apply bg-bg text-ink;
     /* Поле: крупный шрифт и отсутствие «прыжков» при появлении клавиатуры */
@@ -238,10 +245,14 @@ body,
 /* --- единый отступ под нижнюю навигацию (Спринт 14) --- */
 :root {
   --bottom-nav: 0px;
+  /* 38a: фактическая высота нижней панели (контент + safe-area) — холст схемы
+     заканчивается ровно на её верхней границе, без щели и без заезда под панель. */
+  --bottom-nav-bar: 0px;
 }
 @media (max-width: 767px) {
   :root {
     --bottom-nav: calc(64px + env(safe-area-inset-bottom));
+    --bottom-nav-bar: calc(57px + env(safe-area-inset-bottom));
   }
 }
 .pb-nav {

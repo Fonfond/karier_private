@@ -17,6 +17,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const isMap = location.pathname === '/map'
+  const isSchema = new URLSearchParams(location.search).get('view') === 'schema'
   const { pending, online, syncing } = useOutbox()
   const { presentation, togglePresentation } = usePresentation()
   const [scanOpen, setScanOpen] = useState(false)
@@ -34,14 +35,48 @@ export function AppShell() {
   return (
     <div className="flex min-h-[100dvh] flex-col bg-bg">
       <header className="sticky top-0 z-[1300] shrink-0 border-b border-line bg-bg/95 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/15 text-lg">⚡</span>
+        <div className="mx-auto flex w-full max-w-[1400px] flex-nowrap items-center gap-1.5 px-2 py-1.5 sm:gap-3 sm:px-4 sm:py-3">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-xl bg-accent/15 text-base sm:h-9 sm:w-9 sm:text-lg">
+              ⚡
+            </span>
             <div className="leading-tight">
-              <div className="text-[15px] font-semibold">Карьер</div>
+              <div className="text-[14px] font-semibold sm:text-[15px]">Карьер</div>
               <div className="hidden text-[11px] text-ink3 sm:block">электроснабжение</div>
             </div>
           </div>
+
+          {/* 38a: на телефоне переключатель Карта/Схема сжат в шапку — отдельная
+              строка фильтров на холсте больше не нужна. На десктопе он остаётся
+              в панели над картой/схемой (md:hidden). */}
+          {isMap ? (
+            <div
+              className="flex shrink-0 items-center rounded-full border border-line bg-bg/85 p-0.5 md:hidden"
+              role="group"
+              aria-label="Вид: карта или схема"
+            >
+              <button
+                type="button"
+                aria-pressed={!isSchema}
+                className={`rounded-full px-2.5 py-1 text-[11px] ${
+                  !isSchema ? 'bg-accent text-[#08131F]' : 'text-ink2'
+                }`}
+                onClick={() => navigate('/map')}
+              >
+                Карта
+              </button>
+              <button
+                type="button"
+                aria-pressed={isSchema}
+                className={`rounded-full px-2.5 py-1 text-[11px] ${
+                  isSchema ? 'bg-accent text-[#08131F]' : 'text-ink2'
+                }`}
+                onClick={() => navigate('/map?view=schema')}
+              >
+                Схема
+              </button>
+            </div>
+          ) : null}
 
           <nav className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:flex">
             <NavLink to="/" className={link} end data-tour="dashboard">
@@ -79,7 +114,7 @@ export function AppShell() {
             )}
           </nav>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <button
               type="button"
               className={`hidden h-9 px-2.5 text-[12px] sm:inline-flex ${presentation ? 'btn-primary' : 'btn-ghost'}`}
@@ -90,8 +125,9 @@ export function AppShell() {
             </button>
             <button
               type="button"
-              className="btn-ghost h-9 w-9 p-0 text-[15px]"
+              className="btn-ghost h-8 w-8 p-0 text-[14px] sm:h-9 sm:w-9 sm:text-[15px]"
               title="Сканировать QR"
+              aria-label="Сканировать QR"
               onClick={() => setScanOpen(true)}
             >
               ▣
@@ -99,7 +135,7 @@ export function AppShell() {
 
             <NavLink
               to="/sync"
-              className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] ${
+              className={`flex h-8 items-center gap-1.5 rounded-lg border px-2 text-[11px] sm:h-9 sm:px-2.5 sm:text-[12px] ${
                 !online
                   ? 'border-warm/40 bg-warm/10 text-warm'
                   : pending > 0
@@ -117,7 +153,11 @@ export function AppShell() {
             <span className="hidden md:inline-flex">
               {user?.mfa_enabled ? <Badge tone="ok">2FA</Badge> : <Badge tone="warm">без 2FA</Badge>}
             </span>
-            <NavLink to="/profile" className="btn-ghost h-9 w-9 p-0 text-[12px] sm:w-auto sm:px-2.5">
+            <NavLink
+              to="/profile"
+              className="btn-ghost h-8 w-8 p-0 text-[10px] sm:h-9 sm:w-auto sm:px-2.5 sm:text-[12px]"
+              title="Профиль (также в «Ещё»)"
+            >
               {user?.tab_no?.slice(-2) ?? '👤'}
             </NavLink>
             <button

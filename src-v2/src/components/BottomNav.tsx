@@ -66,7 +66,7 @@ export function BottomNav() {
 
       <nav
         className="fixed inset-x-0 bottom-0 z-[1300] border-t border-line bg-surface1/98 backdrop-blur md:hidden"
-        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)', height: 'var(--bottom-nav-bar)' }}
       >
         <div className="grid grid-cols-5">
           {TABS.map((tab) => {

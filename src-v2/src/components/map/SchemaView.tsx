@@ -1381,6 +1381,22 @@ function Flow({
   const [cableMode, setCableMode] = useState(false)
   const [cableFrom, setCableFrom] = useState<{ cellId: string; name: string; blockId: string } | null>(null)
   const [chainMode, setChainMode] = useState(false)
+  /** 38a: на мобильном библиотека блоков — drawer, а не постоянная панель. */
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  /** 38a: «Ещё» — остальные инструменты схемы на мобильном, чтобы тулбар был в один ряд. */
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
+  /** 38a: медиазапрос нужен JS-таймерам (тосты 5 с на телефоне) и тестам. */
+  const [isMobileView, setIsMobileView] = useState(
+    () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 767px)').matches),
+  )
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    const query = window.matchMedia('(max-width: 767px)')
+    const apply = () => setIsMobileView(query.matches)
+    apply()
+    query.addEventListener('change', apply)
+    return () => query.removeEventListener('change', apply)
+  }, [])
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const { screenToFlowPosition } = useReactFlow()
 
@@ -2066,25 +2082,33 @@ function Flow({
   const [dragBlock, setDragBlock] = useState<{ code: string; name: string } | null>(null)
   const [dragOver, setDragOver] = useState<'canvas' | 'invalid' | null>(null)
 
-  // Обратная связь не должна мешать: статус и подсказки скрываются сами
+  // Обратная связь не должна мешать: статус и подсказки скрываются сами.
+  // 38a: на мобильном тост автоскрывается за 5 с (на десктопе — как раньше).
   useEffect(() => {
     if (!status) return
-    const timer = setTimeout(() => setStatus(null), 8000)
+    const timer = setTimeout(() => setStatus(null), isMobileView ? 5000 : 8000)
     return () => clearTimeout(timer)
-  }, [status])
+  }, [status, isMobileView])
+
+  // Ошибка на десктопе остаётся до следующего действия, на телефоне — тост на 5 с.
+  useEffect(() => {
+    if (!error || !isMobileView) return
+    const timer = setTimeout(() => setError(null), 5000)
+    return () => clearTimeout(timer)
+  }, [error, isMobileView])
 
   useEffect(() => {
     if (!dangerHint) return
-    const timer = setTimeout(() => setDangerHint(null), 7000)
+    const timer = setTimeout(() => setDangerHint(null), isMobileView ? 5000 : 7000)
     return () => clearTimeout(timer)
-  }, [dangerHint])
+  }, [dangerHint, isMobileView])
 
   useEffect(() => {
     if (!dragBlock) return
     setShowDragHint(true)
-    const timer = setTimeout(() => setShowDragHint(false), 6000)
+    const timer = setTimeout(() => setShowDragHint(false), isMobileView ? 5000 : 6000)
     return () => clearTimeout(timer)
-  }, [dragBlock])
+  }, [dragBlock, isMobileView])
   const placingBlockRef = useRef(false)
 
   /** Создать блок в заданной точке схемы. Один вызов API — один блок в реестре. */
@@ -3110,34 +3134,83 @@ function Flow({
       onDragLeave={handleRootDragLeave}
       onDrop={handleRootDrop}
     >
+      {/* 38a: на мобильном библиотека скрыта и открывается плавающей кнопкой 📚
+          как drawer поверх холста; на десктопе (md+) — постоянная панель как раньше. */}
       {canEdit && blocks.length > 0 ? (
-        <div className="absolute left-2 top-16 z-10 max-h-[55%] w-[196px] overflow-y-auto rounded-xl border border-line bg-surface1/95 p-2 text-[12px] backdrop-blur">
-          <div className="mb-1 text-[10px] uppercase tracking-wide text-ink3">Библиотека блоков</div>
-          <div className="space-y-1">
-            {blocks.map((block) => (
+        <>
+          <button
+            type="button"
+            data-testid="schema-library-open"
+            aria-label="Библиотека блоков"
+            aria-expanded={libraryOpen}
+            title="Библиотека блоков"
+            className="absolute left-2 top-2 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-line bg-surface1/95 text-[16px] shadow-lg backdrop-blur md:hidden"
+            onClick={() => setLibraryOpen(true)}
+          >
+            📚
+          </button>
+          {libraryOpen ? (
+            <div
+              data-testid="schema-library-backdrop"
+              className="absolute inset-0 z-30 bg-black/40 md:hidden"
+              onClick={() => setLibraryOpen(false)}
+            />
+          ) : null}
+          <div
+            data-testid="schema-library-panel"
+            className={`absolute left-2 top-12 z-40 w-[220px] max-h-[60%] overflow-y-auto rounded-xl border border-line bg-surface1/95 p-2 text-[12px] shadow-xl backdrop-blur md:left-2 md:top-16 md:z-10 md:block md:w-[196px] md:max-h-[55%] md:shadow-none ${
+              libraryOpen ? 'block' : 'hidden'
+            }`}
+          >
+            <div className="mb-1 flex items-center justify-between md:hidden">
+              <span className="text-[10px] uppercase tracking-wide text-ink3">Библиотека</span>
               <button
-                key={block.id}
                 type="button"
-                draggable
-                className="flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-ink2 hover:bg-surface2 hover:text-ink active:cursor-grabbing"
-                title={`${block.nodes_count} элементов · ${block.external_ports} внешних портов. Клик — поставить в центр, перетащите — в точку сброса`}
-                onClick={() => void placeBlock(block.code)}
-                onDragStart={(event) => startBlockDrag(event, block)}
-                onDragEnd={finishBlockDrag}
+                className="grid h-6 w-6 place-items-center rounded text-ink3 hover:bg-surface2"
+                aria-label="Закрыть библиотеку блоков"
+                onClick={() => setLibraryOpen(false)}
               >
-                <span>{block.icon ?? '▣'}</span>
-                <span className="min-w-0 flex-1 truncate">{block.name}</span>
-                <span className="text-[10px] text-ink3">{block.nodes_count}</span>
+                ✕
               </button>
-            ))}
+            </div>
+            <div className="mb-1 hidden text-[10px] uppercase tracking-wide text-ink3 md:block">
+              Библиотека блоков
+            </div>
+            <div className="space-y-1">
+              {blocks.map((block) => (
+                <button
+                  key={block.id}
+                  type="button"
+                  draggable
+                  className="flex w-full cursor-grab items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-ink2 hover:bg-surface2 hover:text-ink active:cursor-grabbing"
+                  title={`${block.nodes_count} элементов · ${block.external_ports} внешних портов. Клик — поставить в центр, перетащите — в точку сброса`}
+                  onClick={() => {
+                    setLibraryOpen(false)
+                    void placeBlock(block.code)
+                  }}
+                  onDragStart={(event) => startBlockDrag(event, block)}
+                  onDragEnd={finishBlockDrag}
+                >
+                  <span>{block.icon ?? '▣'}</span>
+                  <span className="min-w-0 flex-1 truncate">{block.name}</span>
+                  <span className="text-[10px] text-ink3">{block.nodes_count}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
 
       {canEdit ? (
-        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-10 flex max-w-[calc(100%-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl border border-line bg-surface1/95 px-2 py-1.5 text-[12px] backdrop-blur">
-          <label className="flex items-center gap-1.5">
-            <input type="checkbox" checked={editMode} onChange={(e) => setEditMode(e.target.checked)} />
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-10 hidden max-w-[calc(100%-24px)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-xl border border-line bg-surface1/95 px-2 py-1.5 text-[12px] backdrop-blur md:flex">
+          <label className="flex items-center gap-1.5" title="Режим редактирования схемы">
+            <input
+              type="checkbox"
+              aria-label="Режим редактирования"
+              data-testid="schema-edit-toggle"
+              checked={editMode}
+              onChange={(e) => setEditMode(e.target.checked)}
+            />
             Режим редактирования
           </label>
           {/* Добавление и снимки доступны без режима редактирования: это не правка
@@ -3304,12 +3377,274 @@ function Flow({
         </div>
       ) : null}
 
+      {/* 38a: мобильная панель схемы — один компактный ряд над Bottom Nav.
+          Переключатель редактирования без текста (иконка + aria-label), «+ Добавить»
+          и «По шаблону» всегда под рукой, остальные инструменты — в «Ещё». */}
+      {canEdit ? (
+        <div
+          data-testid="schema-mobile-toolbar"
+          className="pointer-events-auto absolute inset-x-2 bottom-[calc(6px+env(safe-area-inset-bottom))] z-20 flex items-center gap-1.5 rounded-xl border border-line bg-surface1/95 px-1.5 py-1 text-[12px] shadow-lg backdrop-blur md:hidden"
+        >
+          <label
+            className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg border ${
+              editMode ? 'border-accent bg-accent/15 text-accent' : 'border-line text-ink2'
+            }`}
+            title="Режим редактирования"
+          >
+            <input
+              type="checkbox"
+              aria-label="Режим редактирования"
+              checked={editMode}
+              onChange={(e) => setEditMode(e.target.checked)}
+              className="sr-only"
+            />
+            <span aria-hidden="true" className="text-[15px] leading-none">
+              {editMode ? '✏️' : '👁'}
+            </span>
+          </label>
+          <button
+            type="button"
+            className="btn-primary h-8 min-w-0 flex-1 whitespace-nowrap px-2 text-[11px]"
+            title="Добавить на схему объект из реестра, по типу или контуром"
+            onClick={() => setAddOpen(true)}
+          >
+            + Добавить
+          </button>
+          <button
+            type="button"
+            className="btn-ghost h-8 min-w-0 flex-1 whitespace-nowrap px-2 text-[11px]"
+            data-testid="schema-composite-open-mobile"
+            title="Создать по шаблону: БКРУ (6 ячеек), ПС 35/6 (17 на секцию), КТП (вводной разъединитель)"
+            onClick={() => setTemplateOpen(true)}
+          >
+            ▤ По шаблону
+          </button>
+          <button
+            type="button"
+            className={`btn-ghost h-8 w-8 shrink-0 px-0 text-[15px] ${mobileActionsOpen ? 'ring-1 ring-accent' : ''}`}
+            aria-label="Ещё инструменты схемы"
+            data-testid="schema-more-open"
+            aria-expanded={mobileActionsOpen}
+            title="Ещё инструменты схемы"
+            onClick={() => setMobileActionsOpen((value) => !value)}
+          >
+            ⋯
+          </button>
+        </div>
+      ) : null}
+
+      {canEdit && mobileActionsOpen ? (
+        <div className="absolute inset-0 z-40 md:hidden" data-testid="schema-more-sheet">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileActionsOpen(false)} />
+          <div className="absolute inset-x-2 bottom-[calc(56px+env(safe-area-inset-bottom))] max-h-[62%] overflow-y-auto rounded-2xl border border-line bg-surface1 p-2 text-[12px] shadow-xl">
+            <div className="mb-1.5 flex items-center justify-between px-1">
+              <span className="text-[11px] uppercase tracking-wide text-ink3">Инструменты схемы</span>
+              <button
+                type="button"
+                className="grid h-7 w-7 place-items-center rounded text-ink3 hover:bg-surface2"
+                aria-label="Закрыть инструменты"
+                onClick={() => setMobileActionsOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                className="btn-ghost h-9 px-2 text-[12px]"
+                onClick={() => {
+                  setMobileActionsOpen(false)
+                  setSnapshotsOpen(true)
+                }}
+              >
+                Снимки
+              </button>
+              {editMode ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-primary col-span-2 h-9 px-2 text-[12px]"
+                    disabled={saving || savePhase === 'saving'}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      void saveCurrent()
+                    }}
+                  >
+                    {saving || savePhase === 'saving' ? 'Сохраняем…' : 'Сохранить раскладку'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      applyAuto()
+                    }}
+                  >
+                    Авто-раскладка
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-ghost h-9 px-2 text-[12px] ${cellLinkMode ? 'ring-1 ring-accent' : ''}`}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setJumperMode(false)
+                      setPolePick(null)
+                      setPolePath([])
+                      setCellLinkFirst(null)
+                      setCellLinkMode((value) => !value)
+                    }}
+                  >
+                    Ячейки
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-ghost h-9 px-2 text-[12px] ${cableMode ? 'ring-1 ring-accent' : ''}`}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setJumperMode(false)
+                      setCellLinkMode(false)
+                      setCableFrom(null)
+                      setCableMode((value) => !value)
+                      setStatus(cableMode ? null : 'Кабель: кликните ячейку, затем опору или оборудование')
+                    }}
+                  >
+                    Кабель
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-ghost h-9 px-2 text-[12px] ${chainMode ? 'ring-1 ring-accent' : ''}`}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setJumperMode(false)
+                      setCableMode(false)
+                      setCableFrom(null)
+                      setCellLinkFirst(null)
+                      setChainMode((value) => !value)
+                      setCellLinkMode(!chainMode)
+                      setStatus(chainMode ? null : 'Линия: кликните первую ячейку, затем вторую — укажите число опор, марку и тип')
+                    }}
+                  >
+                    Линия
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setPoleDialog('renumber')
+                    }}
+                  >
+                    № опор
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    disabled={historyIndex.current === 0}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      undo()
+                    }}
+                  >
+                    ↩ Отменить
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    disabled={historyIndex.current === historyRef.current.length}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      redo()
+                    }}
+                  >
+                    ↪ Повторить
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      applyTemplate()
+                    }}
+                  >
+                    Шаблон ГОСТ
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn-ghost h-9 px-2 text-[12px] ${jumperMode ? 'ring-1 ring-accent' : ''}`}
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setPolePick(null)
+                      setPolePath([])
+                      setJumperMode(!jumperMode)
+                      setJumperFirst(null)
+                      setJumperPair(null)
+                    }}
+                  >
+                    🔗 Перемычка
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      setShowLegend((value) => !value)
+                    }}
+                  >
+                    Легенда
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost h-9 px-2 text-[12px]"
+                    onClick={() => {
+                      setMobileActionsOpen(false)
+                      downloadDxf(graph, positionsForDxf, portPositionsForDxf, NODE_W, NODE_H)
+                    }}
+                  >
+                    ⬇ DXF
+                  </button>
+                  <label className="flex h-9 items-center gap-2 rounded-xl border border-line px-2 text-[12px] text-ink2">
+                    <input
+                      type="checkbox"
+                      checked={showFrame}
+                      onChange={(e) => setShowFrame(e.target.checked)}
+                    />
+                    Рамка
+                  </label>
+                  <label className="flex h-9 items-center gap-2 rounded-xl border border-line px-2 text-[12px] text-ink2">
+                    <input
+                      type="checkbox"
+                      checked={portDrag}
+                      onChange={(e) => setPortDrag(e.target.checked)}
+                    />
+                    Двигать порты
+                  </label>
+                </>
+              ) : null}
+            </div>
+            {!editMode ? (
+              <p className="px-1 pt-1 text-[11px] text-ink3">
+                Включите режим редактирования (иконка слева), чтобы двигать узлы, ячейки, порты и
+                менять раскладку.
+              </p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {error ? (
-        <div className="absolute right-2 top-2 z-10 max-w-[320px] rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-[12px] text-bad">
+        <div
+          role="alert"
+          data-testid="schema-toast"
+          className="schema-toast pointer-events-none absolute left-1/2 top-2 z-[14] w-max max-w-[calc(100%-16px)] -translate-x-1/2 rounded-lg border border-bad/40 bg-bad/10 px-2.5 py-1.5 text-[11px] text-bad shadow-lg backdrop-blur md:left-auto md:right-2 md:w-auto md:max-w-[320px] md:translate-x-0 md:px-3 md:py-2 md:text-[12px] md:pointer-events-auto"
+        >
           {error}
         </div>
       ) : status ? (
-        <div className="absolute right-2 top-2 z-10 max-w-[320px] rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-[12px] text-ok">
+        <div
+          role="status"
+          data-testid="schema-toast"
+          className="schema-toast pointer-events-none absolute left-1/2 top-2 z-[14] w-max max-w-[calc(100%-16px)] -translate-x-1/2 rounded-lg border border-ok/40 bg-ok/10 px-2.5 py-1.5 text-[11px] text-ok shadow-lg backdrop-blur md:left-auto md:right-2 md:w-auto md:max-w-[320px] md:translate-x-0 md:px-3 md:py-2 md:text-[12px] md:pointer-events-auto"
+        >
           {status}
         </div>
       ) : null}
@@ -3321,7 +3656,7 @@ function Flow({
           aria-live={savePhase === 'error' ? 'assertive' : 'polite'}
           data-testid="schema-autosave"
           data-phase={savePhase}
-          className={`absolute left-1/2 top-2 z-[13] flex -translate-x-1/2 items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] shadow-lg backdrop-blur ${autosaveTone}`}
+          className={`absolute left-1/2 top-2 z-[13] flex max-w-[calc(100%-16px)] -translate-x-1/2 items-center gap-2 rounded-lg border px-2.5 py-1 text-[11px] shadow-lg backdrop-blur md:max-w-none md:px-3 md:py-1.5 md:text-[12px] ${autosaveTone}`}
         >
           {autosaveInfo.spinner ? <span className="schema-spinner" aria-hidden="true" /> : null}
           <span>{autosaveInfo.text}</span>
@@ -3570,7 +3905,7 @@ function Flow({
               <div
                 role="status"
                 aria-live="polite"
-                className={`schema-hint absolute inset-x-0 bottom-24 mx-auto w-fit max-w-[92%] rounded-full border px-3 py-1.5 text-[12px] shadow-lg backdrop-blur ${
+                className={`schema-hint pointer-events-none absolute inset-x-0 bottom-16 mx-auto w-fit max-w-[92%] rounded-full border px-2.5 py-1 text-[11px] shadow-lg backdrop-blur md:bottom-24 md:px-3 md:py-1.5 md:text-[12px] ${
                   dragOver === 'invalid'
                     ? 'border-bad/60 bg-[#2A1114]/95 text-bad'
                     : 'border-accent/50 bg-surface1/95 text-ink'
@@ -3591,7 +3926,7 @@ function Flow({
         <div
           role="alert"
           aria-live="assertive"
-          className="schema-hint schema-danger absolute left-1/2 top-14 z-[14] w-[min(92%,420px)] -translate-x-1/2 rounded-xl border border-bad/60 bg-[#2A1114]/95 px-3 py-2 text-[12px] text-bad shadow-xl"
+          className="schema-hint schema-danger pointer-events-none absolute left-1/2 top-2 z-[15] w-[min(92%,420px)] -translate-x-1/2 rounded-xl border border-bad/60 bg-[#2A1114]/95 px-3 py-2 text-[11px] text-bad shadow-xl md:top-14 md:text-[12px]"
         >
           ⚠ {dangerHint}
         </div>

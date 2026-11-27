@@ -42,7 +42,13 @@ export function MapPage() {
   const location = useLocation()
 
   const [searchParams, setSearchParams] = useSearchParams()
+  const routeView: View = searchParams.get('view') === 'schema' ? 'schema' : 'map'
   const [view, setView] = useState<View>(() => (searchParams.get('view') === 'schema' ? 'schema' : 'map'))
+  // 38a: на мобильном переключатель Карта/Схема живёт в шапке (AppShell) и меняет URL —
+  // страница должна следовать за адресом, а не только за собственным состоянием.
+  useEffect(() => {
+    setView(routeView)
+  }, [routeView])
   const [layer, setLayer] = useState<MapLayer | null>(null)
   const [mapOpen, setMapOpen] = useState(false)
   const [mapFile, setMapFile] = useState<File | null>(null)
@@ -746,7 +752,10 @@ export function MapPage() {
   const connectAsset = connectAssetId ? assets.find((asset) => asset.id === connectAssetId) : null
 
   return (
-    <div className="absolute inset-0 overflow-hidden bg-[#070C10]">
+    <div
+      className="absolute inset-x-0 top-0 overflow-hidden bg-[#070C10]"
+      style={{ bottom: 'var(--bottom-nav-bar)' }}
+    >
       {view === 'map' ? (
         layer ? (
           <MapView
@@ -794,8 +803,13 @@ export function MapPage() {
         <div className="flex h-full items-center justify-center text-ink2">Строим схему…</div>
       )}
 
-      {/* верхняя панель: вид + фильтры */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] p-3">
+      {/* верхняя панель: вид + фильтры. 38a: на телефоне в режиме схемы её нет —
+          переключатель Карта/Схема в шапке, а холст занимает всю площадь. */}
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 z-[1000] p-3 ${
+          view === 'schema' ? 'hidden md:block' : ''
+        }`}
+      >
         <div className="pointer-events-auto flex flex-wrap items-center gap-2">
           <div className="flex rounded-full border border-line bg-bg/85 p-1 backdrop-blur">
             <button
